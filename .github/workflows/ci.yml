@@ -75,6 +75,10 @@ jobs:
         shell: bash
         env:
           SPINTAX_FIXTURES: ${{ github.workspace }}/.corpus/packages/conformance/fixtures
+          # A CI log renders every non-ASCII character as '?', which hides the byte an
+          # encoding divergence is about. Bytes cost nothing here and there is no second
+          # chance to look at a remote runner.
+          SPINTAX_HEX: '1'
         run: ./tests/check-corpus.sh
 
   # The shell scripts are part of the build contract (build.sh drives every consumer's

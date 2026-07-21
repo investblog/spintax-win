@@ -79,7 +79,10 @@ if [ -s "$tmp/new" ]; then
   echo >&2
   echo "  detail for the new failures:" >&2
   while IFS= read -r case_id; do
-    echo "$out" | grep -F "] $case_id  " >&2 || true
+    # -A 3 so the SPINTAX_HEX byte dump, which the runner prints on the following
+    # lines, comes along; without the bytes a CI log shows only '?' for every
+    # non-ASCII character.
+    echo "$out" | grep -F -A 3 "] $case_id  " >&2 || true
   done < "$tmp/new"
 fi
 exit 1

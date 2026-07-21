@@ -52,6 +52,28 @@ begin
   Result := TFirstRng.Create;
 end;
 
+{ Hex dump of a value, enabled by SPINTAX_HEX=1.
+
+  This port lives on encoding differences, and a terminal or a CI log renders every
+  non-ASCII character as '?' -- which hides exactly the byte the divergence is about.
+  Off by default because the post-process remainder already prints 21 lines. }
+function Hex(const s: string): string;
+var i: Integer;
+begin
+  Result := '';
+  for i := 1 to Length(s) do
+  begin
+    if i > 1 then Result := Result + ' ';
+    Result := Result + IntToHex(Ord(s[i]), 2);
+  end;
+  Result := '<' + IntToStr(Length(s)) + ':' + Result + '>';
+end;
+
+function ShowHex: Boolean;
+begin
+  Result := GetEnvironmentVariable('SPINTAX_HEX') = '1';
+end;
+
 function NormalizeList(sl: TStringList): string;
 var tmp: TStringList; i: Integer;
 begin
@@ -202,7 +224,14 @@ begin
         end;
         want := JGetStr(expect, 'output', '');
         pass := (got = want);
-        if not pass then reason := 'want=[' + want + '] got=[' + got + ']';
+        if not pass then
+        begin
+          reason := 'want=[' + want + '] got=[' + got + ']';
+          if ShowHex then
+            reason := reason + sLineBreak + '      want' + Hex(want) +
+                      sLineBreak + '      got ' + Hex(got) +
+                      sLineBreak + '      tmpl' + Hex(tmpl);
+        end;
       finally
         vars.Free;
       end;
