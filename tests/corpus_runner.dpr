@@ -286,6 +286,11 @@ begin
     a HOST responsibility, not something the engine can do for its callers: any FPC
     program feeding this engine non-ASCII text has to do the same. }
   DefaultSystemCodePage := CP_UTF8;
+  { Same for what it prints: the RTL needs to know the want/got it is reporting are
+    UTF-8, or the terminal encoding decides how much of the evidence survives. The
+    SPINTAX_HEX dump does not depend on this — it is built from the bytes in memory,
+    which is why it, and not the printed text, is what settled the Linux failure. }
+  SetTextCodePage(Output, CP_UTF8);
   {$ENDIF}
 
   TotalPass := 0; TotalFail := 0; TotalSkip := 0;

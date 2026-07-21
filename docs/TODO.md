@@ -12,14 +12,11 @@ The single list of open work. Anything actively being built gets a plan in
 
 ## Open
 
-- [ ] **Publish the repo.** No git remote yet; `investblog/spintax-win` does not exist.
-      CI (`.github/workflows/ci.yml`) has therefore **never run**. Every command in it was
-      reproduced locally and passes (build, `-Sew -vm4046`, the corpus gate, shellcheck) —
-      but the runner setup around them, and the corpus checkout, are unverified.
-- [ ] **Windows CI leg: confirm the FPC install step.** `choco install freepascal` and the
-      `C:\tools\freepascal\bin\i386-win32` PATH entry are written from the package's
-      documented layout, not from an observed run. First CI run either confirms it or it
-      needs a `where fpc` fix.
+- [ ] **The engine's UTF-8 contract is undocumented for hosts.** An FPC host must set
+      `DefaultSystemCodePage := CP_UTF8` or non-ASCII text is silently mangled before the
+      engine sees it — that cost a green-looking Linux build until the bytes were dumped.
+      The runner does it; README/spec should state it as part of the public contract, and
+      `examples/demo.lpr` should do it too.
 - [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
       listed in `../tests/known-failures.txt`. Scope decision, not a defect:
       [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer

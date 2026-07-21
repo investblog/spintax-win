@@ -124,6 +124,26 @@ than a failure.
     Spintax.Core.dspec        DPM package spec
     docs/spec-pascal-port.md  the governing parity contract
 
+## Encoding: a host responsibility
+
+`string` carries **raw UTF-8 bytes**. The engine never converts, and it must not be
+handed anything else.
+
+Under FPC that is not automatic. FPC converts to `DefaultSystemCodePage` at
+boundaries, and that default follows the locale — under `LANG=C` it is ASCII, so
+every non-ASCII character silently becomes `'?'` *before the engine sees it*. An
+FPC host must declare UTF-8 once at start-up:
+
+    DefaultSystemCodePage := CP_UTF8;
+
+A library cannot set this for its callers. Both `tests/corpus_runner.dpr` and
+`examples/demo.lpr` do it. Under Delphi the question does not arise: `string` is
+UTF-16 and the engine's sentinel literals branch on `UNICODE` accordingly.
+
+This is not theoretical — it is what made the Linux CI leg fail while Windows
+passed, and it took a byte dump to see, because every log renders the corruption
+as `?`.
+
 ## Public API
 
     function SpRender(const Template: string; const Ctx: TSpContext): string;

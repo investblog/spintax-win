@@ -172,6 +172,54 @@ rather than by reading.**
 Both are `{$IFDEF UNICODE}`-identical for this unit, so the package declares the 12.0–13.0
 range; only 13 has run the corpus.
 
+## Run 5 — three environments agree (CI, 2026-07-21)
+
+CI green on all jobs: `corpus (ubuntu-latest)`, `corpus (windows-latest)`, `shellcheck`.
+
+| environment | result |
+|---|---|
+| FPC 3.2.2, i386-win32 (local) | 143 / 21 / 4 |
+| FPC 3.2.2, x86_64-linux (CI) | 143 / 21 / 4 |
+| FPC 3.2.2, i386-win32 (CI) | 143 / 21 / 4 |
+| Delphi 13 Florence, Win32 (manual) | 143 / 21 / 4 |
+
+### The Linux-only failure, and two wrong diagnoses before the right one
+
+`postprocess/abbrev-whitelist-ru` passed everywhere except Linux, where
+`"Текст соц. сети тут"` rendered with every space deleted.
+
+**Diagnosis 1 (wrong):** the byte `$D1` matching `[',',';',':','!','?','.']` — the
+W1050 class. ASCII guards were added; the failure did not change, which is what
+disproved it. The guards stayed, but they fixed nothing.
+
+**Diagnosis 2 (right, and only after dumping bytes):**
+
+```
+want<19:3F 3F 3F 3F 3F 20 3F 3F 3F 2E 20 ...>
+tmpl<19:3F 3F 3F 3F 3F 20 3F 3F 3F 2E 20 ...>
+```
+
+Those `3F` are real bytes. A 19-character, ~34-byte string reached the engine as 19 bytes
+with every Cyrillic character replaced by a literal `'?'`. `fpjson` returns `UTF8String`;
+assigning it to `string` converts to `DefaultSystemCodePage`, which comes from the locale.
+The runner has `LANG=C` → ASCII → lossy. Windows has a Cyrillic ANSI codepage, so the same
+conversion round-tripped and the case passed there.
+
+The vanished spaces were the *second* link: once a character is a literal `'?'`, it
+genuinely belongs to the punctuation set and post-process correctly removed the space.
+
+Fix: the host declares `DefaultSystemCodePage := CP_UTF8`. The engine's contract is raw
+UTF-8 bytes in `string`, and a library cannot set that for its callers.
+
+**Correction to the record:** an intermediate commit message claimed this vindicated the
+W1050 suspicion. It did not. The Delphi measurement stands — that construct is not
+truncating on Delphi 13 — and this bug had a different cause entirely.
+
+**Method note:** two diagnoses failed while reading glyphs, because every terminal and CI
+log renders non-ASCII as `?` — exactly the information an encoding bug lives in. The byte
+dump (`SPINTAX_HEX=1`) settled it immediately. For a port about encoding, the harness has
+to show bytes; that should have been built before the guessing started.
+
 ## What is still NOT guarded
 
 Parity is **measured**, not **defended**. Neither licence on this machine grants the

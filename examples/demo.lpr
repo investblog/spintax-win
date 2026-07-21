@@ -16,6 +16,18 @@ var
   ctx: TSpContext;
   vars: TDictionary<string, string>;
 begin
+  { The engine's contract is raw UTF-8 bytes in `string`. FPC converts to
+    DefaultSystemCodePage at boundaries, and that default follows the locale — under
+    LANG=C it is ASCII, which silently replaces every non-ASCII character with '?'.
+    Any FPC host feeding this engine non-ASCII text has to declare UTF-8; a library
+    cannot do it for its callers. }
+  DefaultSystemCodePage := CP_UTF8;
+  { Tell the RTL what the strings it is about to print actually are. Measured on a
+    Russian Windows console: without this the output came out as '?????', with it as
+    correctly-encoded CP1251. The engine's bytes are UTF-8 either way — this only
+    governs how they reach the terminal. }
+  SetTextCodePage(Output, CP_UTF8);
+
   if ParamCount < 1 then
   begin
     Writeln('usage: demo "template" [locale]');

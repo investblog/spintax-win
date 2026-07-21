@@ -187,15 +187,19 @@ function PhpRtrim(const s: string): string; begin Result := PhpTrimLR(s, False, 
 
 { ASCII-guarded membership tests.
 
-  These exist because `c in ['a'..'z']` on a raw UTF-8 byte is NOT portable. Measured:
-  under FPC on x86_64-linux, the byte $D1 — the lead byte of Cyrillic 'с'/'т' — tested
-  TRUE against [',',';',':','!','?','.'], so post-process deleted every space in
-  "Текст соц. сети тут" and the corpus case postprocess/abbrev-whitelist-ru failed on
-  Linux while passing on i386-win32. Delphi flags the same construct as W1050.
+  Defensive, not a fix for an observed bug — and the history matters, because the
+  comment here previously claimed a measurement that never happened.
 
-  The engine only ever means ASCII in these sets, so say so: check the ordinal first and
-  let the set see nothing above 127. Any new set test over text bytes needs the same
-  guard — text reaching these functions is arbitrary UTF-8, not ASCII. }
+  These sets only ever mean ASCII, while the text reaching them is arbitrary UTF-8, so
+  the guard states the intent instead of relying on how a given compiler evaluates a set
+  test over a byte above 127. Delphi flags the bare form as W1050; measured on Delphi 13,
+  `Char($0441) in ['A'..'Z']` is False, so that compiler is not actually truncating.
+
+  These guards were added while chasing a Linux-only corpus failure and did NOT fix it:
+  the real cause was a lossy codepage conversion at the host boundary, which turned every
+  Cyrillic character into a literal '?' before the engine saw it — and '?' belongs in the
+  punctuation set legitimately. See tests/delphi/RESULTS.md. Kept because the invariant is
+  real and free to assert; do not read them as evidence that a set test misbehaved. }
 function IsAsciiSentencePunct(c: Char): Boolean;
 begin
   Result := (Ord(c) < 128) and (c in [',', ';', ':', '!', '?', '.']);
