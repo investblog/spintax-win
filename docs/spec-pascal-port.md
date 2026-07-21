@@ -119,12 +119,18 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
 ## 7. Port hazards specific to Object Pascal
 
 1. **`{$mode delphi}` is the contract.** Anything needing `{$mode objfpc}` or FPC-only RTL
-   is a portability break even with a green corpus. The unit must stay Delphi-consumable.
-2. **`string` is a byte string here.** FPC's default `string` is not UTF-16. The corpus is
-   full of Cyrillic and Unicode punctuation, so byte-indexing a multi-byte character is
-   the first bug class to suspect in any new string handling. Existing helpers
-   (`IsAsciiWord`, `LowerAscii`) are ASCII-scoped **on purpose** — widening them to
-   `Char`-wise Unicode would be the classic way to break this.
+   is a portability break even with a green corpus. The directive itself must stay wrapped
+   in `{$IFDEF FPC}` — Delphi rejects `{$MODE}` as an invalid compiler directive.
+2. **`string` is a byte string here — and that is currently load-bearing.** FPC's default
+   `string` is not UTF-16. The corpus is full of Cyrillic and Unicode punctuation, so
+   byte-indexing a multi-byte character is the first bug class to suspect in any new string
+   handling. Existing helpers (`IsAsciiWord`, `LowerAscii`) are ASCII-scoped **on purpose**.
+
+   The structural scan is safe under either width (it branches only on ASCII), but the
+   sentinel and fullwidth-brace literals are hard-coded UTF-8 **bytes** and are correct
+   only while `string` is a byte string. This is the open Delphi blocker — see
+   [decisions/0003](decisions/0003-delphi-compatibility-audit.md). **Delphi consumability
+   is currently an intent, not a fact:** no Delphi compiler has ever seen this unit.
 3. **Warnings must be fatal** (`-Sew -vm4046`) — FPC accepts an uninitialised function
    result or a shadowed variable with a mere warning, and those are what a port produces.
    `-vm4046` masks one warning raised by FPC's own generics RTL and nothing else.

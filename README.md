@@ -3,7 +3,15 @@
 An Object Pascal (Delphi-mode) port of the reference spintax engine, held to the
 same shared golden-fixture corpus as the TypeScript, PHP, and Python
 implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
-`{$mode delphi}` and is intended to be Delphi-consumable as-is.
+`{$mode delphi}`.
+
+**Delphi status: not yet consumable.** The engine is written in Delphi-mode Object
+Pascal, but it has never been compiled by Delphi, and a source audit found a
+concrete blocker: the sentinel and fullwidth-brace literals are hard-coded UTF-8
+*bytes*, which is correct while `string` is a byte string (FPC) and wrong under
+Delphi 2009+, where `string` is UTF-16. See
+[docs/decisions/0003-delphi-compatibility-audit.md](docs/decisions/0003-delphi-compatibility-audit.md).
+Under FPC it is fully supported today.
 
 The engine implements the spintax.net superset: not just flat `{a|b|c}`
 enumerations, but permutations, scoped variables, value-driven conditionals, and

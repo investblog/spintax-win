@@ -29,10 +29,16 @@ The single list of open work. Anything actively being built gets a plan in
       test for them either. This is where the sibling ports' real bugs lived.
 - [ ] **Three unused locals** in `src/Spintax.pas` (FPC notes 5025/5027 at lines ~454,
       ~1059, ~1513). Cosmetic; notes are not gated, only warnings are.
-- [ ] **Delphi has not been tried.** "Delphi-consumable as-is" is a design intent verified
-      only under FPC `{$mode delphi}`. No Delphi compiler has seen this unit.
-- [ ] **DPM packaging unverified.** `Spintax.Core.dspec` has never been built or installed
-      by DPM.
+- [ ] **Delphi blocker: UTF-8 byte literals under a UTF-16 `string`.** Sentinels
+      (`Spintax.pas:268,297,319`) and fullwidth braces (`:901–902`) are hard-coded UTF-8
+      bytes. Correct under FPC, wrong under Delphi 2009+ — and it would break the mandatory
+      safety restore silently. Audited in
+      [decisions/0003](decisions/0003-delphi-compatibility-audit.md); deliberately **not**
+      fixed blind, because no Delphi here can prove the fix. Needs Delphi CE locally (GitHub
+      Actions has no free Delphi runner), or drop the Delphi claim.
+- [ ] **DPM packaging unverified.** The spec's shape matches DPM's definitive docs and its
+      JSON content parses (the reader is YAML-only, but `VSoft.YAML` reads JSON). Whether
+      the package actually *builds* is untested — that needs DPM, which needs Delphi.
 
 ## Done
 

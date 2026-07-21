@@ -15,7 +15,7 @@
  *)
 unit Spintax;
 
-{$mode delphi}{$H+}
+{$IFDEF FPC}{$MODE DELPHI}{$H+}{$ENDIF}
 
 interface
 

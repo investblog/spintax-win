@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/DelphiPackageManager/DPM/master/schemas/dspec.schema.json",
+  "$schema": "https://raw.githubusercontent.com/DelphiPackageManager/DPM/master/Schema/dspec-yaml-schema.json",
   "metadata": {
     "id": "Spintax.Core",
     "version": "0.1.0",
