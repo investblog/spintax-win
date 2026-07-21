@@ -49,6 +49,10 @@ backup/
 __history/
 __recovery/
 
+# fpc drops its link script beside the sources; -Cn (the warnings gate) leaves one behind
+ppas.bat
+ppas.sh
+
 # built binaries (fpc -o targets; Windows adds .exe)
 tests/corpus_runner
 tests/corpus_runner.exe
