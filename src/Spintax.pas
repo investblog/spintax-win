@@ -502,10 +502,59 @@ begin
 end;
 
 { Extract global #set/#def, strip their lines, collapse blank runs. }
+{ ─── line terminators ────────────────────────────────────────────────────────
+  The reference scans directives with /^…$/gmu, and JavaScript's multiline anchors
+  break on FOUR terminators: LF, CR, U+2028 and U+2029 — not LF alone. Splitting on
+  #10 only made `#set %x% = A` + CR + `%x%` render as nothing and validate as invalid,
+  where the reference renders CR + 'A' and calls it valid. Same for U+2028/U+2029.
+
+  Plain CRLF was never affected, which is why it went unnoticed: the CR was stripped
+  as trailing whitespace before the directive was matched.
+
+  One helper rather than a fix in each of the eight scanning loops — they were
+  identical, and identical loops drift apart when patched one at a time. }
+
+{ Length of the line terminator starting at text[i], or 0 if none starts there. }
+function LineBreakLen(const text: string; i: Integer): Integer;
+begin
+  Result := 0;
+  if (i < 1) or (i > Length(text)) then Exit;
+  if text[i] = #13 then
+  begin
+    if (i < Length(text)) and (text[i + 1] = #10) then Result := 2 else Result := 1;
+    Exit;
+  end;
+  if text[i] = #10 then Exit(1);
+  {$IFDEF UNICODE}
+  if (Ord(text[i]) = $2028) or (Ord(text[i]) = $2029) then Result := 1;
+  {$ELSE}
+  { U+2028 / U+2029 are E2 80 A8 / E2 80 A9 in UTF-8. }
+  if (i + 2 <= Length(text)) and (text[i] = #$E2) and (text[i + 1] = #$80)
+     and ((text[i + 2] = #$A8) or (text[i + 2] = #$A9)) then Result := 3;
+  {$ENDIF}
+end;
+
+{ Index of the next terminator at or after From, or Length(text)+1 when the text ends
+  first. TermLen is its size in code units, 0 at end of text. }
+function NextLineBreak(const text: string; from: Integer; out termLen: Integer): Integer;
+var i, n: Integer;
+begin
+  n := Length(text);
+  i := from;
+  while i <= n do
+  begin
+    termLen := LineBreakLen(text, i);
+    if termLen > 0 then Exit(i);
+    Inc(i);
+  end;
+  termLen := 0;
+  Result := n + 1;
+end;
+
 procedure ExtractDirectives(const text: string; setDefs, defDefs: TStrMap; out body: string);
 var
-  kind, nm, val, kept, line, testLine: string;
-  lineStart, n, e: Integer;
+  kind, nm, val, kept, line: string;
+  lineStart, n, e, termLen: Integer;
 begin
   // Mirror the reference regex: only the directive TEXT is removed, the newline
   // that separated its line stays. So a directive line becomes an empty segment;
@@ -513,17 +562,11 @@ begin
   kept := '';
   lineStart := 1;
   n := Length(text);
-  e := 1; // silence hint
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    testLine := line;
-    if (Length(testLine) > 0) and (testLine[Length(testLine)] = #13) then
-      testLine := Copy(testLine, 1, Length(testLine) - 1);
-    if lineStart > 1 then kept := kept + #10; // separator before every line but the first
-    if TryParseDirective(testLine, kind, nm, val) then
+    if TryParseDirective(line, kind, nm, val) then
     begin
       if kind = 'def' then defDefs.AddOrSetValue(nm, val)
       else setDefs.AddOrSetValue(nm, val);
@@ -531,8 +574,11 @@ begin
     end
     else
       kept := kept + line;
+    // Keep the terminator that was actually there. Emitting #10 for every line would
+    // turn a bare CR into LF; the reference preserves the character it broke on.
+    if termLen > 0 then kept := kept + Copy(text, e, termLen);
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
   body := CollapseNewlines3(kept);
 end;
@@ -1361,25 +1407,23 @@ end;
 { ─── extract ─────────────────────────────────────────────────────────────── }
 
 procedure CollectDirectiveNames(const text, directive: string; target: TStringList);
-var lineStart, e, n: Integer; line, kind, nm, val: string;
+var lineStart, e, n, termLen: Integer; line, kind, nm, val: string;
 begin
   n := Length(text); lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
     if TryParseDirective(line, kind, nm, val) and (kind = directive) then
       if target.IndexOf(nm) < 0 then target.Add(nm);
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
 end;
 
 function SpExtract(const Src: string): TExtractResult;
-var text, body, line, testLine, kind, nm, val, ref: string;
-    i, j, p, q, r, lineStart, e, n: Integer;
+var text, body, line, kind, nm, val, ref: string;
+    i, j, p, q, r, lineStart, e, n, termLen: Integer;
 begin
   text := StripComments(Src);
   Result.Refs := TStringList.Create;
@@ -1394,10 +1438,8 @@ begin
   n := Length(text); lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
     p := 1;
     while (p <= Length(line)) and (CharInSet(line[p], [' ', #9])) do Inc(p);
     if Copy(line, p, 8) = '#include' then
@@ -1414,7 +1456,7 @@ begin
       end;
     end;
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
 
   // body: drop #set/#def LHS, then collect %var% and {?name? refs (lower-cased)
@@ -1422,18 +1464,15 @@ begin
   lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    testLine := line;
-    if (Length(testLine) > 0) and (testLine[Length(testLine)] = #13) then testLine := Copy(testLine, 1, Length(testLine) - 1);
-    if TryParseDirective(testLine, kind, nm, val) then
+    if TryParseDirective(line, kind, nm, val) then
       body := body + '=' + val   // keep value, drop LHS (leading '=' harmless for %var% scan)
     else
       body := body + line;
     body := body + #10;
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
 
   DirectReferences(body, Result.Refs);
@@ -1487,21 +1526,19 @@ end;
 
 { Collect well-formed #set/#def occurrences in source order (parallel lists). }
 procedure CollectOccurrences(const text: string; kinds, names, values: TStringList);
-var lineStart, e, n: Integer; line, kind, nm, val: string;
+var lineStart, e, n, termLen: Integer; line, kind, nm, val: string;
 begin
   n := Length(text); lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
     if TryParseDirective(line, kind, nm, val) then
     begin
       kinds.Add(kind); names.Add(nm); values.Add(val);
     end;
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
 end;
 
@@ -1591,7 +1628,7 @@ begin
 end;
 
 procedure CheckDirectivesV(const text: string; res: TSpDiagList);
-var lineStart, e, n, i, seenIdx, p: Integer;
+var lineStart, e, n, i, seenIdx, p, termLen: Integer;
     line, t, kind, nm, val: string;
     isSet, isDef: Boolean;
     kinds, names, values, seen: TStringList;
@@ -1600,10 +1637,8 @@ begin
   n := Length(text); lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := lineStart;
-    while (e <= n) and (text[e] <> #10) do Inc(e);
+    e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
     t := PhpLtrim(line);
     isSet := SpStartsWith(t, '#set ') or SpStartsWith(t, '#set'#9);
     isDef := SpStartsWith(t, '#def ') or SpStartsWith(t, '#def'#9);
@@ -1613,7 +1648,7 @@ begin
       else AddDiag(res, 'set.malformed', 'error');
     end;
     if e > n then Break;
-    lineStart := e + 1;
+    lineStart := e + termLen;
   end;
 
   // duplicate names + #include in a #def value
@@ -1834,7 +1869,7 @@ end;
 
 function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
 var text, body, line, kind, nm, val, ref: string;
-    lineStart, e, n, p, q, r, i, j: Integer;
+    lineStart, e, n, p, q, r, i, j, termLen: Integer;
     kinds, defNames, defValues, seenUndef: TStringList;
 begin
   Result := TSpDiagList.Create;
@@ -1852,10 +1887,8 @@ begin
     n := Length(text); lineStart := 1;
     while lineStart <= n + 1 do
     begin
-      e := lineStart;
-      while (e <= n) and (text[e] <> #10) do Inc(e);
+      e := NextLineBreak(text, lineStart, termLen);
       line := Copy(text, lineStart, e - lineStart);
-      if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
       p := 1;
       while (p <= Length(line)) and (CharInSet(line[p], [' ', #9])) do Inc(p);
       if Copy(line, p, 8) = '#include' then
@@ -1872,7 +1905,7 @@ begin
         end;
       end;
       if e > n then Break;
-      lineStart := e + 1;
+      lineStart := e + termLen;
     end;
   end;
 
@@ -1886,14 +1919,12 @@ begin
     n := Length(text); lineStart := 1;
     while lineStart <= n + 1 do
     begin
-      e := lineStart;
-      while (e <= n) and (text[e] <> #10) do Inc(e);
+      e := NextLineBreak(text, lineStart, termLen);
       line := Copy(text, lineStart, e - lineStart);
-      if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
       if not TryParseDirective(line, kind, nm, val) then body := body + line;
       body := body + #10;
       if e > n then Break;
-      lineStart := e + 1;
+      lineStart := e + termLen;
     end;
     // %var% refs
     i := 1;

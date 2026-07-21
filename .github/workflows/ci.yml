@@ -81,6 +81,13 @@ jobs:
           SPINTAX_HEX: '1'
         run: ./tests/check-corpus.sh
 
+      # The corpus schema has no field for line terminators, a nil RNG, #include
+      # resolution or permutation <config>. Those surfaces are where this port's real
+      # bugs lived, so they get assertions of their own.
+      - name: Local tests (surfaces no fixture can cover)
+        shell: bash
+        run: ./tests/local_tests
+
   # The shell scripts are part of the build contract (build.sh drives every consumer's
   # first five minutes with this repo), so they are gated like source, not trusted.
   shellcheck:

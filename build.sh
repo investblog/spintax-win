@@ -10,5 +10,6 @@ set -e
 rm -rf lib
 mkdir -p lib
 fpc -Mdelphi -Fusrc -Futests -FUlib -O2 tests/corpus_runner.dpr -otests/corpus_runner
+fpc -Mdelphi -Fusrc -Futests -FUlib -O2 tests/local_tests.dpr -otests/local_tests
 fpc -Mdelphi -Fusrc -FUlib -O2 examples/demo.lpr -oexamples/demo
-echo "built: tests/corpus_runner, examples/demo"
+echo "built: tests/corpus_runner, tests/local_tests, examples/demo"
