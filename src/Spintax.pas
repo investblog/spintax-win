@@ -1128,13 +1128,121 @@ begin
   Result := Trim(s);
 end;
 
+{ ─── #def ordering ───────────────────────────────────────────────────────────
+  Definitions must be rolled dependencies-first. Iterating the TDictionary instead
+  made the order depend on the hash layout: it happened to work under FPC and
+  failed under Delphi (def/dependency-through-a-set-alias — the dependent froze
+  with its dependency unexpanded and the plural block vanished). Ported from the
+  reference's orderDefinitions/referencedNames.
+
+  The order must follow ALIASES: a #def can reach another #def through a #set,
+  which is expanded at reference time and so is invisible in the first
+  definition's own text. }
+
+{ Every name a value reaches, hopping through alias values to a fixpoint.
+  Uses the DirectReferences helper already defined above — it de-duplicates on
+  insert, which is exactly the queue behaviour this BFS wants. }
+function ReferencedNames(const value: string; aliases: TStrMap): TStringList;
+var queue: TStringList; nm, alias: string; head: Integer;
+begin
+  Result := TStringList.Create;
+  Result.Sorted := False;
+  queue := TStringList.Create;
+  try
+    DirectReferences(value, queue);
+    head := 0;
+    while head < queue.Count do
+    begin
+      nm := queue[head]; Inc(head);
+      if Result.IndexOf(nm) >= 0 then Continue;
+      Result.Add(nm);
+      if aliases.TryGetValue(nm, alias) then DirectReferences(alias, queue);
+    end;
+  finally
+    queue.Free;
+  end;
+end;
+
+{ Definition names, dependencies first. A cycle cannot be ordered, so its members
+  come last — in whatever order remains, exactly as the reference does. }
+function OrderDefinitions(defDefs, aliases: TStrMap): TStringList;
+var
+  names, pending, ordered, ready, reached: TStringList;
+  pair: TPair<string, string>;
+  i, j: Integer;
+  blocked: TObjectDictionary<string, TStringList>;
+  deps: TStringList;
+  isReady: Boolean;
+begin
+  names := TStringList.Create;
+  ordered := TStringList.Create;
+  pending := TStringList.Create;
+  blocked := TObjectDictionary<string, TStringList>.Create([doOwnsValues]);
+  try
+    for pair in defDefs do names.Add(pair.Key);
+
+    // deps(name) = the definition names this value can reach, through aliases
+    for i := 0 to names.Count - 1 do
+    begin
+      reached := ReferencedNames(defDefs[names[i]], aliases);
+      try
+        deps := TStringList.Create;
+        for j := 0 to names.Count - 1 do
+          if reached.IndexOf(names[j]) >= 0 then deps.Add(names[j]);
+        blocked.AddOrSetValue(names[i], deps);
+      finally
+        reached.Free;
+      end;
+    end;
+
+    pending.Assign(names);
+    while pending.Count > 0 do
+    begin
+      ready := TStringList.Create;
+      try
+        for i := 0 to pending.Count - 1 do
+        begin
+          isReady := True;
+          if blocked.TryGetValue(pending[i], deps) then
+            for j := 0 to deps.Count - 1 do
+              if (deps[j] <> pending[i]) and (pending.IndexOf(deps[j]) >= 0) then
+                begin isReady := False; Break; end;
+          if isReady then ready.Add(pending[i]);
+        end;
+
+        // no progress => a cycle; emit the rest as-is rather than looping forever
+        if ready.Count = 0 then
+        begin
+          for i := 0 to pending.Count - 1 do ordered.Add(pending[i]);
+          Break;
+        end;
+
+        for i := 0 to ready.Count - 1 do
+        begin
+          ordered.Add(ready[i]);
+          j := pending.IndexOf(ready[i]);
+          if j >= 0 then pending.Delete(j);
+        end;
+      finally
+        ready.Free;
+      end;
+    end;
+
+    Result := TStringList.Create;
+    Result.Assign(ordered);
+  finally
+    names.Free; ordered.Free; pending.Free; blocked.Free;
+  end;
+end;
+
 function SpRender(const Template: string; const Ctx: TSpContext): string;
-var setDefs, defDefs, vars: TStrMap;
+var setDefs, defDefs, vars, aliases: TStrMap;
     body, outp: string;
     nodes, dn: TNodeList;
     opts: TRenderOpts;
     pair: TPair<string, string>;
-    outranked: TStringList;
+    outranked, defOrder: TStringList;
+    oi: Integer;
 begin
   setDefs := TStrMap.Create;
   defDefs := TStrMap.Create;
@@ -1157,19 +1265,41 @@ begin
     opts.Depth := 0;
     opts.Rng := Ctx.Rng;
 
-    // roll each #def once; a runtime var of the same name outranks it (never rolled).
-    // (Full dependency ordering is simplified; single-level cases pass.)
+    // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
+    // outranks it (never rolled). The order must not come from hash enumeration —
+    // see OrderDefinitions above.
     if defDefs.Count > 0 then
-      for pair in defDefs do
-      begin
-        if outranked.IndexOf(pair.Key) >= 0 then Continue;
-        dn := ParseSequence(pair.Value);
+    begin
+      // Aliases = every macro value a definition can see, minus the definitions
+      // that will actually be rolled: a #def shadows a same-named #set, and hopping
+      // through the shadowed value computes the wrong graph. One the runtime
+      // outranks stays, because it is never rolled and its value is what really
+      // gets substituted.
+      aliases := TStrMap.Create;
+      try
+        for pair in vars do
+          if not (defDefs.ContainsKey(pair.Key) and (outranked.IndexOf(pair.Key) < 0)) then
+            aliases.AddOrSetValue(pair.Key, pair.Value);
+
+        defOrder := OrderDefinitions(defDefs, aliases);
         try
-          vars.AddOrSetValue(pair.Key, RenderNodes(dn, opts));
+          for oi := 0 to defOrder.Count - 1 do
+          begin
+            if outranked.IndexOf(defOrder[oi]) >= 0 then Continue;
+            dn := ParseSequence(defDefs[defOrder[oi]]);
+            try
+              vars.AddOrSetValue(defOrder[oi], RenderNodes(dn, opts));
+            finally
+              dn.Free;
+            end;
+          end;
         finally
-          dn.Free;
+          defOrder.Free;
         end;
+      finally
+        aliases.Free;
       end;
+    end;
 
     nodes := ParseSequence(body);
     try
