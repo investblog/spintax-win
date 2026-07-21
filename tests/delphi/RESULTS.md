@@ -172,6 +172,12 @@ rather than by reading.**
 Both are `{$IFDEF UNICODE}`-identical for this unit, so the package declares the 12.0–13.0
 range; only 13 has run the corpus.
 
+> **STALE — re-run needed.** Runs 4 and 5 below measured the tree at commit `4c5198c`.
+> Nine commits have touched `src/`, `tests/` and `examples/` since, including the
+> `CharInSet` sweep across 28 parser sites. FPC and CI still report `143/21/4`, but
+> nothing has re-measured Delphi. Rebuild `tests/corpus_runner.dpr` (Shift+F9) before
+> quoting the parity claim anywhere.
+
 ## Run 5 — three environments agree (CI, 2026-07-21)
 
 CI green on all jobs: `corpus (ubuntu-latest)`, `corpus (windows-latest)`, `shellcheck`.

@@ -12,41 +12,40 @@ The single list of open work. Anything actively being built gets a plan in
 
 ## Open
 
-- [ ] **The engine's UTF-8 contract is undocumented for hosts.** An FPC host must set
-      `DefaultSystemCodePage := CP_UTF8` or non-ASCII text is silently mangled before the
-      engine sees it — that cost a green-looking Linux build until the bytes were dumped.
-      The runner does it; README/spec should state it as part of the public contract, and
-      `examples/demo.lpr` should do it too.
-- [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
-      listed in `../tests/known-failures.txt`. Scope decision, not a defect:
-      [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
-      needs URL/email shielding or Spanish openers.
+- [ ] **[BLOCKING A RELEASE] The Delphi parity measurement is stale.** The last full run
+      is 2026-07-21 (`143/21/4`, failing set identical to FPC), and **nine commits have
+      touched `src/`, `tests/` and `examples/` since** — including a 28-site sweep through
+      the parser (`CharInSet`), the host codepage declaration, and dead-local removal. FPC
+      and CI cover Windows and Linux; **nothing covers Delphi but a human pressing
+      Shift+F9** on `tests/corpus_runner.dpr`. Until that is re-run, README and
+      `spec-pascal-port.md` describe an engine state that no longer exists.
+- [ ] **Delphi parity is measured but not defended.** No licence available here grants
+      `dcc32` — Starter never had it, and trials exclude the command-line compilers by
+      design ([Embarcadero](https://support.embarcadero.com/article/44692)) — so the Delphi
+      run cannot be gated by a hook or by CI. Architect trial expires ~2026-08-21.
+      **Decide:** buy Professional+ and gate it, or accept a dated manual check and treat
+      every string-width-sensitive edit as requiring a re-run.
 - [ ] **Ungated surfaces have no local tests.** `#include`, permutation `<config>`, plural
       lenient fallbacks — no fixture can cover them (spec §8) and this port has no local
-      test for them either. This is where the sibling ports' real bugs lived.
-- [ ] **Three unused locals** in `src/Spintax.pas` (FPC notes 5025/5027 at lines ~454,
-      ~1059, ~1513). Cosmetic; notes are not gated, only warnings are.
-- [ ] **Delphi parity is measured but not defended.** No licence here grants `dcc32`
-      (Starter never had it; trials exclude it by design), so the Delphi run cannot be
-      gated. Any change to a `{$IFDEF UNICODE}` branch, to `#def` ordering, or to anything
-      string-width-sensitive needs a manual Shift+F9 on `tests/corpus_runner.dpr` — a green
-      FPC corpus does not cover it. Architect trial expires ~2026-08-21. Decide: buy
-      Professional+ for a real gate, or keep a dated manual check.
-- [ ] **Re-measure Delphi before any release.** The last full run is 2026-07-21
-      (`143/21/4`, failing set identical to FPC). Treat it as stale after engine changes.
-- [ ] **Nothing guards the Delphi fix.** The licence is Starter — no `dcc32` from the
-      command line, so no hook and no CI can re-check it; each verification is a human
-      pressing Shift+F9. Decide: a licence with the command-line compiler (Professional or a
-      trial) and a real gate, or a dated manual check where any edit to an
-      `{$IFDEF UNICODE}` branch requires a re-run.
-- [ ] **Silence `W1050`** (`WideChar reduced to byte char in set expressions`, 31 warnings)
-      with `CharInSet`. Cosmetic only — measured **not** to be a correctness defect
-      ([RESULTS.md](../tests/delphi/RESULTS.md)); do not "fix" the 28 sites expecting a bug.
+      test for them either. This is where the sibling ports' real bugs lived, and where
+      this port's `#def` ordering bug lived too.
+- [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
+      listed in `../tests/known-failures.txt`. A scope decision, not a defect:
+      [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
+      needs URL/email shielding or Spanish sentence openers.
 - [ ] **DPM packaging unverified.** The spec's shape matches DPM's definitive docs and its
       JSON content parses (the reader is YAML-only, but `VSoft.YAML` reads JSON). Whether
-      the package actually *builds* is untested. DPM itself now has a Delphi to run on.
+      the package actually *builds* is untested. DPM now has a Delphi to run on.
+- [ ] **Repository is private.** Publishing is a decision, not a step.
 
 ## Done
 
-- [x] Project bootstrapped from the drafts; `.agents/` chain, hooks, CI and docs in place
-      (2026-07-21).
+- [x] Bootstrapped from the drafts; `.agents/` chain, hooks, CI and docs (2026-07-21).
+- [x] Published to `investblog/spintax-win`; CI green on ubuntu, windows and shellcheck.
+- [x] Delphi compatibility: sentinel encoding, `#def` dependency ordering, `{$IFDEF FPC}`
+      around the mode directive. See [decisions/0003](decisions/0003-delphi-compatibility-audit.md).
+- [x] Host UTF-8 contract documented in README; runner and demo declare it.
+- [x] `W1050` eliminated in source via `CharInSet` (30 → 0 expected; **Delphi count not yet
+      re-confirmed** — folded into the stale-measurement item above). FPC `4046` stays
+      suppressed: measured to originate in FPC's own RTL, not in this code.
+- [x] Dead locals removed (`hadTrailingNL`, `ch`, `f`).
