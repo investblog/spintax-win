@@ -21,7 +21,9 @@ interface
 
 uses
   SysUtils, Classes,
-  {$IFDEF FPC} fpjson, jsonparser {$ELSE} System.JSON {$ENDIF};
+  { System.Generics.Collections is listed for Delphi only so its inline accessors in
+    System.JSON can actually be expanded — without it dcc32 emits H2443 for every one. }
+  {$IFDEF FPC} fpjson, jsonparser {$ELSE} System.Generics.Collections, System.JSON {$ENDIF};
 
 type
   {$IFDEF FPC}

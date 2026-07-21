@@ -175,9 +175,9 @@ var a, b: Integer;
 begin
   a := 1; b := Length(s);
   if left then
-    while (a <= b) and (s[a] in PHP_WS) do Inc(a);
+    while (a <= b) and CharInSet(s[a], PHP_WS) do Inc(a);
   if right then
-    while (b >= a) and (s[b] in PHP_WS) do Dec(b);
+    while (b >= a) and CharInSet(s[b], PHP_WS) do Dec(b);
   Result := Copy(s, a, b - a + 1);
 end;
 
@@ -505,14 +505,12 @@ end;
 procedure ExtractDirectives(const text: string; setDefs, defDefs: TStrMap; out body: string);
 var
   kind, nm, val, kept, line, testLine: string;
-  hadTrailingNL: Boolean;
   lineStart, n, e: Integer;
 begin
   // Mirror the reference regex: only the directive TEXT is removed, the newline
   // that separated its line stays. So a directive line becomes an empty segment;
   // segments are re-joined with #10 and then \n{3,} collapses to \n\n.
   kept := '';
-  hadTrailingNL := False; // (kept for signature parity; not needed with join model)
   lineStart := 1;
   n := Length(text);
   e := 1; // silence hint
@@ -1118,7 +1116,7 @@ end;
 { ─── public render pipeline ──────────────────────────────────────────────── }
 
 function MinimalPostProcess(const input: string): string;
-var s, res: string; i: Integer; ch: Char;
+var s, res: string; i: Integer;
 begin
   s := input;
   // collapse runs of space/tab to single space
@@ -1702,7 +1700,7 @@ end;
 procedure CheckPluralsV(const text, locale: string; res: TSpDiagList);
 var base: string; arity, i, k, cnt, m: Integer;
     counts, forms, tainted, kinds, names, values, refs: TStringList;
-    hasBracket: Boolean; f: string;
+    hasBracket: Boolean;
 begin
   base := '';
   if locale <> '' then base := NormalizeBaseLang(locale);
