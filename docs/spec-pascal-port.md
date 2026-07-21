@@ -73,6 +73,10 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 cosmetic stage, and nowhere else. The full deterministic semantic gate and the static
 validator pass.
 
+**Delphi 13 Florence produces the identical result** — same totals, and the failing set
+matches case for case (verified 2026-07-21, `tests/delphi/RESULTS.md`). The runner is one
+source for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
+
 The 21 are enumerated in [`tests/known-failures.txt`](../tests/known-failures.txt) and
 gated: a new failure anywhere blocks a push, and a case that starts passing also blocks
 until its line is deleted, so an improvement is recorded rather than absorbed.

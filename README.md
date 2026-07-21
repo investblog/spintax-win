@@ -5,16 +5,20 @@ same shared golden-fixture corpus as the TypeScript, PHP, and Python
 implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
 `{$mode delphi}`.
 
-**Delphi status: compiles, sentinel encoding verified, corpus not yet run.**
-Built with Delphi 12 Athens (`dcc32`, Win32) — 0 errors. Sentinels and fullwidth
-braces are encoded per the compiler's string width, so the neutralize contract
-holds on both a byte string (FPC) and UTF-16 (Delphi); this was measured, not
-assumed, and the measurements are in
-[tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
+**Delphi status: at parity, measured.** The same golden corpus runs under Delphi
+13 Florence and Free Pascal 3.2.2 with identical results — `PASS=143 FAIL=21
+SKIP=4`, and the failing sets match case for case, not merely in total. Verified
+2026-07-21; the measurements are in [tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
 
-What is *not* yet claimed: parity under Delphi. The conformance runner depends on
-`fpjson`, so the golden corpus has only ever run under FPC. See
+Two defects had to be fixed to get there, and **neither was findable under FPC
+alone**: the sentinel literals were UTF-8 bytes that a UTF-16 `string` decoded
+through the machine's ANSI codepage, and `#def` values were rolled in hash-map
+order, which FPC happened to get right. See
 [docs/decisions/0003](docs/decisions/0003-delphi-compatibility-audit.md).
+
+Caveat worth knowing before you rely on it: Delphi's command-line compiler is not
+available under this project's licences, so the Delphi run is manual and **cannot
+be gated in CI**. FPC is gated on every push; Delphi is a dated manual check.
 
 The engine implements the spintax.net superset: not just flat `{a|b|c}`
 enumerations, but permutations, scoped variables, value-driven conditionals, and

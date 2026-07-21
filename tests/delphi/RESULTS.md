@@ -143,14 +143,44 @@ change, would flip it. Ordering must not depend on hash-map enumeration.
 
 This is a REQUIRED-parity surface (directive semantics), not an allowed divergence.
 
-## What is still NOT proven under Delphi
+## Run 4 — parity reached (2026-07-21)
 
-The probe covers the sentinel contract, one round-trip and a smoke render. **The
-golden corpus has never run under Delphi** — `tests/corpus_runner.lpr` depends on
-`fpjson`/`jsonparser`, which Delphi does not have, so porting it means rewriting
-the JSON layer against `System.JSON`.
+After rolling `#def` values in dependency order. Delphi 13, Win32/Debug, 2407 lines,
+0 errors.
 
-So the supportable claim today is: *the engine compiles under Delphi 12 with 0
-errors, and its sentinel encoding is correct there*. Not: *it is at parity under
-Delphi*. Nothing has measured the other 1987 lines on that compiler.
+| | FPC 3.2.2 | Delphi 13 |
+|---|---|---|
+| PASS | 143 | **143** |
+| FAIL | 21 | **21** |
+| SKIP | 4 | **4** |
+
+Not just equal totals — the failing sets were compared **case by case** against
+`tests/known-failures.txt` and are identical. Both compilers fail exactly the 21 known
+post-process cases and nothing else.
+
+**This is the first claim about Delphi in this repository backed by all 168 fixtures
+rather than by reading.**
+
+### What each compiler has actually measured
+
+| | Delphi 12 Athens | Delphi 13 Florence |
+|---|---|---|
+| engine compiles | yes, 0 errors | yes, 0 errors |
+| sentinel probe | yes (runs 1–2) | — |
+| full golden corpus | no | **yes (run 4)** |
+
+Both are `{$IFDEF UNICODE}`-identical for this unit, so the package declares the 12.0–13.0
+range; only 13 has run the corpus.
+
+## What is still NOT guarded
+
+Parity is **measured**, not **defended**. Neither licence on this machine grants the
+command-line compiler — Starter never had it, and per Embarcadero's own support article
+*"trial licenses don't include the final command line compilers"* — so no hook and no CI
+can re-run this. Every Delphi check is a human pressing Shift+F9, and the Architect trial
+expires ~2026-08-21.
+
+Practical consequence: **any edit to a `{$IFDEF UNICODE}` branch, to `#def` ordering, or to
+anything touching string width is unverified until someone rebuilds this by hand.** A green
+FPC corpus does not cover it — that is precisely how the `#def` ordering bug survived.
 

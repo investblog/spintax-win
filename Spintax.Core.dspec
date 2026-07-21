@@ -14,7 +14,8 @@
   },
   "targetPlatforms": [
     {
-      "compiler": "12.0",
+      "compiler from": "12.0",
+      "compiler to": "13.0",
       "platforms": "Win32, Win64, Linux64",
       "template": "default"
     }
