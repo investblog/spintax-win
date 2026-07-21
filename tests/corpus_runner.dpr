@@ -1,4 +1,4 @@
-{**
+﻿{**
  * Conformance runner — loads the shared golden-corpus JSON fixtures and runs each
  * case against the Object Pascal port, asserting the deterministic gate (render,
  * neutralize, extract, validate). kind:rng render cases are reported as SKIP: they

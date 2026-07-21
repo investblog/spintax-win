@@ -103,6 +103,46 @@ exit code = 0
 
 FPC is unchanged across the same fix: `PASS=143 FAIL=21 SKIP=4`.
 
+## Run 3 — the full golden corpus under Delphi
+
+After porting the runner to `SpxJson` (one source, both compilers). Built in the IDE,
+Win32/Debug, 2277 lines, **0 errors**, 30 warnings (the `W1050` noise), 9 hints.
+
+| | FPC 3.2.2 | Delphi 13 |
+|---|---|---|
+| PASS | 143 | **142** |
+| FAIL | 21 | **22** |
+| SKIP | 4 | 4 |
+
+The 21 shared failures are the known post-process remainder. The 22nd is new, and it is
+in `render-semantics.json` — a file that is 59/59 under FPC.
+
+### The divergence: `def/dependency-through-a-set-alias`
+
+```
+want = \n\n1 item      (U+000A U+000A U+0031 U+0020 U+0069 U+0074 U+0065 U+006D)
+got  = \n\n1           (U+000A U+000A U+0031 U+0020)
+```
+
+The plural block vanished while the count rendered.
+
+**Cause — and it is not a Delphi bug.** `SpRender` rolls `#def` values by iterating a
+`TDictionary` (`Spintax.pas:1163`), whose enumeration order is implementation-defined.
+FPC's hash layout happens to reach `%a%` before `%b%`; Delphi's does not. The code says so
+itself one line above: *"Full dependency ordering is simplified; single-level cases pass."*
+
+The fixture is built precisely to catch this. `%b%` does not mention `%a%` anywhere in its
+own text — it reaches it through the `#set` macro `%s%`, which is expanded at reference
+time — and the declaration order is deliberately reversed. When `%b%` is rolled first it
+freezes with `%a%` unexpanded, the plural count is no longer numeric, and the block
+disappears. The fixture's own note describes exactly this failure.
+
+**So the bug is present on both compilers; FPC merely gets lucky.** A green corpus under
+FPC is not evidence of correct `#def` ordering — a different key set, or a future FPC hash
+change, would flip it. Ordering must not depend on hash-map enumeration.
+
+This is a REQUIRED-parity surface (directive semantics), not an allowed divergence.
+
 ## What is still NOT proven under Delphi
 
 The probe covers the sentinel contract, one round-trip and a smoke render. **The
