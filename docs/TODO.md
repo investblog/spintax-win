@@ -29,16 +29,21 @@ The single list of open work. Anything actively being built gets a plan in
       test for them either. This is where the sibling ports' real bugs lived.
 - [ ] **Three unused locals** in `src/Spintax.pas` (FPC notes 5025/5027 at lines ~454,
       ~1059, ~1513). Cosmetic; notes are not gated, only warnings are.
-- [ ] **Delphi blocker: UTF-8 byte literals under a UTF-16 `string`.** Sentinels
-      (`Spintax.pas:268,297,319`) and fullwidth braces (`:901–902`) are hard-coded UTF-8
-      bytes. Correct under FPC, wrong under Delphi 2009+ — and it would break the mandatory
-      safety restore silently. Audited in
-      [decisions/0003](decisions/0003-delphi-compatibility-audit.md); deliberately **not**
-      fixed blind, because no Delphi here can prove the fix. Needs Delphi CE locally (GitHub
-      Actions has no free Delphi runner), or drop the Delphi claim.
+- [ ] **The golden corpus has never run under Delphi.** `tests/corpus_runner.lpr` depends on
+      `fpjson`/`jsonparser`; a Delphi run means rewriting its JSON layer against
+      `System.JSON`. Until then "compiles under Delphi 12 + sentinel encoding verified" is
+      the supportable claim, not parity. This is the largest remaining Delphi unknown.
+- [ ] **Nothing guards the Delphi fix.** The licence is Starter — no `dcc32` from the
+      command line, so no hook and no CI can re-check it; each verification is a human
+      pressing Shift+F9. Decide: a licence with the command-line compiler (Professional or a
+      trial) and a real gate, or a dated manual check where any edit to an
+      `{$IFDEF UNICODE}` branch requires a re-run.
+- [ ] **Silence `W1050`** (`WideChar reduced to byte char in set expressions`, 31 warnings)
+      with `CharInSet`. Cosmetic only — measured **not** to be a correctness defect
+      ([RESULTS.md](../tests/delphi/RESULTS.md)); do not "fix" the 28 sites expecting a bug.
 - [ ] **DPM packaging unverified.** The spec's shape matches DPM's definitive docs and its
       JSON content parses (the reader is YAML-only, but `VSoft.YAML` reads JSON). Whether
-      the package actually *builds* is untested — that needs DPM, which needs Delphi.
+      the package actually *builds* is untested. DPM itself now has a Delphi to run on.
 
 ## Done
 

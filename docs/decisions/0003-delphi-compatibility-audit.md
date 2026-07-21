@@ -67,22 +67,67 @@ whose values are identical in UTF-8 bytes and UTF-16 code units, and non-ASCII n
 collides with them. The unit header already argues this correctly; it just does not cover
 the two byte-literal sites above.
 
-## Decision
+## Decision (superseded — see the update below)
 
 Fix Finding 1 (verifiable under FPC). **Do not** write the `{$IFDEF UNICODE}` branches for
-Finding 2 yet.
+Finding 2 yet — the fix is easy to guess at and was impossible to prove without a Delphi
+compiler, and it sits on the path that guards untrusted input.
 
-The fix is easy to guess at and impossible to prove here: it changes what the engine emits,
-on a compiler that cannot run a single fixture on this machine. Shipping an untested
-conditional branch through the one path that guards untrusted input would trade a *known*
-limitation for an *unknown* one, and `proof-loop` does not accept "it looks right" as
-evidence. It stays documented and open.
+---
 
-## What actually unblocks it
+## UPDATE, same day — Delphi 12 arrived, and the audit was 1 for 3
 
-A Delphi compiler. GitHub Actions has no free Delphi runner, so CI cannot cover this.
-Either install Delphi CE locally and run `tests/corpus_runner` built by `dcc32`, or accept
-FPC-only support and drop the Delphi claim from the package metadata.
+RAD Studio 12 was installed (Starter edition: the IDE works, `dcc32`/`dcc64` refuse
+command-line use). `tests/delphi/sentinel_probe.dpr` was built by hand in the IDE and run.
+Full measurements: [tests/delphi/RESULTS.md](../../tests/delphi/RESULTS.md).
+
+**The engine compiles under Delphi 12 with 0 errors.** That was the biggest unknown and it
+is now closed.
+
+Scorecard for the static audit above:
+
+| audit claim | measured |
+|---|---|
+| Finding 1 — `{$MODE}` rejected by Delphi | correct |
+| Finding 2 — sentinels break under UTF-16 | **correct, mechanism wrong** |
+| Finding 2 note — `Ord(t[i]) >= $80` / set expressions suspect | **refuted** |
+
+**Finding 2's mechanism was wrong in an important way.** The prediction was that
+`#$EE#$80#$80` would read as U+00EE U+0080 U+0080. Measured: `U+043E U+0402 U+0080` — the
+bytes decoded through the machine's **ANSI codepage** (Windows-1251 here). The corruption
+was therefore *locale-dependent*: a different Windows install would produce different
+characters again. Predicting "it breaks" was right; predicting *how* was not, and the real
+behavior is worse than the guess.
+
+**The set-expression suspicion was a false alarm.** `dcc32` raises `W1050 WideChar reduced
+to byte char in set expressions` at 28 sites, and the audit reasoned that a Cyrillic letter
+would satisfy an ASCII test (U+0441 has low byte `$41` = `'A'`). Measured:
+`Char($0441) in ['A'..'Z']` is **False**. Delphi 12 handles ordinals above 255 safely. The
+warning is worth silencing with `CharInSet` for a clean build; it is not a defect. Recorded
+so nobody "fixes" 28 call sites for a bug that does not exist.
+
+Had the branches been written blind on the audit's reasoning, they would have encoded the
+wrong mechanism and touched 28 innocent sites.
+
+## Decision, revised
+
+Finding 2 is now **fixed and verified**: `Sentinel()` and `FullwidthVerbatim` branch on
+`UNICODE`, and the two readers share a new `SentinelAt()` so they cannot drift from the
+writer. Before/after on the same compiler: `U+043E U+0402 U+0080` → `U+E000`; a foreign
+U+E000 goes from silently unrestored to restored. FPC unchanged at
+`PASS=143 FAIL=21 SKIP=4`.
+
+## What is still open
+
+**Corpus parity under Delphi is unmeasured.** `tests/corpus_runner.lpr` uses
+`fpjson`/`jsonparser`; running the golden corpus under Delphi means rewriting its JSON
+layer against `System.JSON`. Until then the claim is "compiles under Delphi 12, sentinel
+encoding verified" — not "at parity under Delphi".
+
+**Nothing guards the fix.** Starter has no command-line compiler, so no gate and no CI can
+re-check it; every Delphi verification is a human pressing Shift+F9. Either move to a
+licence with `dcc32` (Professional or a trial) and gate it, or accept a dated manual check
+and treat every edit to a `{$IFDEF UNICODE}` branch as requiring a re-run.
 
 ## DPM: the spec is closer to correct than expected
 

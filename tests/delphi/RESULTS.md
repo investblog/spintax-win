@@ -71,3 +71,46 @@ recorded so it is not "fixed" again by the next reader.
 The static audit in [decisions/0003](../../docs/decisions/0003-delphi-compatibility-audit.md)
 predicted finding 1 correctly, got its details wrong, and raised finding 3 as a
 suspicion that measurement refuted.
+
+## Run 2 — after the encoding fix
+
+Same compiler, same probe, full rebuild (Shift+F9 — an incremental Ctrl+F9 is a
+no-op if the exe is missing and reports a misleading `Total Lines 0`).
+Build: 1987 lines, 0 errors, 31 warnings (the `W1050` set-expression noise), 5 hints.
+
+```
+--- Sentinel(0) ---
+SpNeutralize('{') length = 1
+  code units: U+E000
+  VERDICT: single code point U+E000 - matches the reference
+
+--- foreign (host-neutralized) sentinel ---
+  input     : U+E000 U+0061
+  restored  : {a
+  OK: a genuine U+E000 from outside is restored to '{'
+
+--- engine round-trip ---
+  neutralize -> restore = {a|b}   OK
+
+exit code = 0
+```
+
+| | before | after |
+|---|---|---|
+| `SpNeutralize('{')` | `U+043E U+0402 U+0080` | `U+E000` |
+| foreign `U+E000` restored | no — silently | yes |
+| exit | 3 | 0 |
+
+FPC is unchanged across the same fix: `PASS=143 FAIL=21 SKIP=4`.
+
+## What is still NOT proven under Delphi
+
+The probe covers the sentinel contract, one round-trip and a smoke render. **The
+golden corpus has never run under Delphi** — `tests/corpus_runner.lpr` depends on
+`fpjson`/`jsonparser`, which Delphi does not have, so porting it means rewriting
+the JSON layer against `System.JSON`.
+
+So the supportable claim today is: *the engine compiles under Delphi 12 with 0
+errors, and its sentinel encoding is correct there*. Not: *it is at parity under
+Delphi*. Nothing has measured the other 1987 lines on that compiler.
+

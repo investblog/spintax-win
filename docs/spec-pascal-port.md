@@ -126,11 +126,15 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
    byte-indexing a multi-byte character is the first bug class to suspect in any new string
    handling. Existing helpers (`IsAsciiWord`, `LowerAscii`) are ASCII-scoped **on purpose**.
 
-   The structural scan is safe under either width (it branches only on ASCII), but the
-   sentinel and fullwidth-brace literals are hard-coded UTF-8 **bytes** and are correct
-   only while `string` is a byte string. This is the open Delphi blocker — see
-   [decisions/0003](decisions/0003-delphi-compatibility-audit.md). **Delphi consumability
-   is currently an intent, not a fact:** no Delphi compiler has ever seen this unit.
+   The structural scan is safe under either width (it branches only on ASCII). The sentinel
+   and fullwidth-brace literals are **not** — they encode specific code points, so they
+   branch on `UNICODE` and must stay that way. Verified on both compilers; see
+   [decisions/0003](decisions/0003-delphi-compatibility-audit.md) and
+   [tests/delphi/RESULTS.md](../tests/delphi/RESULTS.md).
+
+   **Anything new that spells a specific non-ASCII code point needs the same treatment.**
+   Writing its UTF-8 bytes is not portable: under Delphi those bytes are decoded through the
+   machine's ANSI codepage, so the result varies by machine.
 3. **Warnings must be fatal** (`-Sew -vm4046`) — FPC accepts an uninitialised function
    result or a shadowed variable with a mere warning, and those are what a port produces.
    `-vm4046` masks one warning raised by FPC's own generics RTL and nothing else.

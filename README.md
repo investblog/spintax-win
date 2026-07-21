@@ -5,13 +5,16 @@ same shared golden-fixture corpus as the TypeScript, PHP, and Python
 implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
 `{$mode delphi}`.
 
-**Delphi status: not yet consumable.** The engine is written in Delphi-mode Object
-Pascal, but it has never been compiled by Delphi, and a source audit found a
-concrete blocker: the sentinel and fullwidth-brace literals are hard-coded UTF-8
-*bytes*, which is correct while `string` is a byte string (FPC) and wrong under
-Delphi 2009+, where `string` is UTF-16. See
-[docs/decisions/0003-delphi-compatibility-audit.md](docs/decisions/0003-delphi-compatibility-audit.md).
-Under FPC it is fully supported today.
+**Delphi status: compiles, sentinel encoding verified, corpus not yet run.**
+Built with Delphi 12 Athens (`dcc32`, Win32) — 0 errors. Sentinels and fullwidth
+braces are encoded per the compiler's string width, so the neutralize contract
+holds on both a byte string (FPC) and UTF-16 (Delphi); this was measured, not
+assumed, and the measurements are in
+[tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
+
+What is *not* yet claimed: parity under Delphi. The conformance runner depends on
+`fpjson`, so the golden corpus has only ever run under FPC. See
+[docs/decisions/0003](docs/decisions/0003-delphi-compatibility-audit.md).
 
 The engine implements the spintax.net superset: not just flat `{a|b|c}`
 enumerations, but permutations, scoped variables, value-driven conditionals, and
