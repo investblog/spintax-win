@@ -71,4 +71,15 @@ echo "  '-' = a case in tests/known-failures.txt that now PASSES: delete the lin
 echo "  '+' = a NEW failure: a regression - fix it, do not add it to the baseline." >&2
 echo >&2
 tail -n +3 "$tmp/diff" >&2
+
+# The case ids alone do not say what went wrong, and on a remote runner there is no
+# second chance to look. Print what the runner actually compared for each NEW failure.
+grep '^+render' "$tmp/diff" | sed 's/^+[^ ]*  //' > "$tmp/new" || true
+if [ -s "$tmp/new" ]; then
+  echo >&2
+  echo "  detail for the new failures:" >&2
+  while IFS= read -r case_id; do
+    echo "$out" | grep -F "] $case_id  " >&2 || true
+  done < "$tmp/new"
+fi
 exit 1
