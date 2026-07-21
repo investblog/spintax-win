@@ -185,9 +185,30 @@ function PhpTrim(const s: string): string;  begin Result := PhpTrimLR(s, True, T
 function PhpLtrim(const s: string): string; begin Result := PhpTrimLR(s, True, False); end;
 function PhpRtrim(const s: string): string; begin Result := PhpTrimLR(s, False, True); end;
 
+{ ASCII-guarded membership tests.
+
+  These exist because `c in ['a'..'z']` on a raw UTF-8 byte is NOT portable. Measured:
+  under FPC on x86_64-linux, the byte $D1 — the lead byte of Cyrillic 'с'/'т' — tested
+  TRUE against [',',';',':','!','?','.'], so post-process deleted every space in
+  "Текст соц. сети тут" and the corpus case postprocess/abbrev-whitelist-ru failed on
+  Linux while passing on i386-win32. Delphi flags the same construct as W1050.
+
+  The engine only ever means ASCII in these sets, so say so: check the ordinal first and
+  let the set see nothing above 127. Any new set test over text bytes needs the same
+  guard — text reaching these functions is arbitrary UTF-8, not ASCII. }
+function IsAsciiSentencePunct(c: Char): Boolean;
+begin
+  Result := (Ord(c) < 128) and (c in [',', ';', ':', '!', '?', '.']);
+end;
+
+function IsAsciiLower(c: Char): Boolean;
+begin
+  Result := (Ord(c) < 128) and (c in ['a'..'z']);
+end;
+
 function IsAsciiWord(c: Char): Boolean;
 begin
-  Result := (c in ['A'..'Z', 'a'..'z', '0'..'9', '_']);
+  Result := (Ord(c) < 128) and (c in ['A'..'Z', 'a'..'z', '0'..'9', '_']);
 end;
 
 function LowerAscii(const s: string): string;
@@ -195,7 +216,8 @@ var i: Integer;
 begin
   Result := s;
   for i := 1 to Length(Result) do
-    if Result[i] in ['A'..'Z'] then Result[i] := Chr(Ord(Result[i]) + 32);
+    if (Ord(Result[i]) < 128) and (Result[i] in ['A'..'Z']) then
+      Result[i] := Chr(Ord(Result[i]) + 32);
 end;
 
 { Index (1-based) of the close matching the open at OpenPos; 0 if unmatched. }
@@ -1114,7 +1136,7 @@ begin
   res := ''; i := 1;
   while i <= Length(s) do
   begin
-    if (s[i] = ' ') and (i < Length(s)) and (s[i+1] in [',',';',':','!','?','.']) then
+    if (s[i] = ' ') and (i < Length(s)) and IsAsciiSentencePunct(s[i+1]) then
       // skip the space
     else res := res + s[i];
     Inc(i);
@@ -1123,7 +1145,7 @@ begin
   // capitalize first ASCII letter (skip leading spaces)
   i := 1;
   while (i <= Length(s)) and (s[i] = ' ') do Inc(i);
-  if (i <= Length(s)) and (s[i] in ['a'..'z']) then s[i] := Chr(Ord(s[i]) - 32);
+  if (i <= Length(s)) and IsAsciiLower(s[i]) then s[i] := Chr(Ord(s[i]) - 32);
   // trim
   Result := Trim(s);
 end;
