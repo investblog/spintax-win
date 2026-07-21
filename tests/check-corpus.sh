@@ -10,6 +10,14 @@
 
 set -eu
 
+# Byte semantics, not the ambient locale. The runner prints the fixture text it
+# compared, so these lines carry Cyrillic and Spanish punctuation. Under a UTF-8
+# locale sed/sort/grep validate multibyte sequences and silently drop lines they
+# dislike -- which made this gate report "the failure set moved" from a run whose
+# own summary said PASS=143 FAIL=21. It reproduced only inside the git hook, whose
+# locale differs from an interactive shell.
+export LC_ALL=C
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 fixtures=${1:-${SPINTAX_FIXTURES:-}}
 baseline="$root/tests/known-failures.txt"
