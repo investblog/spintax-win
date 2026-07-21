@@ -1,33 +1,52 @@
 {**
- * Conformance runner — loads the shared golden-corpus JSON fixtures and runs
- * each case against the Object Pascal port, asserting the deterministic gate
- * (render/deterministic, neutralize, extract). validate and kind:rng cases are
- * reported as SKIP (out of PoC scope; rng cases are within-engine only anyway).
+ * Conformance runner — loads the shared golden-corpus JSON fixtures and runs each
+ * case against the Object Pascal port, asserting the deterministic gate (render,
+ * neutralize, extract, validate). kind:rng render cases are reported as SKIP: they
+ * assert within-engine reproducibility, not a cross-engine exact output.
+ *
+ * Builds under BOTH compilers. It used to be FPC-only because it spoke fpjson
+ * directly; all JSON access now goes through SpxJson, so Delphi can run the same
+ * corpus rather than a second harness that would drift from this one.
+ *
+ * NOTE: it REPORTS and always exits 0. The gate is tests/check-corpus.sh, which
+ * diffs the failing set against tests/known-failures.txt.
+ *
+ * Usage: corpus_runner [fixtures-dir]      (falls back to $SPINTAX_FIXTURES)
  *}
 program corpus_runner;
 
-{$mode delphi}{$H+}
+{$IFDEF FPC}{$MODE DELPHI}{$H+}{$ENDIF}
+{$APPTYPE CONSOLE}
 
 uses
-  SysUtils, Classes, fpjson, jsonparser, Generics.Collections, Spintax;
+  SysUtils, Classes, Generics.Collections,
+  { FPC resolves these from the -Fu search paths, which stays portable: CI builds
+    on Linux, where a backslash in an `in` clause would not resolve. Delphi needs
+    the explicit paths, and only ever builds this on Windows through the IDE. }
+  {$IFDEF FPC}
+  SpxJson, Spintax;
+  {$ELSE}
+  SpxJson in 'SpxJson.pas',
+  Spintax in '..\src\Spintax.pas';
+  {$ENDIF}
 
 var
   TotalPass, TotalFail, TotalSkip: Integer;
 
-function RngFromStrategy(node: TJSONData): TSpRng;
-var seqArr: TJSONArray; i: Integer; seq: array of Integer;
+function RngFromStrategy(node: TJsonNode): TSpRng;
+var seqArr: TJsonNode; i: Integer; seq: array of Integer;
 begin
   if node = nil then Exit(TFirstRng.Create);
-  if node.JSONType = jtString then
+  if JIsString(node) then
   begin
-    if node.AsString = 'last' then Exit(TLastRng.Create)
+    if JStr(node) = 'last' then Exit(TLastRng.Create)
     else Exit(TFirstRng.Create); // 'first'
   end;
-  if node.JSONType = jtObject then
+  if JIsObject(node) then
   begin
-    seqArr := TJSONObject(node).Arrays['sequence'];
-    SetLength(seq, seqArr.Count);
-    for i := 0 to seqArr.Count - 1 do seq[i] := seqArr.Integers[i];
+    seqArr := JFind(node, 'sequence');
+    SetLength(seq, JCount(seqArr));
+    for i := 0 to JCount(seqArr) - 1 do seq[i] := JInt(JItem(seqArr, i));
     Exit(TSequenceRng.Create(seq));
   end;
   Result := TFirstRng.Create;
@@ -46,41 +65,41 @@ begin
   end;
 end;
 
-function JsonArrToList(arr: TJSONArray): TStringList;
+function JsonArrToList(arr: TJsonNode): TStringList;
 var i: Integer;
 begin
   Result := TStringList.Create;
   if arr <> nil then
-    for i := 0 to arr.Count - 1 do Result.Add(arr.Strings[i]);
+    for i := 0 to JCount(arr) - 1 do Result.Add(JStr(JItem(arr, i)));
 end;
 
-procedure RunCase(c: TJSONObject; const fname: string);
+procedure RunCase(c: TJsonNode; const fname: string);
 var
   id, op, kind, tmpl, locale, got, want: string;
   postProc: Boolean;
   ctx: TSpContext;
   vars: TDictionary<string, string>;
-  ctxObj: TJSONObject;
-  neutralizeCtx: TJSONArray;
-  expect: TJSONObject;
+  ctxObj: TJsonNode;
+  neutralizeCtx: TJsonNode;
+  expect: TJsonNode;
   i: Integer;
   pass: Boolean;
   reason, nkey, nval, verdict, wantCode, wantSev: string;
   ex: TExtractResult;
   diags: TSpDiagList;
   knownInc: TStringList;
-  expDiags: TJSONArray;
+  expDiags: TJsonNode;
   j: Integer;
   found: Boolean;
 begin
-  id := c.Get('id', '');
-  op := c.Get('op', 'render');
-  kind := c.Get('kind', 'deterministic');
-  tmpl := c.Get('template', '');
-  locale := c.Get('locale', '');
-  expect := c.Objects['expect'];
+  id := JGetStr(c, 'id', '');
+  op := JGetStr(c, 'op', 'render');
+  kind := JGetStr(c, 'kind', 'deterministic');
+  tmpl := JGetStr(c, 'template', '');
+  locale := JGetStr(c, 'locale', '');
+  expect := JFind(c, 'expect');
 
-  // Within-engine rng invariants are out of scope for this PoC.
+  // Within-engine rng invariants are engine-private by design.
   if (op = 'render') and (kind = 'rng') then
   begin
     Inc(TotalSkip);
@@ -92,24 +111,24 @@ begin
     if op = 'validate' then
     begin
       knownInc := nil;
-      if c.Find('knownIncludes') <> nil then
-        knownInc := JsonArrToList(c.Arrays['knownIncludes']);
+      if JFind(c, 'knownIncludes') <> nil then
+        knownInc := JsonArrToList(JFind(c, 'knownIncludes'));
       diags := SpValidate(tmpl, locale, knownInc);
       try
         // verdict = invalid iff any error-severity diagnostic
         verdict := 'valid';
         for i := 0 to diags.Count - 1 do
           if diags[i].Severity = 'error' then begin verdict := 'invalid'; Break; end;
-        pass := (verdict = expect.Get('verdict', ''));
-        if not pass then reason := 'verdict want=' + expect.Get('verdict', '') + ' got=' + verdict;
+        pass := (verdict = JGetStr(expect, 'verdict', ''));
+        if not pass then reason := 'verdict want=' + JGetStr(expect, 'verdict', '') + ' got=' + verdict;
         // each expected diagnostic code (+severity if given) must be present
-        if pass and (expect.Find('diagnostics') <> nil) then
+        if pass and (JFind(expect, 'diagnostics') <> nil) then
         begin
-          expDiags := expect.Arrays['diagnostics'];
-          for i := 0 to expDiags.Count - 1 do
+          expDiags := JFind(expect, 'diagnostics');
+          for i := 0 to JCount(expDiags) - 1 do
           begin
-            wantCode := TJSONObject(expDiags.Items[i]).Get('code', '');
-            wantSev := TJSONObject(expDiags.Items[i]).Get('severity', '');
+            wantCode := JGetStr(JItem(expDiags, i), 'code', '');
+            wantSev := JGetStr(JItem(expDiags, i), 'severity', '');
             found := False;
             for j := 0 to diags.Count - 1 do
               if (diags[j].Code = wantCode) and ((wantSev = '') or (diags[j].Severity = wantSev)) then
@@ -126,7 +145,7 @@ begin
     else if op = 'neutralize' then
     begin
       got := SpNeutralize(tmpl);
-      want := expect.Get('output', '');
+      want := JGetStr(expect, 'output', '');
       pass := (got = want);
       if not pass then reason := 'want=' + want + ' got=' + got;
     end
@@ -135,17 +154,17 @@ begin
       ex := SpExtract(tmpl);
       try
         pass := True;
-        if expect.Find('refs') <> nil then
-          if NormalizeList(ex.Refs) <> NormalizeList(JsonArrToList(expect.Arrays['refs'])) then
+        if JFind(expect, 'refs') <> nil then
+          if NormalizeList(ex.Refs) <> NormalizeList(JsonArrToList(JFind(expect, 'refs'))) then
             begin pass := False; reason := reason + ' refs:[' + NormalizeList(ex.Refs) + ']'; end;
-        if expect.Find('sets') <> nil then
-          if NormalizeList(ex.Sets) <> NormalizeList(JsonArrToList(expect.Arrays['sets'])) then
+        if JFind(expect, 'sets') <> nil then
+          if NormalizeList(ex.Sets) <> NormalizeList(JsonArrToList(JFind(expect, 'sets'))) then
             begin pass := False; reason := reason + ' sets:[' + NormalizeList(ex.Sets) + ']'; end;
-        if expect.Find('defs') <> nil then
-          if NormalizeList(ex.Defs) <> NormalizeList(JsonArrToList(expect.Arrays['defs'])) then
+        if JFind(expect, 'defs') <> nil then
+          if NormalizeList(ex.Defs) <> NormalizeList(JsonArrToList(JFind(expect, 'defs'))) then
             begin pass := False; reason := reason + ' defs:[' + NormalizeList(ex.Defs) + ']'; end;
-        if expect.Find('includes') <> nil then
-          if NormalizeList(ex.Includes) <> NormalizeList(JsonArrToList(expect.Arrays['includes'])) then
+        if JFind(expect, 'includes') <> nil then
+          if NormalizeList(ex.Includes) <> NormalizeList(JsonArrToList(JFind(expect, 'includes'))) then
             begin pass := False; reason := reason + ' includes:[' + NormalizeList(ex.Includes) + ']'; end;
       finally
         ex.Refs.Free; ex.Sets.Free; ex.Defs.Free; ex.Includes.Free;
@@ -155,33 +174,33 @@ begin
     begin
       vars := TDictionary<string, string>.Create;
       try
-        ctxObj := TJSONObject(c.Find('context'));
+        ctxObj := JFind(c, 'context');
         if ctxObj <> nil then
-          for i := 0 to ctxObj.Count - 1 do
-            vars.AddOrSetValue(ctxObj.Names[i], ctxObj.Items[i].AsString);
+          for i := 0 to JCount(ctxObj) - 1 do
+            vars.AddOrSetValue(JName(ctxObj, i), JStr(JItem(ctxObj, i)));
 
         // neutralizeContext: apply neutralize() to those keys before rendering
-        if c.Find('neutralizeContext') <> nil then
+        neutralizeCtx := JFind(c, 'neutralizeContext');
+        if neutralizeCtx <> nil then
         begin
-          neutralizeCtx := c.Arrays['neutralizeContext'];
-          for i := 0 to neutralizeCtx.Count - 1 do
+          for i := 0 to JCount(neutralizeCtx) - 1 do
           begin
-            nkey := neutralizeCtx.Strings[i];
+            nkey := JStr(JItem(neutralizeCtx, i));
             if vars.TryGetValue(nkey, nval) then vars.AddOrSetValue(nkey, SpNeutralize(nval));
           end;
         end;
 
-        postProc := c.Get('postProcess', True);
+        postProc := JGetBool(c, 'postProcess', True);
         ctx.Vars := vars;
         ctx.Locale := locale;
         ctx.PostProcess := postProc;
-        ctx.Rng := RngFromStrategy(c.Find('rng'));
+        ctx.Rng := RngFromStrategy(JFind(c, 'rng'));
         try
           got := SpRender(tmpl, ctx);
         finally
           ctx.Rng.Free;
         end;
-        want := expect.Get('output', '');
+        want := JGetStr(expect, 'output', '');
         pass := (got = want);
         if not pass then reason := 'want=[' + want + '] got=[' + got + ']';
       finally
@@ -202,27 +221,22 @@ end;
 
 procedure RunFile(const path: string);
 var
-  raw: TStringList;
-  data: TJSONData;
-  arr: TJSONArray;
-  i, before: Integer;
+  data: TJsonNode;
+  i: Integer;
 begin
-  raw := TStringList.Create;
+  data := JParseFile(path);
+  if data = nil then
+  begin
+    Writeln(Format('%-32s UNREADABLE', [ExtractFileName(path)]));
+    Exit;
+  end;
   try
-    raw.LoadFromFile(path);
-    data := GetJSON(raw.Text);
-    try
-      if data.JSONType <> jtArray then Exit;
-      arr := TJSONArray(data);
-      before := TotalPass + TotalFail;
-      for i := 0 to arr.Count - 1 do
-        RunCase(TJSONObject(arr.Items[i]), ExtractFileName(path));
-      Writeln(Format('%-32s cases=%d', [ExtractFileName(path), arr.Count]));
-    finally
-      data.Free;
-    end;
+    if not JIsArray(data) then Exit;
+    for i := 0 to JCount(data) - 1 do
+      RunCase(JItem(data, i), ExtractFileName(path));
+    Writeln(Format('%-32s cases=%d', [ExtractFileName(path), JCount(data)]));
   finally
-    raw.Free;
+    data.Free;
   end;
 end;
 
@@ -232,7 +246,14 @@ var
 begin
   TotalPass := 0; TotalFail := 0; TotalSkip := 0;
   if ParamCount >= 1 then dir := ParamStr(1)
-  else dir := '/home/claude/spintax-js/packages/conformance/fixtures';
+  else dir := GetEnvironmentVariable('SPINTAX_FIXTURES');
+
+  if dir = '' then
+  begin
+    Writeln('corpus_runner: no fixtures directory (pass one, or set SPINTAX_FIXTURES)');
+    Writeln('  expected the packages/conformance/fixtures dir of a spintax-js checkout');
+    Exit;
+  end;
 
   Writeln('Running golden corpus from: ', dir);
   Writeln('----------------------------------------------------------');

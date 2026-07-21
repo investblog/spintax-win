@@ -112,7 +112,8 @@ than a failure.
 ## Layout
 
     src/Spintax.pas           the engine (unit Spintax)
-    tests/corpus_runner.lpr   golden-corpus conformance runner (reports; always exits 0)
+    tests/corpus_runner.dpr   golden-corpus conformance runner (reports; always exits 0)
+    tests/SpxJson.pas         JSON facade: fpjson under FPC, System.JSON under Delphi
     tests/check-corpus.sh     the gate: runs the runner, diffs against the baseline
     tests/known-failures.txt  the 21 known cosmetic failures, one per line
     examples/demo.lpr         command-line render demo
