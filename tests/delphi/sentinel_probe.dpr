@@ -1,4 +1,4 @@
-{**
+﻿{**
  * sentinel_probe — settles ONE question that no FPC run can answer:
  * does the engine's sentinel encoding survive Delphi's UTF-16 `string`?
  *
@@ -55,7 +55,38 @@ begin
   {$IFDEF FPC}
   Line('compiler          = FPC');
   {$ELSE}
-  Line('compiler          = Delphi ' + IntToStr(CompilerVersion));
+  { CompilerVersion is a REAL in Delphi (36.0 for Delphi 12), not an Integer -
+    IntToStr does not overload for it. }
+  Line('compiler          = Delphi, CompilerVersion ' + FloatToStr(CompilerVersion));
+  {$ENDIF}
+  Line('');
+end;
+
+procedure ProbeSetTruncation;
+{$IFDEF UNICODE}
+var ch: Char; matched: Boolean;
+{$ENDIF}
+begin
+  { dcc32 warns W1050 "WideChar reduced to byte char in set expressions" on the
+    engine's `ch in ['A'..'Z']` tests - 28 of them. A Pascal set holds 0..255, so
+    under UTF-16 the high byte is DISCARDED before the test. U+0441 (Cyrillic es)
+    has low byte $41 = 'A', so it would pass an ASCII-letter test. This turns the
+    compiler's warning into a measured fact. }
+  Line('--- set-expression truncation (WideChar -> byte) ---');
+  {$IFDEF UNICODE}
+  ch := Char($0441);                 // CYRILLIC SMALL LETTER ES, low byte $41
+  matched := ch in ['A'..'Z'];
+  Line('  Char($0441) in [''A''..''Z''] = ' + BoolToStr(matched, True));
+  if matched then
+  begin
+    Line('  CONFIRMED: a Cyrillic letter satisfies an ASCII-letter test.');
+    Line('             Every `in [...]` site in the engine is affected (28 of them).');
+    ExitVerdict := 4;
+  end
+  else
+    Line('  not reproduced - the compiler did not truncate here');
+  {$ELSE}
+  Line('  n/a on a byte string: one Char cannot hold U+0441 in the first place');
   {$ENDIF}
   Line('');
 end;
@@ -159,6 +190,7 @@ begin
     Line('');
     ReportEnvironment;
     ProbeSentinel;
+    ProbeSetTruncation;
     ProbeRoundTrip;
     ProbeForeignSentinel;
     ProbeRender;
