@@ -39,6 +39,14 @@ jobs:
           choco install freepascal -y --no-progress
           # choco does not put fpc on PATH for the current step's shell.
           echo "C:\tools\freepascal\bin\i386-win32" >> $env:GITHUB_PATH
+          # ...and it ships no usable fpc.cfg, so the compiler runs but finds no
+          # units beyond the RTL core: the first build failed on
+          # "Can't find unit Generics.Collections", which lives in
+          # units/$fpctarget/rtl-generics and is reached through the wildcard unit
+          # paths a generated config provides. fpcmkcfg writes that config.
+          & "C:\tools\freepascal\bin\i386-win32\fpcmkcfg.exe" `
+            -d "basepath=C:\tools\freepascal" `
+            -o "C:\tools\freepascal\bin\i386-win32\fpc.cfg"
 
       - name: Compiler version
         shell: bash
