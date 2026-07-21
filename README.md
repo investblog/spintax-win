@@ -5,10 +5,13 @@ same shared golden-fixture corpus as the TypeScript, PHP, and Python
 implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
 `{$mode delphi}`.
 
-**Delphi status: at parity, measured.** The same golden corpus runs under Delphi
-13 Florence and Free Pascal 3.2.2 with identical results — `PASS=143 FAIL=21
-SKIP=4`, and the failing sets match case for case, not merely in total. Verified
-2026-07-21; the measurements are in [tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
+**Delphi status: last measured at parity on 2026-07-21 — that measurement is now
+stale.** On that date the same golden corpus ran under Delphi 13 Florence and Free
+Pascal 3.2.2 with identical results (`PASS=143 FAIL=21 SKIP=4`, failing sets
+matching case for case). The engine has changed since and **no Delphi run has
+re-confirmed it**; FPC and CI cover Windows and Linux only. Treat the parity claim
+as dated, not current, until `tests/corpus_runner.dpr` is rebuilt — see
+[tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
 
 Two defects had to be fixed to get there, and **neither was findable under FPC
 alone**: the sentinel literals were UTF-8 bytes that a UTF-16 `string` decoded

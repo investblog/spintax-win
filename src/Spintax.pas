@@ -1256,8 +1256,28 @@ begin
   end;
 end;
 
+{ A caller who leaves Ctx.Rng nil is the exact analogue of calling the reference's
+  render with no seed, which builds an rng from Math.random rather than failing.
+  Matching that beats an EAccessViolation from deep inside the walk, which is what a
+  nil Rng used to produce.
+
+  Seeded from the clock plus a counter, so two renders in the same millisecond still
+  differ, and without calling Randomize — a library has no business resetting the host's
+  global RandSeed. Determinism remains available the way the corpus uses it: inject an
+  explicit TSpRng. }
+var
+  GRngCounter: LongWord = 0;
+
+function MakeDefaultRng: TSpRng;
+begin
+  Inc(GRngCounter);
+  Result := TMulberry32Rng.Create(
+    LongWord(Round(Frac(Now) * 86400000)) xor (GRngCounter * 2654435761));
+end;
+
 function SpRender(const Template: string; const Ctx: TSpContext): string;
 var setDefs, defDefs, vars, aliases: TStrMap;
+    ownedRng: TSpRng;
     body, outp: string;
     nodes, dn: TNodeList;
     opts: TRenderOpts;
@@ -1269,6 +1289,8 @@ begin
   defDefs := TStrMap.Create;
   vars := TStrMap.Create;
   outranked := TStringList.Create;
+  { Owned only when the caller supplied none; the caller's own Rng is never freed here. }
+  if Ctx.Rng = nil then ownedRng := MakeDefaultRng else ownedRng := nil;
   try
     ExtractDirectives(StripComments(SpStripSentinels(Template)), setDefs, defDefs, body);
 
@@ -1284,7 +1306,7 @@ begin
     opts.Vars := vars;
     opts.Locale := Ctx.Locale;
     opts.Depth := 0;
-    opts.Rng := Ctx.Rng;
+    if ownedRng <> nil then opts.Rng := ownedRng else opts.Rng := Ctx.Rng;
 
     // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
     // outranks it (never rolled). The order must not come from hash enumeration —
@@ -1332,7 +1354,7 @@ begin
     if Ctx.PostProcess then outp := MinimalPostProcess(outp);
     Result := SpSafetyRestore(outp);
   finally
-    setDefs.Free; defDefs.Free; vars.Free; outranked.Free;
+    setDefs.Free; defDefs.Free; vars.Free; outranked.Free; ownedRng.Free;
   end;
 end;
 
