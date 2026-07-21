@@ -64,3 +64,12 @@ examples/demo.exe
 *.identcache
 *.local
 *.dproj.local
+*.dsk
+
+# Delphi IDE build output (the probe in tests/delphi is built by hand in the IDE)
+Win32/
+Win64/
+Debug/
+Release/
+tests/delphi/probe_fpc
+tests/delphi/*.exe
