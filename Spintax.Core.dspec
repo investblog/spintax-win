@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DelphiPackageManager/DPM/master/schemas/dspec.schema.json",
+  "metadata": {
+    "id": "Spintax.Core",
+    "version": "0.1.0",
+    "description": "Zero-dependency spintax engine (enumerations, permutations, scoped variables, value-driven conditionals, plurals). Object Pascal port of the reference @spintax/core, held to the same golden-fixture corpus.",
+    "authors": "301.st",
+    "projectUrl": "https://spintax.net",
+    "repositoryUrl": "https://github.com/investblog/spintax-win",
+    "license": "MIT",
+    "icon": "",
+    "copyright": "Copyright (c) 2026 301.st",
+    "tags": "spintax text-generation content seo template rng"
+  },
+  "targetPlatforms": [
+    {
+      "compiler": "12.0",
+      "platforms": "Win32, Win64, Linux64",
+      "template": "default"
+    }
+  ],
+  "templates": [
+    {
+      "name": "default",
+      "source": [
+        { "src": "src\\Spintax.pas", "dest": "src" },
+        { "src": "LICENSE", "dest": "" },
+        { "src": "README.md", "dest": "" }
+      ],
+      "searchPaths": [
+        { "path": "src" }
+      ]
+    }
+  ]
+}

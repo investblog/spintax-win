@@ -1,0 +1,21 @@
+# Normalize to LF in the repository. The engine is checked out on Windows (Delphi,
+# Lazarus) and on Linux (CI), and Pascal sources travel between the two — a CRLF
+# round-trip through git would show every line as changed.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on a Windows checkout: CRLF breaks the shebang.
+*.sh text eol=lf
+build.sh text eol=lf
+
+# Pascal sources
+*.pas text eol=lf
+*.lpr text eol=lf
+*.inc text eol=lf
+*.dpr text eol=lf
+*.dpk text eol=lf
+
+# Binary — never touched by eol conversion
+*.png binary
+*.ico binary
+*.res binary
+*.exe binary

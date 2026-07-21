@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # The golden corpus is the cross-engine contract, shared with @spintax/core (TypeScript),
+  # spintax/core (PHP) and spintax-core (Python). It is checked out rather than vendored: a
+  # copy would drift, and a drifting contract is not a contract. Same pattern the sibling
+  # ports already run in production.
+  corpus:
+    strategy:
+      fail-fast: false
+      matrix:
+        # A Windows leg is not redundant here. This port exists to be consumed from
+        # Delphi on Windows, and the two things most likely to break are platform-bound:
+        # the byte-string codepage and the line terminator. Linux alone would not see it.
+        os: [ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check out the golden corpus
+        uses: actions/checkout@v5
+        with:
+          repository: investblog/spintax-js
+          path: .corpus
+
+      - name: Install Free Pascal (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fpc
+
+      - name: Install Free Pascal (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install freepascal -y --no-progress
+          # choco does not put fpc on PATH for the current step's shell.
+          echo "C:\tools\freepascal\bin\i386-win32" >> $env:GITHUB_PATH
+
+      - name: Compiler version
+        shell: bash
+        run: fpc -iV
+
+      - name: Build
+        shell: bash
+        run: sh ./build.sh
+
+      # Warnings are fatal in this port (see .agents/rules/quality-pascal.md): FPC compiles
+      # an uninitialised function result or a shadowed variable with only a warning, and
+      # those are exactly the defects a port produces. -vm4046 drops the single warning
+      # FPC's own generics RTL raises from TDictionary; without it -Sew fails on code we
+      # do not own. Suppress that number only — never a warning from src/.
+      - name: Warnings are errors
+        shell: bash
+        run: |
+          mkdir -p lib
+          fpc -Mdelphi -Sew -vw -vm4046 -Fusrc -FUlib -Cn src/Spintax.pas
+
+      # check-corpus.sh, NOT corpus_runner directly: the runner is a reporter and exits 0
+      # whatever it finds, so a job wired to it would be green with 21 fixtures failing.
+      # The script diffs the failing set against tests/known-failures.txt and also refuses
+      # a fixtures path that is missing or empty.
+      - name: Golden corpus
+        shell: bash
+        env:
+          SPINTAX_FIXTURES: ${{ github.workspace }}/.corpus/packages/conformance/fixtures
+        run: ./tests/check-corpus.sh
+
+  # The shell scripts are part of the build contract (build.sh drives every consumer's
+  # first five minutes with this repo), so they are gated like source, not trusted.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck build.sh tests/check-corpus.sh .agents/hooks/*/*.sh

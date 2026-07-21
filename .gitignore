@@ -1,0 +1,62 @@
+# Baseline (from ~/.agents/templates/gitignore) + the Free Pascal stack.
+# The lock file in .agents/generated/ IS committed (provenance) — do not ignore it.
+
+# secrets — never commit (templates like .env.example are kept)
+.env
+.env.*
+!.env.example
+.dev.vars
+.secrets
+*.pem
+id_rsa
+id_ed25519
+
+# dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# build / generated artifacts
+dist/
+build/
+.wrangler/
+*.log
+
+# local indexes — regenerable caches (code-search / content-vault); never commit
+.codegraph/
+.docindex/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# --- Free Pascal / Delphi ---
+# compiler units and intermediates
+*.o
+*.ppu
+*.or
+*.a
+*.compiled
+*.res
+*.rsj
+*.dcu
+lib/
+backup/
+__history/
+__recovery/
+
+# built binaries (fpc -o targets; Windows adds .exe)
+tests/corpus_runner
+tests/corpus_runner.exe
+examples/demo
+examples/demo.exe
+
+# Lazarus / Delphi per-user session state — machine-local, never shared
+*.lps
+*.identcache
+*.local
+*.dproj.local
