@@ -273,6 +273,21 @@ var
   dir, mask: string;
   info: TSearchRec;
 begin
+  {$IFDEF FPC}
+  { The engine's contract is that `string` holds raw UTF-8 bytes. FPC applies codepage
+    semantics at the boundary: fpjson hands back a UTF8String, and assigning it to
+    `string` converts it to DefaultSystemCodePage. That default comes from the locale,
+    and on a CI runner with LANG=C it is ASCII — so every Cyrillic character in the
+    corpus arrived as a literal '?' (measured: want<19:3F 3F ...> for a 19-character,
+    ~34-byte string). The '?' then legitimately matched the sentence-punctuation set
+    and post-process deleted the spaces around it.
+
+    Declaring UTF-8 makes the conversion a no-op relabel and the bytes survive. This is
+    a HOST responsibility, not something the engine can do for its callers: any FPC
+    program feeding this engine non-ASCII text has to do the same. }
+  DefaultSystemCodePage := CP_UTF8;
+  {$ENDIF}
+
   TotalPass := 0; TotalFail := 0; TotalSkip := 0;
   if ParamCount >= 1 then dir := ParamStr(1)
   else dir := GetEnvironmentVariable('SPINTAX_FIXTURES');
