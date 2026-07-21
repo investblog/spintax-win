@@ -263,9 +263,43 @@ end;
 const
   STRUCTURAL: array[0..5] of Char = ('{', '}', '[', ']', '%', '#');
 
-function Sentinel(i: Integer): string; // 3-byte UTF-8 for U+E000+i
+{ Sentinels live at U+E000..U+E005. How a code point is spelled in `string`
+  depends on the compiler, and it MUST match the reference's spelling, because a
+  neutralized value crosses process boundaries: the host, or a sibling engine,
+  hands us one and SpSafetyRestore has to recognise it.
+
+  FPC (byte string): the 3-byte UTF-8 encoding.
+  Delphi (UTF-16):   one code unit. Writing the UTF-8 bytes here does NOT produce
+                     U+E000 — measured, it produced U+043E U+0402, i.e. the bytes
+                     decoded through the machine's ANSI codepage, so the result
+                     was not even stable across machines. See tests/delphi/RESULTS.md. }
+function Sentinel(i: Integer): string; // U+E000+i in this compiler's string encoding
 begin
+  {$IFDEF UNICODE}
+  Result := Chr($E000 + i);
+  {$ELSE}
   Result := #$EE#$80 + Chr($80 + i);
+  {$ENDIF}
+end;
+
+{ True when a sentinel begins at s[i]. k = which structural char it stands for,
+  adv = how many code units it occupies. Shared so the two readers below cannot
+  drift apart from the writer above. }
+function SentinelAt(const s: string; i: Integer; out k, adv: Integer): Boolean;
+begin
+  Result := False; k := 0; adv := 1;
+  {$IFDEF UNICODE}
+  if (i <= Length(s)) and (Ord(s[i]) >= $E000) and (Ord(s[i]) <= $E005) then
+  begin
+    k := Ord(s[i]) - $E000; adv := 1; Result := True;
+  end;
+  {$ELSE}
+  if (i + 2 <= Length(s)) and (s[i] = #$EE) and (s[i+1] = #$80)
+     and (Ord(s[i+2]) >= $80) and (Ord(s[i+2]) <= $85) then
+  begin
+    k := Ord(s[i+2]) - $80; adv := 3; Result := True;
+  end;
+  {$ENDIF}
 end;
 
 function SpNeutralize(const Value: string): string;
@@ -288,18 +322,16 @@ begin
 end;
 
 function SpSafetyRestore(const Text: string): string;
-var i, k: Integer;
+var i, k, adv: Integer;
 begin
   Result := '';
   i := 1;
   while i <= Length(Text) do
   begin
-    if (i + 2 <= Length(Text)) and (Text[i] = #$EE) and (Text[i+1] = #$80)
-       and (Ord(Text[i+2]) >= $80) and (Ord(Text[i+2]) <= $85) then
+    if SentinelAt(Text, i, k, adv) then
     begin
-      k := Ord(Text[i+2]) - $80;
       Result := Result + STRUCTURAL[k];
-      Inc(i, 3);
+      Inc(i, adv);
     end
     else
     begin
@@ -310,15 +342,14 @@ begin
 end;
 
 function SpStripSentinels(const Text: string): string;
-var i: Integer;
+var i, k, adv: Integer;
 begin
   Result := '';
   i := 1;
   while i <= Length(Text) do
   begin
-    if (i + 2 <= Length(Text)) and (Text[i] = #$EE) and (Text[i+1] = #$80)
-       and (Ord(Text[i+2]) >= $80) and (Ord(Text[i+2]) <= $85) then
-      Inc(i, 3)
+    if SentinelAt(Text, i, k, adv) then
+      Inc(i, adv)
     else
     begin
       Result := Result + Text[i];
@@ -897,9 +928,17 @@ var raw, res: string; i: Integer;
 begin
   raw := '{plural ' + countRaw + ':' + formsRaw + '}';
   res := '';
+  { Same encoding split as Sentinel(): the reference emits the fullwidth braces
+    U+FF5B / U+FF5D, which are 3 UTF-8 bytes on a byte string and 1 code unit
+    under UTF-16. }
   for i := 1 to Length(raw) do
-    if raw[i] = '{' then res := res + #$EF#$BD#$9B      // U+FF5B
-    else if raw[i] = '}' then res := res + #$EF#$BD#$9D // U+FF5D
+    {$IFDEF UNICODE}
+    if raw[i] = '{' then res := res + Chr($FF5B)
+    else if raw[i] = '}' then res := res + Chr($FF5D)
+    {$ELSE}
+    if raw[i] = '{' then res := res + #$EF#$BD#$9B
+    else if raw[i] = '}' then res := res + #$EF#$BD#$9D
+    {$ENDIF}
     else res := res + raw[i];
   Result := res;
 end;
