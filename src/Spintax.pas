@@ -185,34 +185,31 @@ function PhpTrim(const s: string): string;  begin Result := PhpTrimLR(s, True, T
 function PhpLtrim(const s: string): string; begin Result := PhpTrimLR(s, True, False); end;
 function PhpRtrim(const s: string): string; begin Result := PhpTrimLR(s, False, True); end;
 
-{ ASCII-guarded membership tests.
+{ Named ASCII predicates.
 
-  Defensive, not a fix for an observed bug — and the history matters, because the
-  comment here previously claimed a measurement that never happened.
+  Every character class in this engine is ASCII by design — it does no Unicode
+  classification, and the text flowing through is arbitrary UTF-8. `CharInSet` states
+  that safely on both compilers: it is defined for values above the set's range, and it
+  is what Delphi asks for instead of a bare `c in [...]` (W1050, 30 of them before this).
 
-  These sets only ever mean ASCII, while the text reaching them is arbitrary UTF-8, so
-  the guard states the intent instead of relying on how a given compiler evaluates a set
-  test over a byte above 127. Delphi flags the bare form as W1050; measured on Delphi 13,
-  `Char($0441) in ['A'..'Z']` is False, so that compiler is not actually truncating.
-
-  These guards were added while chasing a Linux-only corpus failure and did NOT fix it:
-  the real cause was a lossy codepage conversion at the host boundary, which turned every
-  Cyrillic character into a literal '?' before the engine saw it — and '?' belongs in the
-  punctuation set legitimately. See tests/delphi/RESULTS.md. Kept because the invariant is
-  real and free to assert; do not read them as evidence that a set test misbehaved. }
+  Measured, so the reader need not wonder: `CharInSet(Chr($D1), [...])` is False under
+  FPC, and `Char($0441) in ['A'..'Z']` is False under Delphi 13 — neither compiler was
+  truncating. The change is for clarity and a clean build, not a bug fix. The one real
+  encoding defect this project hit was elsewhere entirely: a lossy codepage conversion at
+  the host boundary. See tests/delphi/RESULTS.md. }
 function IsAsciiSentencePunct(c: Char): Boolean;
 begin
-  Result := (Ord(c) < 128) and (c in [',', ';', ':', '!', '?', '.']);
+  Result := CharInSet(c, [',', ';', ':', '!', '?', '.']);
 end;
 
 function IsAsciiLower(c: Char): Boolean;
 begin
-  Result := (Ord(c) < 128) and (c in ['a'..'z']);
+  Result := CharInSet(c, ['a'..'z']);
 end;
 
 function IsAsciiWord(c: Char): Boolean;
 begin
-  Result := (Ord(c) < 128) and (c in ['A'..'Z', 'a'..'z', '0'..'9', '_']);
+  Result := CharInSet(c, ['A'..'Z', 'a'..'z', '0'..'9', '_']);
 end;
 
 function LowerAscii(const s: string): string;
@@ -220,7 +217,7 @@ var i: Integer;
 begin
   Result := s;
   for i := 1 to Length(Result) do
-    if (Ord(Result[i]) < 128) and (Result[i] in ['A'..'Z']) then
+    if CharInSet(Result[i], ['A'..'Z']) then
       Result[i] := Chr(Ord(Result[i]) + 32);
 end;
 
@@ -614,7 +611,7 @@ begin
   inverted := False;
   if (p <= Length(content)) and (content[p] = '!') then begin inverted := True; Inc(p); end;
   nm := '';
-  if (p <= Length(content)) and (content[p] in ['A'..'Z', 'a'..'z', '_']) then
+  if (p <= Length(content)) and (CharInSet(content[p], ['A'..'Z', 'a'..'z', '_'])) then
   begin
     nm := nm + content[p]; Inc(p);
     while (p <= Length(content)) and IsAsciiWord(content[p]) do begin nm := nm + content[p]; Inc(p); end;
@@ -644,11 +641,11 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
     k := Pos(key, LowerAscii(configStr));
     if k = 0 then Exit;
     j := k + Length(key);
-    while (j <= Length(configStr)) and (configStr[j] in [' ', #9]) do Inc(j);
+    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
     if (j <= Length(configStr)) and (configStr[j] = '=') then Inc(j);
-    while (j <= Length(configStr)) and (configStr[j] in [' ', #9]) do Inc(j);
+    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
     num := '';
-    while (j <= Length(configStr)) and (configStr[j] in ['0'..'9']) do begin num := num + configStr[j]; Inc(j); end;
+    while (j <= Length(configStr)) and (CharInSet(configStr[j], ['0'..'9'])) do begin num := num + configStr[j]; Inc(j); end;
     if num <> '' then Result := StrToInt(num);
   end;
   function FindStr(const key: string; out val: string): Boolean;
@@ -666,9 +663,9 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
       Break;
     end;
     j := k + Length(key);
-    while (j <= Length(configStr)) and (configStr[j] in [' ', #9]) do Inc(j);
+    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
     if (j <= Length(configStr)) and (configStr[j] = '=') then Inc(j) else Exit;
-    while (j <= Length(configStr)) and (configStr[j] in [' ', #9]) do Inc(j);
+    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
     if (j > Length(configStr)) or (configStr[j] <> '"') then Exit;
     Inc(j);
     while (j <= Length(configStr)) and (configStr[j] <> '"') do begin val := val + configStr[j]; Inc(j); end;
@@ -748,11 +745,11 @@ begin
             looksHtml := (Length(innerTrim) > 0) and
               ((innerTrim[1] = '/') or (innerTrim[Length(innerTrim)] = '/'));
             // per-elem html: ^[A-Za-z][A-Za-z0-9]*\s
-            if (not looksHtml) and (Length(innerTrim) >= 2) and (innerTrim[1] in ['A'..'Z','a'..'z']) then
+            if (not looksHtml) and (Length(innerTrim) >= 2) and (CharInSet(innerTrim[1], ['A'..'Z','a'..'z'])) then
             begin
               q := 2;
-              while (q <= Length(innerTrim)) and (innerTrim[q] in ['A'..'Z','a'..'z','0'..'9']) do Inc(q);
-              if (q <= Length(innerTrim)) and (innerTrim[q] in [' ',#9,#10,#13]) then looksHtml := True;
+              while (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], ['A'..'Z','a'..'z','0'..'9'])) do Inc(q);
+              if (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], [' ',#9,#10,#13])) then looksHtml := True;
             end;
             if not looksHtml then
             begin
@@ -932,7 +929,7 @@ begin
   baseTruthy := False;
   if opts.Vars.TryGetValue(LowerAscii(node.CondName), val) then
     for i := 1 to Length(val) do
-      if not (val[i] in [' ', #9, #10, #13, #12, #11]) then begin baseTruthy := True; Break; end;
+      if not (CharInSet(val[i], [' ', #9, #10, #13, #12, #11])) then begin baseTruthy := True; Break; end;
   if node.CondInverted then truthy := not baseTruthy else truthy := baseTruthy;
   if truthy then Result := RenderNodes(node.CondThen, opts)
   else Result := RenderNodes(node.CondElse, opts);
@@ -945,7 +942,7 @@ begin
   st := 1;
   if s[1] = '-' then st := 2;
   if st > Length(s) then Exit(False);
-  for i := st to Length(s) do if not (s[i] in ['0'..'9']) then Exit(False);
+  for i := st to Length(s) do if not (CharInSet(s[i], ['0'..'9'])) then Exit(False);
   Result := True;
 end;
 
@@ -979,7 +976,7 @@ begin
 
   hasBracket := False;
   for i := 1 to Length(formsRaw) do
-    if formsRaw[i] in ['{', '}', '[', ']'] then begin hasBracket := True; Break; end;
+    if CharInSet(formsRaw[i], ['{', '}', '[', ']']) then begin hasBracket := True; Break; end;
   if hasBracket then Exit(FullwidthVerbatim(countRaw, formsRaw));
 
   count := PhpTrim(countRaw);
@@ -1023,7 +1020,7 @@ begin
   // \p{L}+ approximated: all bytes are ASCII letters OR any non-ASCII (UTF-8 letter bytes)
   allLetters := True;
   for i := 1 to Length(t) do
-    if not ((t[i] in ['A'..'Z','a'..'z']) or (Ord(t[i]) >= $80)) then begin allLetters := False; Break; end;
+    if not ((CharInSet(t[i], ['A'..'Z','a'..'z'])) or (Ord(t[i]) >= $80)) then begin allLetters := False; Break; end;
   if allLetters then Result := ' ' + t + ' ' else Result := sep;
 end;
 
@@ -1382,7 +1379,7 @@ begin
     line := Copy(text, lineStart, e - lineStart);
     if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
     p := 1;
-    while (p <= Length(line)) and (line[p] in [' ', #9]) do Inc(p);
+    while (p <= Length(line)) and (CharInSet(line[p], [' ', #9])) do Inc(p);
     if Copy(line, p, 8) = '#include' then
     begin
       q := Pos('"', line);
@@ -1429,7 +1426,7 @@ begin
       j := i + 2;
       if (j <= Length(body)) and (body[j] = '!') then Inc(j);
       nm := '';
-      if (j <= Length(body)) and (body[j] in ['A'..'Z','a'..'z','_']) then
+      if (j <= Length(body)) and (CharInSet(body[j], ['A'..'Z','a'..'z','_'])) then
       begin
         nm := nm + body[j]; Inc(j);
         while (j <= Length(body)) and IsAsciiWord(body[j]) do begin nm := nm + body[j]; Inc(j); end;
@@ -1633,7 +1630,7 @@ var i, p, q, k, b, b2: Integer; configStr, low, key, numv: string;
       begin
         b := a;
         while (b <= Length(s)) and IsAsciiWord(s[b]) do Inc(b);
-        while (b <= Length(s)) and (s[b] in [' ', #9]) do Inc(b);
+        while (b <= Length(s)) and (CharInSet(s[b], [' ', #9])) do Inc(b);
         if (b <= Length(s)) and (s[b] = '=') then Exit(True);
         a := b;
       end
@@ -1644,7 +1641,7 @@ var i, p, q, k, b, b2: Integer; configStr, low, key, numv: string;
   var z: Integer;
   begin
     Result := s <> '';
-    for z := 1 to Length(s) do if not (s[z] in ['0'..'9']) then Exit(False);
+    for z := 1 to Length(s) do if not (CharInSet(s[z], ['0'..'9'])) then Exit(False);
   end;
   function ExtractNum(const cfg, keyname: string): string;
   var kp, z: Integer; lc: string;
@@ -1654,11 +1651,11 @@ var i, p, q, k, b, b2: Integer; configStr, low, key, numv: string;
     kp := Pos(keyname, lc);
     if kp = 0 then Exit;
     z := kp + Length(keyname);
-    while (z <= Length(cfg)) and (cfg[z] in [' ', #9]) do Inc(z);
+    while (z <= Length(cfg)) and (CharInSet(cfg[z], [' ', #9])) do Inc(z);
     if (z <= Length(cfg)) and (cfg[z] = '=') then Inc(z) else Exit;
-    while (z <= Length(cfg)) and (cfg[z] in [' ', #9]) do Inc(z);
+    while (z <= Length(cfg)) and (CharInSet(cfg[z], [' ', #9])) do Inc(z);
     Result := '';
-    while (z <= Length(cfg)) and not (cfg[z] in [';', '>', ' ', #9, #10, #13]) do
+    while (z <= Length(cfg)) and not (CharInSet(cfg[z], [';', '>', ' ', #9, #10, #13])) do
     begin Result := Result + cfg[z]; Inc(z); end;
   end;
 begin
@@ -1683,7 +1680,7 @@ begin
         while (b <= Length(configStr)) and IsAsciiWord(configStr[b]) do Inc(b);
         key := Copy(configStr, k, b - k);
         b2 := b;
-        while (b2 <= Length(configStr)) and (configStr[b2] in [' ', #9]) do Inc(b2);
+        while (b2 <= Length(configStr)) and (CharInSet(configStr[b2], [' ', #9])) do Inc(b2);
         if (b2 <= Length(configStr)) and (configStr[b2] = '=') then
         begin
           low := LowerAscii(key);
@@ -1736,7 +1733,7 @@ begin
 
       hasBracket := False;
       for m := 1 to Length(forms[i]) do
-        if forms[i][m] in ['{', '}', '[', ']'] then begin hasBracket := True; Break; end;
+        if CharInSet(forms[i][m], ['{', '}', '[', ']']) then begin hasBracket := True; Break; end;
       if hasBracket then
       begin
         AddDiag(res, 'plural.nested-brackets', 'error');
@@ -1840,7 +1837,7 @@ begin
       line := Copy(text, lineStart, e - lineStart);
       if (Length(line) > 0) and (line[Length(line)] = #13) then line := Copy(line, 1, Length(line) - 1);
       p := 1;
-      while (p <= Length(line)) and (line[p] in [' ', #9]) do Inc(p);
+      while (p <= Length(line)) and (CharInSet(line[p], [' ', #9])) do Inc(p);
       if Copy(line, p, 8) = '#include' then
       begin
         q := Pos('"', line);
@@ -1908,7 +1905,7 @@ begin
         j := i + 2;
         if (j <= Length(body)) and (body[j] = '!') then Inc(j);
         nm := '';
-        if (j <= Length(body)) and (body[j] in ['A'..'Z','a'..'z','_']) then
+        if (j <= Length(body)) and (CharInSet(body[j], ['A'..'Z','a'..'z','_'])) then
         begin
           nm := nm + body[j]; Inc(j);
           while (j <= Length(body)) and IsAsciiWord(body[j]) do begin nm := nm + body[j]; Inc(j); end;
