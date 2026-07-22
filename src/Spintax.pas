@@ -2,16 +2,23 @@
  * Spintax — Object Pascal (Delphi-mode) port of the reference @spintax/core.
  *
  * Ported from the reference TypeScript engine (github.com/investblog/spintax-js,
- * packages/core), held to the SAME golden-fixture corpus. Scope of this port:
- * parse + render (enumeration / permutation / variable / conditional / plural),
- * hash-set / hash-def directives, neutralize / safety-restore, extract. The
- * cosmetic post-process stage is minimal (ASCII spacing + first-letter
- * capitalize); full URL/email/Unicode shielding is the documented remainder.
+ * packages/core), held to the SAME golden-fixture corpus, which it passes in full:
+ * PASS=164 FAIL=0 SKIP=4 under both FPC 3.2.2 and Delphi 13. Scope: parse + render
+ * (enumeration / permutation / variable / conditional / plural), hash-set / hash-def
+ * directives, neutralize / safety-restore, extract, validate, and the complete cosmetic
+ * post-process -- URL / mailto / email / domain / decimal / abbreviation shielding,
+ * spacing, Spanish sentence openers, and Unicode-aware capitalization.
  *
- * UTF-8 note: the structural scan only ever branches on ASCII bytes (the brace,
- * bracket, percent, hash, pipe, colon and angle chars plus ASCII whitespace);
- * UTF-8 continuation bytes never collide with those, so Cyrillic/other text
- * passes through byte-exact without a Unicode layer. FPC 3.2.2, mode delphi.
+ * STRING WIDTH: `string` is UTF-8 BYTES under FPC and UTF-16 code units under Delphi.
+ * The structural scan branches only on ASCII, which is safe either way. Everything that
+ * reasons about CHARACTERS -- the post-process, the sentinels, the fullwidth braces --
+ * goes through SpCodePointAt / SpCodePointToStr and the baked tables in
+ * Spintax.Unicode.inc, so no index arithmetic assumes a width. Adding code that indexes
+ * text directly is how this port has broken before.
+ *
+ * HOST DUTY under FPC: declare `DefaultSystemCodePage := CP_UTF8` at start-up, or
+ * non-ASCII text is mangled before the engine ever sees it. A library cannot set it for
+ * its callers.
  *)
 unit Spintax;
 

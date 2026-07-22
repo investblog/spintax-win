@@ -13,7 +13,8 @@ The single list of open work. Anything actively being built gets a plan in
 ## Open
 
 - [ ] **Re-measure Delphi after any engine change.** Last measured 2026-07-22
-      (`143/21/4` corpus, `41/0` local, clean build). It is a manual IDE rebuild of
+      (`164/0/4` corpus, `272/0` local -- 292 under FPC, the difference being twenty
+      `{$IFNDEF UNICODE}` decoder assertions -- clean build). It is a manual IDE rebuild of
       `tests/corpus_runner.dpr` and `tests/local_tests.dpr`, and CI cannot gate it: no
       licence grants `dcc32` (Starter never had it; trials exclude the command-line
       compilers by design, [Embarcadero](https://support.embarcadero.com/article/44692)).

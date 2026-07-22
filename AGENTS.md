@@ -1,8 +1,8 @@
 # spintax-win — AGENTS.md
 
 Object Pascal (Delphi-mode) port of the spintax engine, held to the same shared golden
-corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.2.2+ in
-`{$mode delphi}`, Delphi-consumable as-is.
+corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT. Builds under
+FPC 3.2.2+ and Delphi 13, both measured against the full corpus.
 
 `CLAUDE.md` is a symlink to this file — one charter, every agent.
 
@@ -47,9 +47,12 @@ corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.
   at every reference; `#def` resolves **once per render** and holds), and the post-process
   pipeline. **Allowed to diverge:** RNG selection results, internal architecture, diagnostic
   message strings, performance. Cross-engine RNG-sequence parity is an explicit **non-goal**.
-- **Current state:** the deterministic semantic gate and the static validator pass;
-  `render-postprocess` is 17/39 because the cosmetic stage is deliberately minimal. See
-  `docs/spec-pascal-port.md` for the full contract and `docs/TODO.md` for the remainder.
+- **Current state:** the **whole** golden corpus passes -- `PASS=164 FAIL=0 SKIP=4` on both
+  FPC 3.2.2 and Delphi 13, the 4 skips being `kind:rng`, engine-private by design. The
+  cosmetic post-process is a full port of the reference's 12-step pipeline. On top of the
+  corpus, `tests/local_tests.dpr` asserts the surfaces no fixture can express (line
+  terminators, nil RNG, permutation config, plural fallbacks, `#include`, `knownVariables`,
+  the Unicode tables). See `docs/spec-pascal-port.md` for the contract.
 
 ## Pascal-specific traps (this port's terrain)
 
@@ -58,9 +61,16 @@ corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.
 - **Warnings are fatal.** Build with `-Sew`. FPC compiles an uninitialised function result
   or a shadowed variable with only a warning, and those are exactly the defects a port
   produces.
-- **`string` is not UTF-16 here.** FPC's default `string` is a byte string; the corpus is
-  full of Cyrillic and Unicode punctuation. Byte-indexing a multi-byte character is the
-  bug class to look for first in any new string handling.
+- **`string` has two widths.** UTF-8 bytes under FPC, UTF-16 code units under Delphi, and
+  the corpus is full of Cyrillic and Unicode punctuation. Anything that reasons about
+  CHARACTERS must go through `SpCodePointAt` / `SpCodePointToStr`; indexing text directly
+  is the bug class to look for first, and it has bitten this port repeatedly -- most
+  recently as an opener pass that stepped one code unit at a time and ate the spaces
+  between Russian words under FPC while Delphi was fine.
+- **Two regex flag sets in the reference.** `CAP_AFTER_BLOCK_RE`, `EMAIL_RE`, `DOMAIN_RE`
+  and `SINGLE_ABBR_RE` are `/giu/`, where property escapes are CASE-FOLDED; the rest are
+  strict. Use `SpIsUniLowerFolded` / `SpIsUniLetterFolded` for those and the strict
+  predicates elsewhere. Check the flags before porting any pattern.
 - **Follow nesting iteratively where input depth is unbounded.** A recursive walk dies on
   deep input the reference handles — the same lesson the Python port paid for.
 - **Sentinels U+E000–E005 are the engine's reserved range.** The `neutralize` safety
@@ -114,10 +124,18 @@ changing the BASELINE `~/.agents` — only by agreement with the user.
 
 `fpc` 3.2.2+ required. `SPINTAX_FIXTURES` must point at the checked-out corpus.
 
-- `sh ./build.sh` — build `tests/corpus_runner` and `examples/demo`.
+- `sh ./build.sh` — builds `tests/corpus_runner`, `tests/local_tests`,
+  `tests/local_tests_checked` (same tests with `-Co -Cr`, reproducing Delphi's Debug
+  overflow checks) and `examples/demo`.
+- `./tests/local_tests` and `./tests/local_tests_checked` — the assertions no fixture can
+  express. Both must pass.
 - `./tests/corpus_runner "$SPINTAX_FIXTURES"` — the golden-corpus gate.
-- `./examples/demo '[<sep=", ">fast|cheap|reliable] hosting'` — render demo.
-- `fpc -Mdelphi -Sew -vw -Fusrc -FUlib -Cn src/Spintax.pas` — syntax/warning check only.
+- `./examples/demo '{hello|hi}. {world|earth}'` — render demo. Avoid double quotes inside
+  the template on the command line: Windows argv parsing turns them into backslashes
+  before the program sees them, which looks like an engine bug and is not.
+- `fpc -Mdelphi -Sew -vw -vm4046 -Fusrc -FUlib -Cn src/Spintax.pas` — syntax/warning check
+  only. **`-vm4046` is required, not optional:** without it the command fails on warnings
+  raised inside FPC's own `generics.dictionaries.inc`, not on this code.
 
 The pre-push git hook runs the build **and** the corpus, and **blocks** if
 `SPINTAX_FIXTURES` is unset — a runner with no fixtures reports success over zero cases,

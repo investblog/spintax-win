@@ -97,8 +97,17 @@ Requires Free Pascal 3.2.2 or newer.
 
     ./build.sh
     ./tests/corpus_runner /path/to/conformance/fixtures
-    ./examples/demo '[<sep=", ">fast|cheap|reliable] hosting'
+    ./tests/local_tests
+    ./tests/local_tests_checked
+    ./examples/demo '{hello|hi}. {world|earth}'
+    ./examples/demo '[<sep=X>fast|cheap|reliable] hosting'
     ./examples/demo '{plural 5: товар|товара|товаров}' ru
+
+Note on quoting: a template containing double quotes -- `[<sep=", ">...]` -- does not
+survive Windows command-line argument parsing, which turns the quotes into backslashes
+before the program ever sees them. That is the shell, not the engine. Use a config
+without quotes on the command line, or pass the template from a file.
+
 
 If no fixtures path is passed, the runner looks for a local checkout of the
 reference corpus. Point it at the `packages/conformance/fixtures` directory of
