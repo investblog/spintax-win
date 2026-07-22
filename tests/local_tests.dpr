@@ -184,6 +184,88 @@ begin
   end;
 end;
 
+{ Raw code UNITS of a string, decoded by NOTHING of ours. A reviewer showed the previous
+  assertions could not detect a broken encoder: CpList decoded with SpCodePointAt, whose
+  only caller was SpCodePointToStr, so any mutually-consistent pair of bugs passed --
+  demonstrated by making the encoder emit overlong sequences, with all 163 checks still
+  green. These pin the bytes/units against values measured from Node. }
+function RawUnits(const s: string): string;
+var i: Integer;
+begin
+  Result := '';
+  for i := 1 to Length(s) do
+  begin
+    if i > 1 then Result := Result + ' ';
+    {$IFDEF UNICODE}
+    Result := Result + '$' + IntToHex(Ord(s[i]), 4);
+    {$ELSE}
+    Result := Result + '$' + IntToHex(Ord(s[i]), 2);
+    {$ENDIF}
+  end;
+end;
+
+{ Encodings measured from Node, per string width. Independent of our decoder. }
+procedure TestEncoding;
+  procedure E(cp: LongWord; const utf8, utf16: string);
+  begin
+    {$IFDEF UNICODE}
+    Check('encode ' + IntToHex(cp, 4), RawUnits(SpCodePointToStr(cp)), utf16);
+    {$ELSE}
+    Check('encode ' + IntToHex(cp, 4), RawUnits(SpCodePointToStr(cp)), utf8);
+    {$ENDIF}
+  end;
+begin
+  E($0041, '$41', '$0041');
+  E($007F, '$7F', '$007F');
+  E($0080, '$C2 $80', '$0080');
+  E($00E9, '$C3 $A9', '$00E9');
+  E($07FF, '$DF $BF', '$07FF');
+  E($0800, '$E0 $A0 $80', '$0800');
+  E($0430, '$D0 $B0', '$0430');
+  E($FFFF, '$EF $BF $BF', '$FFFF');
+  E($10000, '$F0 $90 $80 $80', '$D800 $DC00');
+  E($1F600, '$F0 $9F $98 $80', '$D83D $DE00');
+  E($10FFFF, '$F4 $8F $BF $BF', '$DBFF $DFFF');
+  { Above the Unicode maximum there is no encoding; the UTF-16 arithmetic would otherwise
+    emit two LOW surrogates. }
+  Check('encode above-max is empty', RawUnits(SpCodePointToStr($110000)), '');
+end;
+
+{ The decoder's stated contract, which had no assertions at all. A regression returning
+  cpLen = 0 would hang every scan built on it, silently. }
+procedure TestDecoderContract;
+  procedure D(const s: string; atIndex: Integer; wantCp: LongWord; wantLen: Integer;
+              const name: string);
+  var cp: LongWord; cpLen: Integer;
+  begin
+    cp := SpCodePointAt(s, atIndex, cpLen);
+    Check('decode/' + name + ' cp', '$' + IntToHex(cp, 4), '$' + IntToHex(wantCp, 4));
+    Check('decode/' + name + ' len', IntToStr(cpLen), IntToStr(wantLen));
+  end;
+begin
+  D('', 1, 0, 1, 'empty string');
+  D('A', 0, 0, 1, 'index below start');
+  D('A', 5, 0, 1, 'index past end');
+  {$IFNDEF UNICODE}
+  { Malformed UTF-8 must yield the raw byte and advance by one, never stall. }
+  D(#$C3, 1, $C3, 1, 'truncated 2-byte tail');
+  D(#$E2#$82, 1, $E2, 1, 'truncated 3-byte tail');
+  D(#$80'x', 1, $80, 1, 'stray continuation byte');
+  D(#$FE'x', 1, $FE, 1, 'invalid lead byte');
+  D(#$C3'x', 1, $C3, 1, 'lead byte with a non-continuation follower');
+  { OVERLONG forms must be rejected, not decoded. C0 80 would otherwise manufacture
+    U+0000 -- and NUL is the reference's placeholder delimiter, so two arbitrary bytes
+    could fool a shielding scan. }
+  D(#$C0#$80, 1, $C0, 1, 'overlong NUL');
+  D(#$E0#$80#$80, 1, $E0, 1, 'overlong 3-byte');
+  { F5.. decodes past U+10FFFF, which UTF-16 cannot represent. }
+  D(#$F5#$8F#$BF#$BF, 1, $F5, 1, 'above Unicode maximum');
+  { Valid sequences still decode. }
+  D(#$C3#$A9, 1, $00E9, 2, 'valid 2-byte');
+  D(#$F0#$9F#$98#$80, 1, $1F600, 4, 'valid 4-byte astral');
+  {$ENDIF}
+end;
+
 { Code points rendered as a space-separated hex list, so a failure shows WHICH code point
   differs instead of a glyph a terminal cannot draw. }
 function CpList(const s: string): string;
@@ -252,6 +334,49 @@ begin
   CheckCp($2160, False, False, True , '');
   CheckCp($2170, False, False, True , '');
 end;
+
+{ The reference uses TWO flag sets, and a reviewer caught the port assuming one.
+  CAP_AFTER_BLOCK_RE is /giu/, where a property escape is CASE-FOLDED: Ll then also matches
+  titlecase letters and the Greek iota-subscript forms. Steps 8, 9 and 11 are /u/ or /gu/
+  and stay strict. Measured: 1446 extra code points under folding, 32 with a differing
+  uppercase; L gains exactly one, U+0345; N gains none.
+
+  Using the strict predicate for the block-tag step would leave those 32 uncapitalised
+  after a block tag, where the reference capitalises them. Expectations from Node. }
+procedure CheckFold(cp: LongWord; wantLlStrict, wantLlFold, wantLStrict, wantLFold: Boolean;
+                    const wantUpper: string);
+begin
+  Check('fold/Ll-strict ' + IntToHex(cp, 4),
+        BoolToStr(SpIsUniLower(cp), True), BoolToStr(wantLlStrict, True));
+  Check('fold/Ll-folded ' + IntToHex(cp, 4),
+        BoolToStr(SpIsUniLowerFolded(cp), True), BoolToStr(wantLlFold, True));
+  Check('fold/L-strict ' + IntToHex(cp, 4),
+        BoolToStr(SpIsUniLetter(cp), True), BoolToStr(wantLStrict, True));
+  Check('fold/L-folded ' + IntToHex(cp, 4),
+        BoolToStr(SpIsUniLetterFolded(cp), True), BoolToStr(wantLFold, True));
+  { The uppercase table is built over the FOLDED set precisely so it serves both. }
+  if wantUpper <> '' then
+    Check('fold/upper ' + IntToHex(cp, 4), CpList(SpUpperCodePoint(cp)), wantUpper);
+end;
+
+procedure TestCaseFolding;
+begin
+  CheckFold($01C5, False, True , True , True , '$01C4');
+  CheckFold($01C8, False, True , True , True , '$01C7');
+  CheckFold($01CB, False, True , True , True , '$01CA');
+  CheckFold($01F2, False, True , True , True , '$01F1');
+  CheckFold($0345, False, True , False, True , '$0399');
+  CheckFold($1F88, False, True , True , True , '$1F08 $0399');
+  CheckFold($1F98, False, True , True , True , '$1F28 $0399');
+  CheckFold($1FBC, False, True , True , True , '$0391 $0399');
+  CheckFold($1FCC, False, True , True , True , '$0397 $0399');
+  CheckFold($1FFC, False, True , True , True , '$03A9 $0399');
+  CheckFold($0061, True , True , True , True , '$0041');
+  CheckFold($0041, False, True , True , True , '$0041');
+  CheckFold($0430, True , True , True , True , '$0410');
+  CheckFold($0030, False, False, False, False, '$0030');
+end;
+
 
 { Comma-joined #include targets, for comparing against a measured list. }
 function Includes(const tmpl: string): string;
@@ -432,6 +557,9 @@ begin
   TestIncludes;
   TestKnownVariables;
   TestUnicodeTables;
+  TestEncoding;
+  TestDecoderContract;
+  TestCaseFolding;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;

@@ -42,6 +42,15 @@ const isLl = (cp) => /\p{Ll}/u.test(String.fromCodePoint(cp));
 const isL = (cp) => /\p{L}/u.test(String.fromCodePoint(cp));
 const isN = (cp) => /\p{N}/u.test(String.fromCodePoint(cp));
 
+// The reference does NOT use one flag set throughout. CAP_AFTER_BLOCK_RE (step 10) is
+// 'giu', and under /iu a property escape is case-folded: \p{Ll} then also matches
+// titlecase letters and the Greek iota-subscript forms -- 1446 extra code points, 32 of
+// which have a differing uppercase. EMAIL/DOMAIN/SINGLE_ABBR are 'giu' too, where \p{L}
+// gains exactly one: U+0345. Steps 8, 9 and 11 are 'u'/'gu' and stay strict.
+// Two predicates, because the reference has two.
+const isLlFold = (cp) => /\p{Ll}/iu.test(String.fromCodePoint(cp));
+const isLFold = (cp) => /\p{L}/iu.test(String.fromCodePoint(cp));
+
 // Uppercase, split into the two shapes Pascal needs: arithmetic runs, and the handful of
 // code points whose uppercase is more than one character (sharp s -> SS, ligatures, ...).
 const upRuns = [];
@@ -50,7 +59,7 @@ const upMulti = [];
   let run = null;
   for (let cp = 0; cp <= 0x10ffff; cp++) {
     const ch = String.fromCodePoint(cp);
-    if (!/\p{Ll}/u.test(ch)) continue;
+    if (!/\p{Ll}/iu.test(ch)) continue;
     const u = ch.toUpperCase();
     if (u === ch) continue;
     const chars = [...u];
@@ -88,7 +97,9 @@ function emitRanges(name, rs, comment) {
 
 function emitRuns(name, rs) {
   const lines = [];
-  lines.push(`  { lowercase -> uppercase as (lo, hi, delta) runs; delta added to the code point }`);
+  lines.push(`  { uppercase mapping as (lo, hi, delta) runs; delta added to the code point.`);
+  lines.push(`    Built over the FOLDED Ll set, which is a superset of the strict one, so a`);
+  lines.push(`    single table serves both predicates. }`);
   lines.push(`  ${name}_COUNT = ${rs.length};`);
   lines.push(`  ${name}: array[0..${name}_COUNT * 3 - 1] of LongInt = (`);
   const body = rs.map(([a, b, d]) => `${hex(a)}, ${hex(b)}, ${d}`);
@@ -132,6 +143,8 @@ function emitMulti(cps) {
 const ll = ranges(isLl);
 const l = ranges(isL);
 const n = ranges(isN);
+const llFold = ranges(isLlFold);
+const lFold = ranges(isLFold);
 
 const out = [];
 out.push('{ GENERATED FILE -- DO NOT EDIT BY HAND.');
@@ -151,7 +164,13 @@ out.push(emitRanges('LL_RANGES', ll, 'Unicode Ll: lowercase letters'));
 out.push('');
 out.push(emitRanges('L_RANGES', l, 'Unicode L: all letters'));
 out.push('');
-out.push(emitRanges('N_RANGES', n, 'Unicode N: all numbers'));
+out.push(emitRanges('N_RANGES', n, 'Unicode N: all numbers (identical under /iu)'));
+out.push('');
+out.push(emitRanges('LL_FOLD_RANGES', llFold,
+  'Unicode Ll under case folding (/iu) -- used by the block-tag capitalization step ONLY'));
+out.push('');
+out.push(emitRanges('L_FOLD_RANGES', lFold,
+  'Unicode L under case folding (/iu) -- email / domain / single-abbrev rules'));
 out.push('');
 out.push(emitRuns('UPPER_RUNS', upRuns));
 out.push('');

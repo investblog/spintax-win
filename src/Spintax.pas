@@ -107,6 +107,8 @@ function SpCodePointAt(const s: string; i: Integer; out cpLen: Integer): LongWor
 function SpCodePointToStr(cp: LongWord): string;
 function SpIsUniLower(cp: LongWord): Boolean;
 function SpIsUniLetter(cp: LongWord): Boolean;
+function SpIsUniLowerFolded(cp: LongWord): Boolean;
+function SpIsUniLetterFolded(cp: LongWord): Boolean;
 function SpIsUniNumber(cp: LongWord): Boolean;
 function SpUpperCodePoint(cp: LongWord): string;
 function SpUnicodeTableVersion: string;
@@ -178,6 +180,17 @@ begin
                 or ((b2 and $3F) shl 6) or (b3 and $3F);
     end;
   end;
+  { Reject OVERLONG encodings and anything above the Unicode maximum. Without this,
+    #$C0#$80 decodes to U+0000 -- and U+0000 is the reference's placeholder delimiter, so
+    a shielding scan could be fooled by two arbitrary bytes. Lead bytes F5..F7 likewise
+    decode past U+10FFFF, which the UTF-16 encoder cannot represent. }
+  if ((n = 2) and (Result < $80)) or ((n = 3) and (Result < $800))
+     or ((n = 4) and ((Result < $10000) or (Result > $10FFFF))) then
+  begin
+    Result := b0;
+    cpLen := 1;
+    Exit;
+  end;
   cpLen := n;
   {$ENDIF}
 end;
@@ -185,6 +198,9 @@ end;
 { A code point in this compiler's string encoding. }
 function SpCodePointToStr(cp: LongWord): string;
 begin
+  { Above the Unicode maximum there is no encoding. Returning '' beats the UTF-16 branch
+    silently emitting two LOW surrogates, which is what the arithmetic would do. }
+  if cp > $10FFFF then Exit('');
   {$IFDEF UNICODE}
   if cp < $10000 then
     Result := Chr(cp)
@@ -237,6 +253,23 @@ end;
 function SpIsUniLetter(cp: LongWord): Boolean;
 begin
   Result := InRangeTable(cp, L_RANGES);
+end;
+
+{ The reference does not use one flag set throughout: CAP_AFTER_BLOCK_RE is /giu/ and the
+  email / domain / single-abbreviation rules are /giu/ too, where a property escape is
+  CASE-FOLDED. Under /iu, Ll also matches titlecase letters and the Greek iota-subscript
+  forms -- 1446 extra code points, 32 with a differing uppercase -- and L gains U+0345.
+  Steps 8, 9 and 11 are /u/ or /gu/ and must stay strict. Two predicates, because the
+  reference has two; using the strict one for the block-tag step would leave a
+  titlecase letter after a block tag uncapitalised where the reference capitalises it. }
+function SpIsUniLowerFolded(cp: LongWord): Boolean;
+begin
+  Result := InRangeTable(cp, LL_FOLD_RANGES);
+end;
+
+function SpIsUniLetterFolded(cp: LongWord): Boolean;
+begin
+  Result := InRangeTable(cp, L_FOLD_RANGES);
 end;
 
 function SpIsUniNumber(cp: LongWord): Boolean;
