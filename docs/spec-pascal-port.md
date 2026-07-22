@@ -67,7 +67,7 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(168 cases total):
+(172 cases total):
 
 | fixture file | cases | passing |
 |---|---|---|
@@ -78,9 +78,9 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 | render-deterministic | 6 | 6 |
 | extract | 2 | 2 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
-| **render-postprocess** | **39** | **39** |
+| **render-postprocess** | **43** | **43** |
 
-**`PASS=167 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=168 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last

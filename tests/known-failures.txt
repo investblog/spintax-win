@@ -1,6 +1,6 @@
 # Known-failing corpus cases.
 #
-# EMPTY. The whole golden corpus passes: PASS=164 FAIL=0 SKIP=4, the 4 skips being
+# EMPTY. The whole golden corpus passes: PASS=168 FAIL=0 SKIP=4, the 4 skips being
 # kind:rng render cases, which assert within-engine reproducibility rather than a
 # cross-engine output and are engine-private by design.
 #

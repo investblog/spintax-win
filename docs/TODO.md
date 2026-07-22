@@ -42,7 +42,7 @@ _Nothing open._
       takes the fast pass only for input without `#0` and keeps the reference-shaped loop
       otherwise. Measured over 61 124 inputs, 59 870 of them carrying a literal `#0`:
       121 diverge under an unguarded single pass, 0 under the guard. Corpus 164/0/4,
-      303 local assertions, two of which are those 121 cases and fail without the guard.
+      304 local assertions, two of which are those 121 cases and fail without the guard.
 
 - [x] **Published** as `investblog/spintax-win`, public, with the family's badges,
       cross-links and topics. CI green on ubuntu, windows and shellcheck.
@@ -51,7 +51,7 @@ _Nothing open._
       maintaining the engine, not something a reader can use, and keeping a second copy of
       the parity contract had already drifted into documenting a build command that fails.
 - [x] **Full post-process parity** (2026-07-22): all twelve reference steps. The whole
-      golden corpus passes, `PASS=164 FAIL=0 SKIP=4`, and `tests/known-failures.txt` is
+      golden corpus passes, `PASS=168 FAIL=0 SKIP=4`, and `tests/known-failures.txt` is
       empty. Supersedes [decisions/0002](decisions/0002-postprocess-remainder.md).
 - [x] **Surfaces no fixture can express are gated**: `tests/local_tests.dpr`, 292
       assertions, every expectation measured against the reference and each one proved to

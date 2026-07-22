@@ -3,7 +3,7 @@
  *
  * Ported from the reference TypeScript engine (github.com/investblog/spintax-js,
  * packages/core), held to the SAME golden-fixture corpus, which it passes in full:
- * PASS=164 FAIL=0 SKIP=4 on FPC 3.2.2. Scope: parse + render
+ * PASS=168 FAIL=0 SKIP=4 on FPC 3.2.2. Scope: parse + render
  * (enumeration / permutation / variable / conditional / plural), hash-set / hash-def
  * directives, neutralize / safety-restore, extract, validate, and the complete cosmetic
  * post-process -- URL / mailto / email / domain / decimal / abbreviation shielding,

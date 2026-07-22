@@ -10,7 +10,7 @@ Free Pascal 3.2.2+ in `{$mode delphi}`.
 The fourth engine in the Spintax family, and an **independent implementation** --
 not a transcription of the others. It is held to the same behaviour contract by a
 **shared golden corpus** of language-neutral fixtures, the same one that gates the
-TypeScript, PHP and Python engines: **164 of its 168 cases pass and none fail**. The
+TypeScript, PHP and Python engines: **168 of its 172 cases pass and none fail**. The
 other 4 are skipped by design -- `kind:rng`, which assert within-engine reproducibility
 rather than a cross-engine output.
 
@@ -109,7 +109,7 @@ cross-engine gate. Measured on this port:
 | validate               | 40    | 40     | bracket/directive/permutation/plural/variable diagnostics |
 | render-postprocess     | 39    | 39     | full 12-step pipeline                 |
 
-Totals: **`PASS=167 FAIL=0 SKIP=4`** over 171 cases. Only `kind:rng` render cases
+Totals: **`PASS=168 FAIL=0 SKIP=4`** over 172 cases. Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 
