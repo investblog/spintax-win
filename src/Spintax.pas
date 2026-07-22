@@ -3,13 +3,16 @@
  *
  * Ported from the reference TypeScript engine (github.com/investblog/spintax-js,
  * packages/core), held to the SAME golden-fixture corpus, which it passes in full:
- * PASS=164 FAIL=0 SKIP=4 under both FPC 3.2.2 and Delphi 13. Scope: parse + render
+ * PASS=164 FAIL=0 SKIP=4 on FPC 3.2.2. Scope: parse + render
  * (enumeration / permutation / variable / conditional / plural), hash-set / hash-def
  * directives, neutralize / safety-restore, extract, validate, and the complete cosmetic
  * post-process -- URL / mailto / email / domain / decimal / abbreviation shielding,
  * spacing, Spanish sentence openers, and Unicode-aware capitalization.
  *
- * STRING WIDTH: `string` is UTF-8 BYTES under FPC and UTF-16 code units under Delphi.
+ * STRING WIDTH: `string` is UTF-8 BYTES here, and UTF-16 code units on a compiler that
+ * defines UNICODE. That portability is kept but not maintained -- see the spec, sec.2 --
+ * and the branches must not be deleted to "simplify": a second compiler is what exposed
+ * two defects that were present in the byte-string build as well.
  * The structural scan branches only on ASCII, which is safe either way. Everything that
  * reasons about CHARACTERS -- the post-process, the sentinels, the fullwidth braces --
  * goes through SpCodePointAt / SpCodePointToStr and the baked tables in

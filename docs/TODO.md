@@ -12,31 +12,16 @@ The single list of open work. Anything actively being built gets a plan in
 
 ## Open
 
-- [ ] **Re-measure Delphi after any engine change.** Last measured 2026-07-22
-      (`164/0/4` corpus, `272/0` local -- 292 under FPC, the difference being twenty
-      `{$IFNDEF UNICODE}` decoder assertions -- clean build). It is a manual IDE rebuild of
-      `tests/corpus_runner.dpr` and `tests/local_tests.dpr`, and CI cannot gate it: no
-      licence grants `dcc32` (Starter never had it; trials exclude the command-line
-      compilers by design, [Embarcadero](https://support.embarcadero.com/article/44692)).
-      **This is settled, not an open decision** -- see the Delphi purpose in
-      `spec-pascal-port.md` sec.2. Buying a licence is not on the table.
-
-      Verification survives the Architect trial expiring (~2026-08-21): **Delphi 12
-      Starter is installed permanently and its IDE compiles**, Win32. That is enough for
-      both binaries.
-
-      Partly mitigated already: `build.sh` also builds the local suite with `-Co -Cr`,
-      reproducing Delphi's Debug overflow/range checks under FPC -- verified to catch the
-      exact `EIntOverflow` only Delphi had found. That closes one bug class, not the
-      compiler difference.
-
-- [ ] **DPM packaging: verify, or drop it.** `Spintax.Core.dspec` has never been built by
-      DPM. But the reason Delphi is supported at all is source portability for another
-      team (spec sec.2), not distribution through a package manager -- so decide whether
-      the dspec earns its place before spending effort proving it works.
 - [ ] **Repository is private.** Publishing is a decision, not a step.
 
 ## Done
+
+- [x] **UTF-16 portability settled** (2026-07-22): kept in the source, dropped as an
+      obligation. Not a supported platform, nothing gated on it, no dated claim to keep
+      fresh -- but the `{$IFDEF UNICODE}` branches stay, because building the same source
+      with a second compiler is what found the sentinel-encoding and `#def`-ordering
+      defects and both were bugs in the FPC build too. `Spintax.Core.dspec` removed: it
+      targeted a package manager nobody in this project's use case needs.
 
 - [x] **Full post-process parity** (2026-07-22). All twelve reference steps; the whole
       corpus passes on FPC and Delphi. Plan in `../.agents/plans/done/postprocess-parity.md`;

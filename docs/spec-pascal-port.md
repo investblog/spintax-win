@@ -17,8 +17,8 @@ superset: enumerations `{a|b|c}`, permutations `[a|b|c]` with `<config>`, scoped
 `%name%`, value-driven conditionals `{?VAR?a|b}`, locale-aware plurals, `#set` / `#def`
 directives, `neutralize` shielding, `extract`, and a static `validate`.
 
-Compiles under Free Pascal 3.2.2+ and Delphi 13, in `{$mode delphi}`, with the same
-measured corpus result on both (§4). MIT.
+Free Pascal 3.2.2+, `{$mode delphi}`. MIT. Also compiles unchanged under a UTF-16
+Object Pascal compiler, which is kept but not maintained (§2).
 
 ## 2. Position in the family
 
@@ -28,31 +28,22 @@ measured corpus result on both (§4). MIT.
 | `spintax-php` | `spintax/core` (MIT) | sibling port |
 | `spintax-py` | `spintax-core` (MIT) | sibling port |
 | `spintax` | WordPress plugin (**GPL**) | origin engine — behavior reference only |
-| **`spintax-win`** | `Spintax.Core` (DPM) | **this port** |
+| **`spintax-win`** | this repo | **this port** |
 
 **Licence boundary.** The PHP plugin is GPL. Transcribing it would pull GPL into an MIT
 package. Reimplement from the behavior contract plus the corpus. `@spintax/core` is our
 own MIT code and IS a legitimate reference — mirror its *behavior*, never its TypeScript.
 
-### Why Delphi is a target at all
+### Portability to a UTF-16 compiler: kept, not maintained
 
-Delphi support exists for **one** purpose: so the **GSA SER** development team can port
-this engine into their codebase without friction. It is not aimed at Delphi consumers
-installing a package, and the project will **not** buy Delphi licences.
+The source compiles unchanged under a UTF-16 Object Pascal compiler as well as FPC. That
+is **not a supported platform**: nothing is gated on it, no build is required before a
+release, and no claim about it is maintained.
 
-Three consequences follow, and they explain choices that would otherwise look odd:
-
-1. **Source portability outranks distribution.** What matters is that `src/Spintax.pas`
-   compiles clean under Delphi and reads plainly. That is why the file stays free of
-   FPC-only constructs and why `{$IFDEF UNICODE}` branches exist wherever a specific code
-   point is spelled.
-2. **The Delphi check is manual, permanently.** No available licence grants `dcc32`, and
-   none will be bought, so CI can never gate Delphi. The parity claim is therefore dated
-   rather than continuously enforced, and every string-width-sensitive change needs a
-   rebuild in the IDE. **Delphi 12 Starter is installed permanently** and its IDE compiles
-   Win32, so this survives the Architect trial expiring.
-3. **DPM packaging is optional, not load-bearing.** `Spintax.Core.dspec` targets a package
-   manager nobody in this use case needs; treat it as a nice-to-have, not a release gate.
+It is kept because it costs nothing and it paid for itself. Building the same source with
+a second compiler surfaced defects the corpus could not, and two of them were bugs **in the
+FPC build too** — see §7. Delete the `{$IFDEF UNICODE}` branches and that second opinion is
+gone for good; leaving them costs a conditional in a handful of places.
 
 ## 3. Parity: required, allowed, non-goal
 
@@ -92,14 +83,14 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 **`PASS=164 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
-**Delphi 13 Florence produces the identical result** — `164/0/4`, measured 2026-07-22
-with the full post-process pipeline (`tests/delphi/RESULTS.md`). The runner is one source
+The same result was measured under a UTF-16 compiler when that portability was last
+exercised (`tests/delphi/RESULTS.md`). Not maintained -- see §2. The runner is one source
 for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
 
-The claim is dated on purpose: no licence here grants `dcc32`, so the Delphi run is a
-manual rebuild that CI cannot gate. Treat it as stale after any engine change. What CI
-*can* now cover is the Delphi-Debug bug class: `build.sh` compiles the local suite a second
-time with `-Co -Cr`, which reproduces Delphi's overflow and range checks under FPC.
+`build.sh` compiles the local suite a second time with `-Co -Cr`, overflow and range checks
+on. That is gated on every push, and it is worth keeping on its own terms: the PRNG mixer
+wraps by design and a checks-on build is the only thing that catches an unintended
+overflow elsewhere.
 
 [`tests/known-failures.txt`](../tests/known-failures.txt) is empty and gated in both
 directions: any failure blocks a push, and a case that starts passing must be recorded
@@ -167,7 +158,7 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
 
 1. **`{$mode delphi}` is the contract.** Anything needing `{$mode objfpc}` or FPC-only RTL
    is a portability break even with a green corpus. The directive itself must stay wrapped
-   in `{$IFDEF FPC}` — Delphi rejects `{$MODE}` as an invalid compiler directive.
+   in `{$IFDEF FPC}` — a Delphi-lineage compiler rejects `{$MODE}` as invalid.
 2. **`string` is a byte string here — and that is currently load-bearing.** FPC's default
    `string` is not UTF-16. The corpus is full of Cyrillic and Unicode punctuation, so
    byte-indexing a multi-byte character is the first bug class to suspect in any new string
@@ -180,16 +171,17 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
    [tests/delphi/RESULTS.md](../tests/delphi/RESULTS.md).
 
    **Anything new that spells a specific non-ASCII code point needs the same treatment.**
-   Writing its UTF-8 bytes is not portable: under Delphi those bytes are decoded through the
-   machine's ANSI codepage, so the result varies by machine.
+   Writing its UTF-8 bytes is not portable: on a UTF-16 compiler those bytes are decoded
+   through the machine's ANSI codepage, so the result varies by machine. That was a real
+   defect here, and it broke the mandatory safety restore silently.
 3. **Warnings must be fatal** (`-Sew -vm4046`) — FPC accepts an uninitialised function
    result or a shadowed variable with a mere warning, and those are what a port produces.
    `-vm4046` masks one warning raised by FPC's own generics RTL and nothing else.
-4. **Delphi's Debug build enables overflow and range checks; FPC's default build does
-   not.** Arithmetic that wraps on purpose — the mulberry32 mixer — raises `EIntOverflow`
-   there and passes silently here. Suppress checks around such code with `$IFOPT`, so a
-   host that builds with checks on keeps them everywhere else. `build.sh` compiles the
-   local suite a second time with `-Co -Cr` to catch this without a Delphi.
+4. **A host may build with overflow and range checks on; FPC's default build does not.**
+   Arithmetic that wraps on purpose — the mulberry32 mixer — raises `EIntOverflow` under
+   checks and passes silently without them. Suppress checks around such code with `$IFOPT`,
+   so a host that wants them keeps them everywhere else. `build.sh` compiles the local
+   suite a second time with `-Co -Cr`, which is what catches this.
 5. **The reference does not use one regex flag set.** `EMAIL_RE`, `DOMAIN_RE`,
    `SINGLE_ABBR_RE` and `CAP_AFTER_BLOCK_RE` carry `/giu/`; the rest are `/gu/` or `/u/`.
    Under `/iu` a property escape is CASE-FOLDED: Ll gains 1446 code points (32 with a

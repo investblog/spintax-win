@@ -1,29 +1,18 @@
 # spintax-win
 
-An Object Pascal (Delphi-mode) port of the reference spintax engine, held to the
-same shared golden-fixture corpus as the TypeScript, PHP, and Python
-implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
-`{$mode delphi}`.
+An Object Pascal port of the reference spintax engine, held to the same shared
+golden-fixture corpus as the TypeScript, PHP, and Python implementations. Zero
+external dependencies. Free Pascal 3.2.2+, `{$mode delphi}`.
 
-**Delphi status: at parity, measured 2026-07-22.** The whole golden corpus passes
-under both Delphi 13 Florence and Free Pascal 3.2.2 — `PASS=164 FAIL=0 SKIP=4` on
-each, with the full post-process pipeline — and the Delphi build is clean.
-Measurements in [tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
+**Target: Free Pascal 3.2.2+.** The whole golden corpus passes — `PASS=164 FAIL=0
+SKIP=4`, the 4 skips being `kind:rng`, engine-private by design.
 
-The claim can only ever be dated: Delphi's command-line compiler is not available
-under any licence this project will hold, so the Delphi run is a manual IDE
-rebuild and **CI cannot gate it**. FPC is gated on every push.
-
-Delphi support exists so the engine can be **ported into a Delphi codebase**, not
-so it can be installed as a package — which is why source clarity and a clean
-Delphi compile matter more here than the DPM spec does. See
-[docs/spec-pascal-port.md](docs/spec-pascal-port.md) §2.
-
-Two defects found that way were **not findable under FPC alone**: the sentinel
-literals were UTF-8 bytes that a UTF-16 `string` decoded through the machine's
-ANSI codepage, and `#def` values were rolled in hash-map order, which FPC happened
-to get right. See
-[docs/decisions/0003](docs/decisions/0003-delphi-compatibility-audit.md).
+The source also compiles unchanged under a UTF-16 Object Pascal compiler: `string`
+is UTF-8 bytes here and UTF-16 code units there, and everything that reasons about
+characters goes through the code-point helpers rather than indexing text. That
+portability is **kept, not maintained** — it is not a supported platform and no
+build is gated on it. It earned its place by finding real defects (see below); it
+is not a promise.
 
 The engine implements the spintax.net superset: not just flat `{a|b|c}`
 enumerations, but permutations, scoped variables, value-driven conditionals, and
@@ -108,7 +97,6 @@ survive Windows command-line argument parsing, which turns the quotes into backs
 before the program ever sees them. That is the shell, not the engine. Use a config
 without quotes on the command line, or pass the template from a file.
 
-
 If no fixtures path is passed, the runner looks for a local checkout of the
 reference corpus. Point it at the `packages/conformance/fixtures` directory of
 the reference repository — the corpus is checked out, never vendored here, so
@@ -123,13 +111,12 @@ than a failure.
 
     src/Spintax.pas           the engine (unit Spintax)
     tests/corpus_runner.dpr   golden-corpus conformance runner (reports; always exits 0)
-    tests/SpxJson.pas         JSON facade: fpjson under FPC, System.JSON under Delphi
+    tests/SpxJson.pas         JSON facade: fpjson, or System.JSON on a UTF-16 compiler
     tests/check-corpus.sh     the gate: runs the runner, diffs against the baseline
     tests/known-failures.txt  expected-failure baseline (currently empty)
     tests/local_tests.dpr     assertions no corpus fixture can express
     src/Spintax.Unicode.inc   generated Unicode tables (scripts/gen-unicode-tables.cjs)
     examples/demo.lpr         command-line render demo
-    Spintax.Core.dspec        DPM package spec
     docs/spec-pascal-port.md  the governing parity contract
 
 ## Encoding: a host responsibility
@@ -145,8 +132,8 @@ FPC host must declare UTF-8 once at start-up:
     DefaultSystemCodePage := CP_UTF8;
 
 A library cannot set this for its callers. Both `tests/corpus_runner.dpr` and
-`examples/demo.lpr` do it. Under Delphi the question does not arise: `string` is
-UTF-16 and the engine's sentinel literals branch on `UNICODE` accordingly.
+`examples/demo.lpr` do it. On a UTF-16 compiler the question does not arise, and
+the engine's sentinel literals branch on `UNICODE` accordingly.
 
 This is not theoretical — it is what made the Linux CI leg fail while Windows
 passed, and it took a byte dump to see, because every log renders the corruption

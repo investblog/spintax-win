@@ -1,14 +1,16 @@
 ---
 type: note
-status: active
+status: archived
 tags: [delphi, evidence, portability]
 project: spintax-win
 ---
 
 # Delphi probe — measured results
 
-> **Current as of 2026-07-22 — see run 7 at the bottom.** Earlier runs measured older
-> trees and are kept for the history of how the divergences were found.
+> **Closed 2026-07-22. Delphi is no longer a target** — not supported, not maintained,
+> nothing gated on it. Kept as evidence, because these runs are why the engine looks the
+> way it does: a second compiler found defects the corpus could not, and two of them were
+> bugs in the byte-string build as well. Run 7 was the last measurement.
 
 Delphi 12 Athens (CompilerVersion 36), Win32/Debug, `dcc32` via the IDE
 (Starter edition has no command-line compiler). Engine unit compiled with

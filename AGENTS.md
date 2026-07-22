@@ -1,8 +1,8 @@
 # spintax-win — AGENTS.md
 
 Object Pascal (Delphi-mode) port of the spintax engine, held to the same shared golden
-corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT. Builds under
-FPC 3.2.2+ and Delphi 13, both measured against the full corpus.
+corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.2.2+ in
+`{$mode delphi}`.
 
 `CLAUDE.md` is a symlink to this file — one charter, every agent.
 
@@ -31,12 +31,11 @@ FPC 3.2.2+ and Delphi 13, both measured against the full corpus.
   transcribe it**; that would pull GPL into an MIT package. Reimplement from the behavior
   contract plus the corpus. `@spintax/core` (TS) is our own MIT code and IS a legitimate
   reference — mirror its *behavior*, not its TypeScript.
-- **Why Delphi is supported.** One reason: so the **GSA SER** dev team can port this
-  engine into their codebase. Not for Delphi consumers installing a package, and **no
-  Delphi licences will be bought** — so `dcc32` is permanently out of reach, CI can never
-  gate Delphi, and the parity claim is dated rather than enforced. Delphi 12 Starter is
-  installed permanently and its IDE compiles Win32, which is what keeps the manual check
-  possible indefinitely. Details in `docs/spec-pascal-port.md` §2.
+- **UTF-16 portability is kept, not maintained.** The source also compiles under a UTF-16
+  Object Pascal compiler. Nothing is gated on it and no claim about it is maintained —
+  but do not delete the `{$IFDEF UNICODE}` branches to "simplify". Building the same
+  source with a second compiler is what surfaced the sentinel-encoding and `#def`-ordering
+  defects, and **both were bugs in the FPC build too**. See `docs/spec-pascal-port.md` §2.
 - **Corpus-first.** The acceptance suite is the shared JSON corpus at
   `spintax-js/packages/conformance/fixtures/`, reached through `SPINTAX_FIXTURES` locally
   and an `actions/checkout` of `investblog/spintax-js` in CI. **Never vendored** — a copy
@@ -47,8 +46,8 @@ FPC 3.2.2+ and Delphi 13, both measured against the full corpus.
   at every reference; `#def` resolves **once per render** and holds), and the post-process
   pipeline. **Allowed to diverge:** RNG selection results, internal architecture, diagnostic
   message strings, performance. Cross-engine RNG-sequence parity is an explicit **non-goal**.
-- **Current state:** the **whole** golden corpus passes -- `PASS=164 FAIL=0 SKIP=4` on both
-  FPC 3.2.2 and Delphi 13, the 4 skips being `kind:rng`, engine-private by design. The
+- **Current state:** the **whole** golden corpus passes -- `PASS=164 FAIL=0 SKIP=4`,
+  the 4 skips being `kind:rng`, engine-private by design. The
   cosmetic post-process is a full port of the reference's 12-step pipeline. On top of the
   corpus, `tests/local_tests.dpr` asserts the surfaces no fixture can express (line
   terminators, nil RNG, permutation config, plural fallbacks, `#include`, `knownVariables`,
@@ -61,12 +60,13 @@ FPC 3.2.2+ and Delphi 13, both measured against the full corpus.
 - **Warnings are fatal.** Build with `-Sew`. FPC compiles an uninitialised function result
   or a shadowed variable with only a warning, and those are exactly the defects a port
   produces.
-- **`string` has two widths.** UTF-8 bytes under FPC, UTF-16 code units under Delphi, and
-  the corpus is full of Cyrillic and Unicode punctuation. Anything that reasons about
-  CHARACTERS must go through `SpCodePointAt` / `SpCodePointToStr`; indexing text directly
-  is the bug class to look for first, and it has bitten this port repeatedly -- most
-  recently as an opener pass that stepped one code unit at a time and ate the spaces
-  between Russian words under FPC while Delphi was fine.
+- **`string` has two widths.** UTF-8 bytes here; UTF-16 code units on a compiler where
+  `UNICODE` is defined. The corpus is full of Cyrillic and Unicode punctuation, so anything
+  that reasons about CHARACTERS must go through `SpCodePointAt` / `SpCodePointToStr`.
+  Indexing text directly is the bug class to look for first: it has bitten this port
+  repeatedly, most recently as a pass that stepped one code unit at a time and ate the
+  spaces between Russian words -- a byte-string-only defect that a UTF-16 build did not
+  reproduce, which is how it was found.
 - **Two regex flag sets in the reference.** `CAP_AFTER_BLOCK_RE`, `EMAIL_RE`, `DOMAIN_RE`
   and `SINGLE_ABBR_RE` are `/giu/`, where property escapes are CASE-FOLDED; the rest are
   strict. Use `SpIsUniLowerFolded` / `SpIsUniLetterFolded` for those and the strict
@@ -125,8 +125,8 @@ changing the BASELINE `~/.agents` — only by agreement with the user.
 `fpc` 3.2.2+ required. `SPINTAX_FIXTURES` must point at the checked-out corpus.
 
 - `sh ./build.sh` — builds `tests/corpus_runner`, `tests/local_tests`,
-  `tests/local_tests_checked` (same tests with `-Co -Cr`, reproducing Delphi's Debug
-  overflow checks) and `examples/demo`.
+  `tests/local_tests_checked` (same tests with `-Co -Cr`, overflow and range checks on)
+  and `examples/demo`.
 - `./tests/local_tests` and `./tests/local_tests_checked` — the assertions no fixture can
   express. Both must pass.
 - `./tests/corpus_runner "$SPINTAX_FIXTURES"` — the golden-corpus gate.

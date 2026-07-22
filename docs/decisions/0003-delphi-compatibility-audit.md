@@ -1,11 +1,24 @@
 ---
 type: decision
-status: active
+status: archived
 tags: [delphi, portability, dpm, audit]
 project: spintax-win
 ---
 
 # 0003 — Delphi compatibility: audited by reading, one blocker fixed, one left open
+
+> **Delphi is no longer a target (2026-07-22).** It is neither supported nor maintained,
+> and nothing is gated on it. This record is kept because the defects below were real and
+> two of them were bugs in the FPC build too:
+>
+> - **`#def` ordering must not depend on hash-map enumeration.** It was latent on *both*
+>   compilers; FPC merely got a lucky hash layout, and 143 green fixtures did not see it.
+>   That is why `OrderDefinitions` exists -- do not "simplify" it back to iterating the
+>   dictionary.
+> - **Sentinels are spelled per string width.** Writing their UTF-8 bytes breaks on any
+>   UTF-16 host, silently, taking the mandatory safety restore with it.
+>
+> Read the rest as history, not as a platform commitment.
 
 **Date:** 2026-07-21
 
