@@ -23,10 +23,12 @@ corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.
 
 ## Project context
 
-- **Family.** `W:\projects\spintax-js` — `@spintax/core`, TS/MIT, the reference engine
-  **and the home of the golden corpus**. `W:\projects\spintax-php` — `spintax/core`,
-  Packagist/MIT. `W:\projects\spintax-py` — `spintax-core`, PyPI/MIT. `W:\projects\spintax`
-  — the WordPress plugin, PHP/**GPL**, the origin engine. Syntax reference: https://spintax.net
+- **Family.** [`investblog/spintax-js`](https://github.com/investblog/spintax-js) -- `@spintax/core`, TS/MIT, the reference engine **and the home of the golden corpus**.
+  [`investblog/spintax-php`](https://github.com/investblog/spintax-php) -- `spintax/core`,
+  Packagist/MIT. [`investblog/spintax-py`](https://github.com/investblog/spintax-py) --
+  `spintax-core`, PyPI/MIT. [`investblog/spintax`](https://github.com/investblog/spintax) --
+  the WordPress plugin, PHP/**GPL**, the origin engine. Local checkouts are assumed to sit
+  beside this one. Syntax reference: https://spintax.net
 - **Independent implementation, NOT a transcription.** The PHP plugin is **GPL — do not
   transcribe it**; that would pull GPL into an MIT package. Reimplement from the behavior
   contract plus the corpus. `@spintax/core` (TS) is our own MIT code and IS a legitimate

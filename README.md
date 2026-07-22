@@ -1,18 +1,75 @@
 # spintax-win
 
-An Object Pascal port of the reference spintax engine, held to the same shared
-golden-fixture corpus as the TypeScript, PHP, and Python implementations. Zero
-external dependencies. Free Pascal 3.2.2+, `{$mode delphi}`.
+[![CI](https://github.com/investblog/spintax-win/actions/workflows/ci.yml/badge.svg)](https://github.com/investblog/spintax-win/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Target: Free Pascal 3.2.2+.** The whole golden corpus passes — `PASS=164 FAIL=0
-SKIP=4`, the 4 skips being `kind:rng`, engine-private by design.
+A **[Spintax](https://spintax.net) engine** for Object Pascal -- parse, render,
+validate, extract and neutralize spintax templates. MIT, zero dependencies,
+Free Pascal 3.2.2+ in `{$mode delphi}`.
+
+The fourth engine in the Spintax family, and an **independent implementation** --
+not a transcription of the others. It is held to the same behaviour contract by a
+**shared golden corpus** of language-neutral fixtures, the same one that gates the
+TypeScript, PHP and Python engines: **164 of its 168 cases pass and none fail**. The
+other 4 are skipped by design -- `kind:rng`, which assert within-engine reproducibility
+rather than a cross-engine output.
+
+## Use
+
+```pascal
+uses Spintax;
+
+var
+  ctx: TSpContext;
+begin
+  { An FPC host must declare UTF-8 once -- see "Encoding" below. }
+  DefaultSystemCodePage := CP_UTF8;
+
+  ctx := Default(TSpContext);
+  ctx.PostProcess := True;          { cosmetic stage; off in a zeroed record }
+
+  SpRender('{Hello|Hi} there!', ctx);
+  // "Hello there!" or "Hi there!"
+
+  SpRender('[<sep=", ">fast|cheap|good] hosting', ctx);
+  // the three in some order: "Good, cheap, fast hosting"
+
+  SpRender('{hello|hi}. {world|earth}', ctx);
+  // "Hello. World" or "Hi. World" -- either way the post-process
+  // capitalizes both sentence starts, though the options are lower-case
+end;
+```
+
+Leave `ctx.Rng` nil for non-deterministic output, or inject a `TSpRng` -- the
+seam ships `TFirstRng`, `TLastRng`, `TSequenceRng` and a seeded `TMulberry32Rng`
+-- when you want reproducibility.
+
+## The family
+
+- **TypeScript / JavaScript:** [`@spintax/core`](https://www.npmjs.com/package/@spintax/core)
+  ([source](https://github.com/investblog/spintax-js)) -- the reference engine, and the
+  home of the golden corpus.
+- **PHP:** [`spintax/core`](https://packagist.org/packages/spintax/core)
+  ([source](https://github.com/investblog/spintax-php)).
+- **Python:** [`spintax-core`](https://pypi.org/project/spintax-core/)
+  ([source](https://github.com/investblog/spintax-py)).
+- **WordPress:** [the original plugin](https://github.com/investblog/spintax) -- the origin
+  engine, GPL.
+- **OpenCart 3.x:** [Spintax SEO](https://github.com/investblog/spintax-opencart).
+
+The engines are independent implementations held together by the shared corpus, not
+ports of one another's code.
+
+## Portability beyond FPC
 
 The source also compiles unchanged under a UTF-16 Object Pascal compiler: `string`
 is UTF-8 bytes here and UTF-16 code units there, and everything that reasons about
-characters goes through the code-point helpers rather than indexing text. That
-portability is **kept, not maintained** — it is not a supported platform and no
-build is gated on it. It earned its place by finding real defects (see below); it
-is not a promise.
+characters goes through the code-point helpers instead of indexing text.
+
+That portability is **kept, not maintained** -- it is not a supported platform and
+nothing is gated on it. It stays because it earned its place: building the same
+source with a second compiler found defects the corpus could not, and two of them
+were bugs in the Free Pascal build as well.
 
 The engine implements the spintax.net superset: not just flat `{a|b|c}`
 enumerations, but permutations, scoped variables, value-driven conditionals, and
