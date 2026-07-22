@@ -477,6 +477,18 @@ begin
   Check('nul/key-leaked-no-such-key',
         RenderPP('see mailto:x@y.com'#0'URL_0'#0' end'),
         'See mailto:x@y.com'#0'URL_0'#0' end');
+  { The two below are why step 12 keeps the reference-shaped restore for inputs
+    carrying a #0. A caller-supplied token can name a key the shield really did
+    mint, and the reference replaces EVERY occurrence of that key -- so the
+    caller's own text is substituted too. A single left-to-right pass restores a
+    different string here. Both cases were measured against the reference, and
+    both fail if step 12 takes the fast path unconditionally. }
+  Check('nul/caller-token-names-a-live-key',
+        RenderPP('   tel:+1-555-0100'#0'ABBR_1'#0#0'NOPE_1'#0'! e.g.'),
+        'tel:+1-555-0100e.g.'#0'NOPE_1'#0'! e.g.');
+  Check('nul/caller-token-between-shields',
+        RenderPP('http://x.io/p?q=1'#0'ABBR_1'#0#9'  e.g.'#0'DOM_3'#0#9),
+        'http://x.io/p?q=1e.g. e.g.'#0'DOM_3'#0);
 end;
 
 { Comma-joined #include targets, for comparing against a measured list. }

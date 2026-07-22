@@ -33,9 +33,16 @@ _Nothing open._
       range.
 
       A growable buffer replaced the per-character concatenation inside the post-process
-      only, and the restore became one left-to-right pass with a dictionary lookup. No
-      behaviour change: corpus 164/0/4, 301 local assertions, and zero differences against
-      the reference over 2 214 fuzz cases plus nine inputs containing literal NUL.
+      only, and the restore became one left-to-right pass with a dictionary lookup.
+
+      The restore change is not unconditional, and the first cut of it was wrong. A single
+      pass is identical to the reference's per-key loop only when the input carries no
+      `#0` of its own; when it does, a caller-supplied token can name a key the shield
+      really minted, and the reference substitutes the caller's text too. Step 12 now
+      takes the fast pass only for input without `#0` and keeps the reference-shaped loop
+      otherwise. Measured over 61 124 inputs, 59 870 of them carrying a literal `#0`:
+      121 diverge under an unguarded single pass, 0 under the guard. Corpus 164/0/4,
+      303 local assertions, two of which are those 121 cases and fail without the guard.
 
 - [x] **Published** as `investblog/spintax-win`, public, with the family's badges,
       cross-links and topics. CI green on ubuntu, windows and shellcheck.

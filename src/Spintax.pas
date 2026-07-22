@@ -2253,10 +2253,34 @@ begin
     { 8-11: capitalization, only now that URLs and abbreviations are out of the way }
     text := CapitalizePasses(text);
 
-    { 12: restore, then trim }
-    restored.Init(Length(text) + 16);
-    RestorePlaceholders(text, keys, vals, restored);
-    Result := JsTrim(restored.Finish);
+    { 12: restore, then trim.
+
+      Two restores, and the choice is not an optimization detail -- it is the
+      contract. The reference replaces each key across the whole text, one key at
+      a time, in insertion order. That is O(text x keys), which is what made this
+      stage quadratic, but it is also observable: a replacement can rewrite text
+      an earlier replacement produced, and an unpaired #0 the CALLER supplied can
+      pair with the opening #0 of a real placeholder to form a key that was never
+      minted. A single left-to-right pass cannot reproduce either effect.
+
+      When the input carries no #0 of its own, the two are provably identical:
+      every #0 in the working text is then one the shield placed, the tokens are
+      well formed and disjoint, and no shielded value can contain a #0 to forge a
+      new one. So the fast pass runs on every input that is not carrying a NUL,
+      which is every input anyone actually renders, and the reference-shaped loop
+      still runs on the ones that are. }
+    if Pos(#0, input) = 0 then
+    begin
+      restored.Init(Length(text) + 16);
+      RestorePlaceholders(text, keys, vals, restored);
+      Result := JsTrim(restored.Finish);
+    end
+    else
+    begin
+      for counter := 0 to keys.Count - 1 do
+        text := StringReplace(text, keys[counter], vals[counter], [rfReplaceAll]);
+      Result := JsTrim(text);
+    end;
   finally
     keys.Free;
     vals.Free;
