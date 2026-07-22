@@ -1776,13 +1776,77 @@ type
 { Replace every match of one scanner with a placeholder, left to right. The key is
   NUL prefix underscore counter NUL, exactly the reference's shape: NUL cannot occur in
   rendered output, so nothing else can collide with it. }
+{ ─── a growable buffer ───────────────────────────────────────────────────────
+  The post-process runs sixteen passes over the whole text, and each one used to
+  accumulate its result with  res := res + one character , which reallocates and copies
+  on every append. That made the stage quadratic: measured 0.11 s at 14 KB but 45 s at
+  950 KB, where four times the input cost seven to ten times the work.
+
+  Used ONLY inside the post-process. Concatenation elsewhere is not on a hot path and is
+  left alone. }
+type
+  TStrBuf = record
+    Data: string;
+    Len: Integer;
+    procedure Init(capacity: Integer);
+    procedure Grow(needed: Integer);
+    procedure AppendChar(c: Char);
+    procedure AppendSlice(const s: string; start, count: Integer);
+    procedure AppendStr(const s: string);
+    function Finish: string;
+  end;
+
+procedure TStrBuf.Init(capacity: Integer);
+begin
+  if capacity < 16 then capacity := 16;
+  SetLength(Data, capacity);
+  Len := 0;
+end;
+
+procedure TStrBuf.Grow(needed: Integer);
+var cap: Integer;
+begin
+  cap := Length(Data);
+  if Len + needed <= cap then Exit;
+  while cap < Len + needed do cap := cap * 2;
+  SetLength(Data, cap);
+end;
+
+procedure TStrBuf.AppendChar(c: Char);
+begin
+  Grow(1);
+  Inc(Len);
+  Data[Len] := c;
+end;
+
+procedure TStrBuf.AppendSlice(const s: string; start, count: Integer);
+var i: Integer;
+begin
+  if count <= 0 then Exit;
+  Grow(count);
+  for i := 0 to count - 1 do Data[Len + 1 + i] := s[start + i];
+  Inc(Len, count);
+end;
+
+procedure TStrBuf.AppendStr(const s: string);
+begin
+  AppendSlice(s, 1, Length(s));
+end;
+
+function TStrBuf.Finish: string;
+begin
+  SetLength(Data, Len);
+  Result := Data;
+end;
+
 procedure ShieldPass(var text: string; scan: TScanFn; const prefix: string;
   keys, vals: TStringList; var counter: Integer; stripTrailingPunct: Boolean);
 var
-  res, matched, key, suffix: string;
+  buf: TStrBuf;
+  matched, key, suffix: string;
   i, len, cut: Integer;
 begin
-  res := '';
+  buf.Init(Length(text) + 16);
   i := 1;
   while i <= Length(text) do
   begin
@@ -1804,34 +1868,35 @@ begin
         end;
       end;
       if matched = '' then
-        res := res + suffix
+        buf.AppendStr(suffix)
       else
       begin
         key := #0 + prefix + '_' + IntToStr(counter) + #0;
         Inc(counter);
         keys.Add(key);
         vals.Add(matched);
-        res := res + key + suffix;
+        buf.AppendStr(key);
+        buf.AppendStr(suffix);
       end;
       Inc(i, len);
     end
     else
     begin
-      res := res + text[i];
+      buf.AppendChar(text[i]);
       Inc(i);
     end;
   end;
-  text := res;
+  text := buf.Finish;
 end;
 
 { Steps 6 and 7: collapse space runs, then punctuation spacing. }
 function SpacingPasses(const input: string): string;
-var s, res: string; i, runEnd, cpLen: Integer; cp: LongWord;
+var s: string; buf: TStrBuf; i, runEnd, cpLen: Integer; cp: LongWord;
 begin
   s := input;
 
   { 6: collapse runs of space and tab to one space }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if (s[i] = ' ') or (s[i] = #9) then
@@ -1840,16 +1905,16 @@ begin
       while (runEnd <= Length(s)) and ((s[runEnd] = ' ') or (s[runEnd] = #9)) do Inc(runEnd);
       { The reference collapses runs of TWO OR MORE only: a lone tab stays a tab.
         Rewriting a single space-or-tab to a space turned a tab into a space. }
-      if runEnd - i >= 2 then res := res + ' '
-      else res := res + Copy(s, i, runEnd - i);
+      if runEnd - i >= 2 then buf.AppendChar(' ')
+      else buf.AppendSlice(s, i, runEnd - i);
       i := runEnd;
     end
-    else begin res := res + s[i]; Inc(i); end;
+    else begin buf.AppendChar(s[i]); Inc(i); end;
   end;
-  s := res;
+  s := buf.Finish;
 
   { 7: remove whitespace before  , ; : ! ? .  }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if IsPpWs(s[i]) then
@@ -1861,52 +1926,52 @@ begin
         i := runEnd;                 { drop the whitespace run entirely }
         Continue;
       end;
-      res := res + Copy(s, i, runEnd - i);
+      buf.AppendSlice(s, i, runEnd - i);
       i := runEnd;
       Continue;
     end;
-    res := res + s[i];
+    buf.AppendChar(s[i]);
     Inc(i);
   end;
-  s := res;
+  s := buf.Finish;
 
   { 7: a space after  , ; :  unless a digit, whitespace, end of text or a tag follows }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
-    res := res + s[i];
+    buf.AppendChar(s[i]);
     if CharInSet(s[i], [',', ';', ':']) and (i < Length(s))
        and not CharInSet(s[i + 1], ['0'..'9']) and not IsPpWs(s[i + 1])
        and (s[i + 1] <> '<') then
-      res := res + ' ';
+      buf.AppendChar(' ');
     Inc(i);
   end;
-  s := res;
+  s := buf.Finish;
 
   { 7: a space after a RUN of  . ! ?  -- a run is ONE sentence end, so the space goes
     after the whole run or "Wow!!!" becomes "Wow!! !". }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if CharInSet(s[i], ['.', '!', '?']) then
     begin
       runEnd := i;
       while (runEnd <= Length(s)) and CharInSet(s[runEnd], ['.', '!', '?']) do Inc(runEnd);
-      res := res + Copy(s, i, runEnd - i);
+      buf.AppendSlice(s, i, runEnd - i);
       if (runEnd <= Length(s)) and not CharInSet(s[runEnd], ['0'..'9'])
          and not IsPpWs(s[runEnd]) and (s[runEnd] <> '<') then
-        res := res + ' ';
+        buf.AppendChar(' ');
       i := runEnd;
       Continue;
     end;
-    res := res + s[i];
+    buf.AppendChar(s[i]);
     Inc(i);
   end;
-  s := res;
+  s := buf.Finish;
 
   { 7a: a Spanish opener binds to the word it opens. BEFORE capitalization, so the
     capitalizer sees the real first letter instead of a space. }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     { Advance by whole CODE POINTS. Stepping one unit at a time landed inside multi-byte
@@ -1916,12 +1981,12 @@ begin
       ordinary Russian prose, and FPC-only -- under UTF-16 there are no continuation
       units, so the two backends disagreed on the same input. }
     cp := SpCodePointAt(s, i, cpLen);
-    res := res + Copy(s, i, cpLen);
+    buf.AppendSlice(s, i, cpLen);
     Inc(i, cpLen);
     if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) then
       while (i <= Length(s)) and IsPpWs(s[i]) do Inc(i);
   end;
-  Result := res;
+  Result := buf.Finish;
 end;
 
 { The LEAD: everything that can sit between a sentence boundary and the first letter --
@@ -1978,7 +2043,8 @@ end;
 
 function CapitalizePasses(const input: string): string;
 var
-  s, res, repl: string;
+  s, repl: string;
+  buf: TStrBuf;
   i, leadLen, capLen, k: Integer;
   cp: LongWord; cpLen: Integer;
 
@@ -2016,66 +2082,66 @@ begin
     s := Copy(s, 1, leadLen) + repl + Copy(s, 1 + leadLen + capLen, MaxInt);
 
   { 9: after sentence punctuation, through the lead }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     cp := SpCodePointAt(s, i, cpLen);
     if (cpLen = 1) and CharInSet(s[i], ['.', '!', '?']) or (cp = $2026) then
     begin
-      res := res + Copy(s, i, cpLen);
+      buf.AppendSlice(s, i, cpLen);
       Inc(i, cpLen);
       leadLen := ScanLead(s, i);
-      res := res + Copy(s, i, leadLen);
+      buf.AppendSlice(s, i, leadLen);
       Inc(i, leadLen);
       capLen := CapAt(s, i, False, repl);
-      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
       Continue;
     end;
-    res := res + Copy(s, i, cpLen);
+    buf.AppendSlice(s, i, cpLen);
     Inc(i, cpLen);
   end;
-  s := res;
+  s := buf.Finish;
 
   { 10: after a block-level tag. This one is -giu- in the reference, so the CASE-FOLDED
     predicate applies -- 1446 extra code points, 32 with a differing uppercase. }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if IsBlockTagAt(s, i, k) then
     begin
-      res := res + Copy(s, i, k);
+      buf.AppendSlice(s, i, k);
       Inc(i, k);
       leadLen := ScanLead(s, i);
-      res := res + Copy(s, i, leadLen);
+      buf.AppendSlice(s, i, leadLen);
       Inc(i, leadLen);
       capLen := CapAt(s, i, True, repl);
-      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
       Continue;
     end;
-    res := res + s[i];
+    buf.AppendChar(s[i]);
     Inc(i);
   end;
-  s := res;
+  s := buf.Finish;
 
   { 11: after a line break }
-  res := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if s[i] = #10 then
     begin
-      res := res + s[i];
+      buf.AppendChar(s[i]);
       Inc(i);
       leadLen := ScanLead(s, i);
-      res := res + Copy(s, i, leadLen);
+      buf.AppendSlice(s, i, leadLen);
       Inc(i, leadLen);
       capLen := CapAt(s, i, False, repl);
-      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
       Continue;
     end;
-    res := res + s[i];
+    buf.AppendChar(s[i]);
     Inc(i);
   end;
-  Result := res;
+  Result := buf.Finish;
 end;
 
 { The full pipeline, in the reference's order. Phase 1 covers shielding and spacing;
@@ -2109,11 +2175,62 @@ begin
   Result := Copy(s, first, past - first);
 end;
 
+{ Step 12: put the shielded text back.
+
+  One left-to-right pass, not one StringReplace per key: the old form walked the whole
+  text once for every shielded match, which is the second half of why the stage was
+  quadratic. A dictionary does the lookup, because keys.IndexOf per placeholder would
+  just move the quadratic cost somewhere else.
+
+  A token is NUL, a key body, NUL. Anything that is not a known key -- an unclosed NUL, or
+  a NUL pair the input itself contained -- is copied through verbatim, which is what the
+  per-key replace did too.
+
+  Values are NOT rescanned. That is deliberate and it matches the reference: it restores
+  in insertion order, so a key that leaks into a later value is inserted after its own
+  pass has run and stays literal. }
+procedure RestorePlaceholders(const text: string; keys, vals: TStringList;
+  var buf: TStrBuf);
+var
+  map: TDictionary<string, string>;
+  i, j, k: Integer;
+  token, value: string;
+begin
+  map := TDictionary<string, string>.Create;
+  try
+    for k := 0 to keys.Count - 1 do map.AddOrSetValue(keys[k], vals[k]);
+    i := 1;
+    while i <= Length(text) do
+    begin
+      if text[i] = #0 then
+      begin
+        j := i + 1;
+        while (j <= Length(text)) and (text[j] <> #0) do Inc(j);
+        if j <= Length(text) then
+        begin
+          token := Copy(text, i, j - i + 1);
+          if map.TryGetValue(token, value) then
+          begin
+            buf.AppendStr(value);
+            i := j + 1;
+            Continue;
+          end;
+        end;
+      end;
+      buf.AppendChar(text[i]);
+      Inc(i);
+    end;
+  finally
+    map.Free;
+  end;
+end;
+
 function FullPostProcess(const input: string): string;
 var
   keys, vals: TStringList;
   text: string;
-  counter, i: Integer;
+  restored: TStrBuf;
+  counter: Integer;
 begin
   keys := TStringList.Create;
   vals := TStringList.Create;
@@ -2137,9 +2254,9 @@ begin
     text := CapitalizePasses(text);
 
     { 12: restore, then trim }
-    for i := 0 to keys.Count - 1 do
-      text := StringReplace(text, keys[i], vals[i], [rfReplaceAll]);
-    Result := JsTrim(text);
+    restored.Init(Length(text) + 16);
+    RestorePlaceholders(text, keys, vals, restored);
+    Result := JsTrim(restored.Finish);
   finally
     keys.Free;
     vals.Free;

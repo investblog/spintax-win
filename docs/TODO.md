@@ -11,30 +11,31 @@ The single list of open work.
 
 ## Open
 
-- [ ] **Post-process is quadratic in input size.** Measured on FPC 3.2.2 / i386-win32,
-      `PostProcess=True`, a template of ordinary sentences with URLs, emails and
-      abbreviations:
-
-      | input  | time   |
-      |--------|--------|
-      | 14 KB  | 0.11 s |
-      | 59 KB  | 0.57 s |
-      | 237 KB | 6.1 s  |
-      | 950 KB | 45 s   |
-
-      Four times the input costs roughly seven to ten times the work. Two causes, both in
-      `FullPostProcess`: every one of the sixteen passes accumulates its result with
-      `res := res + s[i]`, reallocating per character, and the placeholder restore runs a
-      `StringReplace` over the whole text once per shielded match.
-
-      The spec lists performance as **allowed to diverge** from the reference, so this is
-      not a parity defect -- but 45 seconds for a 950 KB template is a usability limit for
-      a content-generation engine, and the reference is roughly linear over the same range.
-      Fix is mechanical: a growable buffer instead of per-character concatenation, and a
-      single left-to-right restore pass instead of one replace per key. Measure before and
-      after; the corpus and `local_tests` are the safety net.
+_Nothing open._
 
 ## Done
+
+- [x] **Post-process is linear again** (2026-07-22). It was quadratic: sixteen passes each
+      accumulating with `res := res + s[i]`, plus a placeholder restore that ran one
+      `StringReplace` over the whole text per shielded match.
+
+      Same inputs, before and after, FPC 3.2.2 / i386-win32:
+
+      | input  | before | after  |
+      |--------|--------|--------|
+      | 14 KB  | 0.11 s | 0.04 s |
+      | 59 KB  | 0.57 s | 0.17 s |
+      | 237 KB | 6.1 s  | 0.70 s |
+      | 950 KB | 45 s   | 2.8 s  |
+
+      The point is the shape, not the seconds: four times the input now costs about four
+      times the work, where it used to cost seven to ten. 17x faster at the top of the
+      range.
+
+      A growable buffer replaced the per-character concatenation inside the post-process
+      only, and the restore became one left-to-right pass with a dictionary lookup. No
+      behaviour change: corpus 164/0/4, 301 local assertions, and zero differences against
+      the reference over 2 214 fuzz cases plus nine inputs containing literal NUL.
 
 - [x] **Published** as `investblog/spintax-win`, public, with the family's badges,
       cross-links and topics. CI green on ubuntu, windows and shellcheck.

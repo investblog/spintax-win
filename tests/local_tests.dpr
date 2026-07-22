@@ -437,6 +437,48 @@ begin
   Check('pp/sentence-run-at-end', RenderPP(U([$0057, $006F, $0077, $0021, $0021, $0021])), U([$0057, $006F, $0077, $0021, $0021, $0021]));
 end;
 
+{ The placeholder scheme delimits with NUL, so input that already contains NUL meets the
+  restore scanner head-on. Step 12 is now a single left-to-right pass rather than one
+  StringReplace per key, and these pin that the change did not move behaviour.
+
+  Measured against the reference. Two of them are worth reading twice:
+
+  - a fake key in the input IS substituted when a real match happened to claim that
+    number, and is left alone when no such key exists;
+  - a mailto: run swallows a NUL and carries the fake key inside its own value, which the
+    restore does NOT rescan -- so it survives literally. That is the reference's behaviour
+    too, because it restores in insertion order and a leaked key is inserted after its own
+    pass has already run. }
+procedure TestNulInInput;
+begin
+  Check('nul/plain',            RenderPP('a'#0'b'), 'A'#0'b');
+  Check('nul/lone',             RenderPP(#0), #0);
+  Check('nul/pair',             RenderPP(#0#0), #0#0);
+  Check('nul/unclosed',         RenderPP('unclosed '#0' tail'), 'Unclosed '#0' tail');
+  { a real URL claims URL_0, so the fake key in the input resolves to it }
+  Check('nul/fake-key-claimed',
+        RenderPP(#0'URL_0'#0' x https://example.com'),
+        'https://example.com x https://example.com');
+  Check('nul/fake-key-claimed-after',
+        RenderPP('https://example.com '#0'URL_0'#0),
+        'https://example.com https://example.com');
+  { no URL in the input, so no URL_0 key exists and nothing is substituted }
+  Check('nul/fake-key-unclaimed',
+        RenderPP(#0'FOO'#0' and '#0'URL_0'#0' end'),
+        #0'FOO'#0' and '#0'URL_0'#0' end');
+  { A mailto: run swallows the NUL and carries the fake key inside its own value. With a
+    real URL present, URL_0 genuinely exists -- so a restore that rescanned what it just
+    inserted WOULD substitute it. The reference does not, and neither may this port.
+    This is the case that discriminates; without the real URL there is no URL_0 to
+    substitute and any implementation passes. }
+  Check('nul/key-leaked-into-a-value',
+        RenderPP('https://a.example.com then mailto:x@y.com'#0'URL_0'#0' end'),
+        'https://a.example.com then mailto:x@y.com'#0'URL_0'#0' end');
+  Check('nul/key-leaked-no-such-key',
+        RenderPP('see mailto:x@y.com'#0'URL_0'#0' end'),
+        'See mailto:x@y.com'#0'URL_0'#0' end');
+end;
+
 { Comma-joined #include targets, for comparing against a measured list. }
 function Includes(const tmpl: string): string;
 var ex: TExtractResult; i: Integer;
@@ -620,6 +662,7 @@ begin
   TestDecoderContract;
   TestCaseFolding;
   TestPostProcess;
+  TestNulInInput;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;
