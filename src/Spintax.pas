@@ -2263,12 +2263,23 @@ begin
       pair with the opening #0 of a real placeholder to form a key that was never
       minted. A single left-to-right pass cannot reproduce either effect.
 
-      When the input carries no #0 of its own, the two are provably identical:
-      every #0 in the working text is then one the shield placed, the tokens are
-      well formed and disjoint, and no shielded value can contain a #0 to forge a
-      new one. So the fast pass runs on every input that is not carrying a NUL,
-      which is every input anyone actually renders, and the reference-shaped loop
-      still runs on the ones that are. }
+      When the input carries no #0 of its own, the two are identical: every #0 in
+      the working text is then one the shield placed, the keys are well formed,
+      uniquely numbered and disjoint, and passes 6-11 touch only whitespace,
+      punctuation and lowercase letters, so none of them can break a key open.
+
+      A shielded value CAN itself contain a key, and that does not break the
+      equivalence -- mailto: and tel: do not exclude #0, so one glued to an
+      already-shielded URL stores a value carrying URL_0's key (spintax-js#53).
+      The key inside it is always from an EARLIER pass, so the loop is past it by
+      the time the value lands in the text, and the fast pass never rescans what
+      it appended. Both leave it literal. An earlier draft of this comment claimed
+      no value could contain a #0, which is simply false; the conclusion held for
+      this reason instead.
+
+      So the fast pass runs on every input that is not carrying a NUL, which is
+      every input anyone actually renders, and the reference-shaped loop still
+      runs on the ones that are. }
     if Pos(#0, input) = 0 then
     begin
       restored.Init(Length(text) + 16);
