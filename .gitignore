@@ -77,9 +77,15 @@ Release/
 tests/delphi/probe_fpc
 tests/delphi/*.exe
 
-# Agent tooling: working state, not the product. Every sibling engine in this family
-# tracks AGENTS.md and CLAUDE.md and nothing else of the kind, and .claude/settings.json
-# pins an absolute shell path that would break on any other machine. Both stay on disk
-# locally; the git hooks they drive are local convenience, and CI runs the same checks.
+# Agent working state, not the product. None of it is useful to someone reading this
+# repository: it is instructions for the tooling that maintains the engine, plus a
+# settings file pinning an absolute shell path that would break on any other machine.
+# Everything a consumer or a porter needs is in README.md and docs/spec-pascal-port.md.
+#
+# All of it stays ON DISK, so a session opened in this working copy still gets its
+# charter; only the repository is kept free of it. The git hooks it drives are local
+# convenience and CI runs the same checks independently.
 .claude/
 .agents/
+AGENTS.md
+CLAUDE.md
