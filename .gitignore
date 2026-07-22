@@ -53,14 +53,13 @@ ppas.bat
 ppas.sh
 
 # built binaries (fpc -o targets; Windows adds .exe)
+# A blanket *.exe first: this is a source repo, no executable is ever tracked, and
+# naming targets one at a time already let a review tool's *_review.exe slip in.
+*.exe
 tests/corpus_runner
-tests/corpus_runner.exe
 tests/local_tests
-tests/local_tests.exe
 tests/local_tests_checked
-tests/local_tests_checked.exe
 examples/demo
-examples/demo.exe
 
 # Lazarus / Delphi per-user session state — machine-local, never shared
 *.lps
