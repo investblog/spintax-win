@@ -1,5 +1,4 @@
-# Baseline (from ~/.agents/templates/gitignore) + the Free Pascal stack.
-# The lock file in .agents/generated/ IS committed (provenance) — do not ignore it.
+# Baseline (from the canon library's template) + the Free Pascal stack.
 
 # secrets — never commit (templates like .env.example are kept)
 .env
@@ -77,3 +76,10 @@ Debug/
 Release/
 tests/delphi/probe_fpc
 tests/delphi/*.exe
+
+# Agent tooling: working state, not the product. Every sibling engine in this family
+# tracks AGENTS.md and CLAUDE.md and nothing else of the kind, and .claude/settings.json
+# pins an absolute shell path that would break on any other machine. Both stay on disk
+# locally; the git hooks they drive are local convenience, and CI runs the same checks.
+.claude/
+.agents/

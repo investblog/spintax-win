@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: sh ./build.sh
 
-      # Warnings are fatal in this port (see .agents/rules/quality-pascal.md): FPC compiles
+      # Warnings are fatal in this port: FPC compiles
       # an uninitialised function result or a shadowed variable with only a warning, and
       # those are exactly the defects a port produces. -vm4046 drops the single warning
       # FPC's own generics RTL raises from TDictionary; without it -Sew fails on code we
@@ -104,4 +104,4 @@ jobs:
       - name: Lint shell scripts
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck build.sh tests/check-corpus.sh .agents/hooks/*/*.sh
+          shellcheck build.sh tests/check-corpus.sh

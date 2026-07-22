@@ -6,6 +6,11 @@ corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.
 
 `CLAUDE.md` is a symlink to this file — one charter, every agent.
 
+> `./.agents/` and `./.claude/` are **local working state and are not tracked in this
+> repository** -- every sibling engine in the family tracks `AGENTS.md` and `CLAUDE.md`
+> only. The pointer below describes where an agent looks on a working checkout; a fresh
+> clone will not have those directories, and does not need them: CI runs the same checks.
+
 ## Pointer (where to look, in priority order)
 
 - Rules: first `./.agents/rules/`, then the library `~/.agents/rules/`.

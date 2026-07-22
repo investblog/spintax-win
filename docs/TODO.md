@@ -7,8 +7,7 @@ project: spintax-win
 
 # Backlog
 
-The single list of open work. Anything actively being built gets a plan in
-`../.agents/plans/active/` and a link from here.
+The single list of open work.
 
 ## Open
 
@@ -24,8 +23,7 @@ The single list of open work. Anything actively being built gets a plan in
       targeted a package manager nobody in this project's use case needs.
 
 - [x] **Full post-process parity** (2026-07-22). All twelve reference steps; the whole
-      corpus passes on FPC and Delphi. Plan in `../.agents/plans/done/postprocess-parity.md`;
-      supersedes [decisions/0002](decisions/0002-postprocess-remainder.md).
+      corpus passes on FPC and Delphi. Supersedes [decisions/0002](decisions/0002-postprocess-remainder.md).
 
 - [x] **Ungated surfaces are covered.** `tests/local_tests.dpr` — 51 assertions, every
       expectation measured against the reference — now gates line terminators, the nil-RNG
