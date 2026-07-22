@@ -1406,7 +1406,8 @@ begin
   if CharInSet(c, ['A'..'Z']) then Result := Chr(Ord(c) + 32) else Result := c;
 end;
 
-{ Case-insensitive ASCII compare of s[i..] against lit. }
+{ Case-insensitive ASCII compare of s[i..] against lit. Enough for the URL and URI
+  schemes, which are ASCII by definition. }
 function MatchesAt(const s: string; i: Integer; const lit: string): Boolean;
 var k: Integer;
 begin
@@ -1417,10 +1418,44 @@ begin
   Result := True;
 end;
 
+{ Case-insensitive compare that folds NON-ASCII too, by upper-casing both sides one code
+  point at a time. The abbreviation rule is -giu- and its list is largely Cyrillic, so an
+  ASCII-only fold missed every capitalised form: an uppercase Russian abbreviation was
+  treated as ordinary text and the next word got capitalised after it.
+  Returns the matched length in code units, or 0. }
+function MatchesFoldedAt(const s: string; i: Integer; const lit: string): Integer;
+var p, q, lenS, lenL: Integer; a, b: string;
+begin
+  Result := 0;
+  p := i; q := 1;
+  while q <= Length(lit) do
+  begin
+    if p > Length(s) then Exit;
+    SpCodePointAt(s, p, lenS);
+    SpCodePointAt(lit, q, lenL);
+    a := SpUpperCodePoint(SpCodePointAt(s, p, lenS));
+    b := SpUpperCodePoint(SpCodePointAt(lit, q, lenL));
+    if a <> b then Exit;
+    Inc(p, lenS);
+    Inc(q, lenL);
+  end;
+  Result := p - i;
+end;
+
 { JS -b- is ASCII: word chars are A-Za-z0-9 and underscore. }
 function IsBoundaryWordCh(const s: string; i: Integer): Boolean;
 begin
   Result := (i >= 1) and (i <= Length(s)) and IsAsciiWord(s[i]);
+end;
+
+{ A word boundary sits at index i when exactly one side of it is an ASCII word char.
+  Modelling it as merely "the char before is not a word char" is wrong in BOTH directions,
+  because -w- is ASCII even under -iu-: a Cyrillic domain like an all-Cyrillic label has
+  no boundary before it and the reference does NOT shield it, while an abbreviation
+  preceded by an underscore DOES have one and the reference does shield it. }
+function IsWordBoundaryAt(const s: string; i: Integer): Boolean;
+begin
+  Result := IsBoundaryWordCh(s, i - 1) <> IsBoundaryWordCh(s, i);
 end;
 
 { Start index of the code point that ENDS at i-1, i.e. the one before position i.
@@ -1480,10 +1515,16 @@ end;
             letter / digit / hyphen
   Greedy on the labels, with backtracking, because the last label can double as the TLD:
   in example.com the regex takes example. as the label and com as the TLD. }
-function ScanDomainPart(const s: string; i: Integer): Integer;
+{ requireEndBoundary: the callers all place a -b- after the domain, and the regex
+  BACKTRACKS the TLD length to satisfy it. Taking the greedy length and testing the
+  boundary once is not the same thing: in an email followed by a Cyrillic letter the
+  greedy TLD swallows the letter -- it is a Unicode letter too -- the boundary then fails,
+  and the whole match is lost where the reference simply stops at the shorter TLD. }
+function ScanDomainPart(const s: string; i: Integer; requireEndBoundary: Boolean): Integer;
 var
-  p, cpLen, labelEnd, tldLen, k, n: Integer;
+  p, cpLen, labelEnd, tldLen, k, n, m: Integer;
   dotEnds: array of Integer;
+  ends: array of Integer;
   cnt: Integer;
 begin
   Result := 0;
@@ -1528,22 +1569,43 @@ begin
       while (labelEnd <= Length(s))
             and (CharInSet(s[labelEnd], ['a'..'z', 'A'..'Z', '0'..'9', '-'])) do
       begin Inc(labelEnd); Inc(n); end;
+      while (n > 59) do begin Dec(labelEnd); Dec(n); end;
+      while (n >= 2) and requireEndBoundary and not IsWordBoundaryAt(s, labelEnd) do
+      begin Dec(labelEnd); Dec(n); end;
       if (n >= 2) and (n <= 59) then tldLen := labelEnd - p;
     end;
     if tldLen = 0 then
     begin
       if IsLetterFoldedAt(s, p, cpLen) then
       begin
+        { Record every acceptable end position, longest first, so the boundary check can
+          walk back through them exactly as the regex backtracks the quantifier. }
+        SetLength(ends, 0);
         labelEnd := p + cpLen;
         n := 0;
         while (n < 62) and (labelEnd <= Length(s)) do
         begin
+          if n >= 1 then
+          begin
+            SetLength(ends, Length(ends) + 1);
+            ends[Length(ends) - 1] := labelEnd;
+          end;
           if s[labelEnd] = '-' then begin Inc(labelEnd); Inc(n); end
           else if IsLetterOrNumFoldedAt(s, labelEnd, cpLen) then
             begin Inc(labelEnd, cpLen); Inc(n); end
           else Break;
         end;
-        if n >= 1 then tldLen := labelEnd - p;
+        if n >= 1 then
+        begin
+          SetLength(ends, Length(ends) + 1);
+          ends[Length(ends) - 1] := labelEnd;
+        end;
+        for m := Length(ends) - 1 downto 0 do
+          if (not requireEndBoundary) or IsWordBoundaryAt(s, ends[m]) then
+          begin
+            tldLen := ends[m] - p;
+            Break;
+          end;
       end;
     end;
     if tldLen > 0 then Exit(p + tldLen - i);
@@ -1552,29 +1614,34 @@ end;
 
 { https:// http:// ftp:// then everything up to whitespace or one of the stop chars. }
 function ScanUrl(const s: string; i: Integer): Integer;
-var p: Integer;
+var p, k: Integer;
 begin
   Result := 0;
   if MatchesAt(s, i, 'https://') then p := i + 8
   else if MatchesAt(s, i, 'http://') then p := i + 7
   else if MatchesAt(s, i, 'ftp://') then p := i + 6
   else Exit;
+  { The reference's [^...]+ needs at least one character after the scheme, so a bare
+    "https://" is not a URL. The old guard compared against a fixed length and let the
+    empty ones through. }
+  k := p;
   while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
-  if p > i + 6 then Result := p - i;
+  if p > k then Result := p - i;
 end;
 
 { mailto: and tel: have no authority part, so the URL scanner misses them. Without this
   shield the email and domain passes swallow the address, the bare prefix is left behind,
   and the space-after-colon rule splits it into a malformed href. }
 function ScanMailTel(const s: string; i: Integer): Integer;
-var p: Integer;
+var p, k: Integer;
 begin
   Result := 0;
   if MatchesAt(s, i, 'mailto:') then p := i + 7
   else if MatchesAt(s, i, 'tel:') then p := i + 4
   else Exit;
+  k := p;
   while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
-  Result := p - i;
+  if p > k then Result := p - i;
 end;
 
 function ScanEmail(const s: string; i: Integer): Integer;
@@ -1587,11 +1654,10 @@ begin
     Inc(p);
   if (p = i) or (p > Length(s)) or (s[p] <> '@') then Exit;
   Inc(p);
-  dom := ScanDomainPart(s, p);
+  dom := ScanDomainPart(s, p, True);
   if dom = 0 then Exit;
   Inc(p, dom);
-  { trailing word boundary }
-  if IsBoundaryWordCh(s, p) then Exit;
+  if not IsWordBoundaryAt(s, p) then Exit;
   Result := p - i;
 end;
 
@@ -1599,11 +1665,10 @@ function ScanDomain(const s: string; i: Integer): Integer;
 var dom: Integer;
 begin
   Result := 0;
-  { leading word boundary: previous char must not be a word char }
-  if IsBoundaryWordCh(s, i - 1) then Exit;
-  dom := ScanDomainPart(s, i);
+  if not IsWordBoundaryAt(s, i) then Exit;
+  dom := ScanDomainPart(s, i, True);
   if dom = 0 then Exit;
-  if IsBoundaryWordCh(s, i + dom) then Exit;
+  if not IsWordBoundaryAt(s, i + dom) then Exit;
   Result := dom;
 end;
 
@@ -1611,14 +1676,14 @@ function ScanDecimal(const s: string; i: Integer): Integer;
 var p, a, b: Integer;
 begin
   Result := 0;
-  if IsBoundaryWordCh(s, i - 1) then Exit;
+  if not IsWordBoundaryAt(s, i) then Exit;
   p := i; a := 0;
   while (p <= Length(s)) and CharInSet(s[p], ['0'..'9']) do begin Inc(p); Inc(a); end;
   if (a = 0) or (p > Length(s)) or (s[p] <> '.') then Exit;
   Inc(p); b := 0;
   while (p <= Length(s)) and CharInSet(s[p], ['0'..'9']) do begin Inc(p); Inc(b); end;
   if b = 0 then Exit;
-  if IsBoundaryWordCh(s, p) then Exit;
+  if not IsWordBoundaryAt(s, p) then Exit;
   Result := p - i;
 end;
 
@@ -1628,7 +1693,7 @@ function ScanMultiAbbr(const s: string; i: Integer): Integer;
 var p, cpLen, groups, letters, lastEnd: Integer;
 begin
   Result := 0;
-  if IsBoundaryWordCh(s, i - 1) then Exit;
+  if not IsWordBoundaryAt(s, i) then Exit;
   p := i; groups := 0; lastEnd := i;
   while True do
   begin
@@ -1645,6 +1710,9 @@ begin
 end;
 
 { Rebuilt once from the generated code-point table, in whatever width this compiler uses. }
+{ Built once, on first use, and freed in finalization. Not thread-safe to initialise
+  concurrently -- the engine has no other global state and no threading contract, so this
+  is documented rather than locked. }
 var
   GAbbrevs: TStringList = nil;
 
@@ -1680,8 +1748,9 @@ begin
   for k := 0 to GAbbrevs.Count - 1 do
   begin
     a := GAbbrevs[k];
-    if not MatchesAt(s, i, a) then Continue;
-    p := i + Length(a);
+    cpLen := MatchesFoldedAt(s, i, a);
+    if cpLen = 0 then Continue;
+    p := i + cpLen;
     if (p > Length(s)) or (s[p] <> '.') then Continue;
     Inc(p);
     if (p > Length(s)) or IsPpWs(s[p]) or (s[p] = '<') then Exit(p - i);
@@ -1744,7 +1813,7 @@ end;
 
 { Steps 6 and 7: collapse space runs, then punctuation spacing. }
 function SpacingPasses(const input: string): string;
-var s, res: string; i, runEnd: Integer;
+var s, res: string; i, runEnd, cpLen: Integer; cp: LongWord;
 begin
   s := input;
 
@@ -1754,8 +1823,13 @@ begin
   begin
     if (s[i] = ' ') or (s[i] = #9) then
     begin
-      res := res + ' ';
-      while (i <= Length(s)) and ((s[i] = ' ') or (s[i] = #9)) do Inc(i);
+      runEnd := i;
+      while (runEnd <= Length(s)) and ((s[runEnd] = ' ') or (s[runEnd] = #9)) do Inc(runEnd);
+      { The reference collapses runs of TWO OR MORE only: a lone tab stays a tab.
+        Rewriting a single space-or-tab to a space turned a tab into a space. }
+      if runEnd - i >= 2 then res := res + ' '
+      else res := res + Copy(s, i, runEnd - i);
+      i := runEnd;
     end
     else begin res := res + s[i]; Inc(i); end;
   end;
@@ -1822,17 +1896,17 @@ begin
   res := ''; i := 1;
   while i <= Length(s) do
   begin
-    res := res + s[i];
-    if (SpCodePointAt(s, i, runEnd) = SENTENCE_OPENER_1)
-       or (SpCodePointAt(s, i, runEnd) = SENTENCE_OPENER_2) then
-    begin
-      { copy the rest of the opener's code units, then eat the whitespace run }
-      res := res + Copy(s, i + 1, runEnd - 1);
-      Inc(i, runEnd);
+    { Advance by whole CODE POINTS. Stepping one unit at a time landed inside multi-byte
+      characters, where a stray UTF-8 continuation byte decodes to itself: $BF is the
+      second byte of Cyrillic -p- and equals the code point of the inverted question mark,
+      so "cyp goryachiy" lost the space after every such letter. Silent corruption of
+      ordinary Russian prose, and FPC-only -- under UTF-16 there are no continuation
+      units, so the two backends disagreed on the same input. }
+    cp := SpCodePointAt(s, i, cpLen);
+    res := res + Copy(s, i, cpLen);
+    Inc(i, cpLen);
+    if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) then
       while (i <= Length(s)) and IsPpWs(s[i]) do Inc(i);
-      Continue;
-    end;
-    Inc(i);
   end;
   Result := res;
 end;
@@ -1852,7 +1926,8 @@ begin
     begin
       k := p + 1;
       while (k <= Length(s)) and (s[k] <> '>') do Inc(k);
-      if k > Length(s) then Break;
+      { <[^>]+> requires at least one character inside, so <> is literal text. }
+      if (k > Length(s)) or (k = p + 1) then Break;
       p := k + 1;
       Continue;
     end;
@@ -1883,6 +1958,11 @@ end;
 
 { Steps 8-11. Each finds a boundary, skips the LEAD, and upper-cases the first lowercase
   letter after it. }
+function HasPrefix(const s, prefix: string): Boolean;
+begin
+  Result := (Length(s) >= Length(prefix)) and (Copy(s, 1, Length(prefix)) = prefix);
+end;
+
 function CapitalizePasses(const input: string): string;
 var
   s, res, repl: string;
@@ -1901,9 +1981,12 @@ var
     name := LowerAscii(Copy(t, nameStart, q - nameStart));
     while (q <= Length(t)) and (t[q] <> '>') do Inc(q);
     if q > Length(t) then Exit;
-    if (name = 'p') or (name = 'li') or (name = 'blockquote') or (name = 'div')
-       or (name = 'td') or (name = 'th')
-       or ((Length(name) = 2) and (name[1] = 'h') and CharInSet(name[2], ['1'..'6'])) then
+    { The reference alternation is followed by [^>]*, so the name only has to START with
+      one of the alternatives: <pre> matches via "p", <thead> via "th", <link> via "li".
+      Comparing the whole name for equality missed every one of those. }
+    if HasPrefix(name, 'p') or HasPrefix(name, 'li') or HasPrefix(name, 'blockquote')
+       or HasPrefix(name, 'div') or HasPrefix(name, 'td') or HasPrefix(name, 'th')
+       or ((Length(name) >= 2) and (name[1] = 'h') and CharInSet(name[2], ['1'..'6'])) then
     begin
       Result := True;
       tagLen := q + 1 - at;
@@ -1985,6 +2068,34 @@ end;
 { The full pipeline, in the reference's order. Phase 1 covers shielding and spacing;
   the capitalization steps land next and must come AFTER shielding, or the engine starts
   capitalising inside example.com and after an abbreviation. }
+{ JS String#trim strips Unicode whitespace -- and NOT the C0 controls or NUL that Pascal's
+  Trim removes. Measured from Node; both differences were observable: Pascal's Trim ate a
+  leading NUL the reference keeps, and left a non-breaking space the reference strips. }
+function IsJsTrimCp(cp: LongWord): Boolean;
+begin
+  Result := (cp = $0009) or (cp = $000A) or (cp = $000B) or (cp = $000C) or (cp = $000D)
+         or (cp = $0020) or (cp = $00A0) or (cp = $1680)
+         or ((cp >= $2000) and (cp <= $200A))
+         or (cp = $2028) or (cp = $2029) or (cp = $202F) or (cp = $205F) or (cp = $3000)
+         or (cp = $FEFF);
+end;
+
+function JsTrim(const s: string): string;
+var first, past, prevStart, cpLen: Integer;
+begin
+  first := 1;
+  while (first <= Length(s)) and IsJsTrimCp(SpCodePointAt(s, first, cpLen)) do
+    Inc(first, cpLen);
+  past := Length(s) + 1;
+  while past > first do
+  begin
+    prevStart := PrevCodePointStart(s, past);
+    if not IsJsTrimCp(SpCodePointAt(s, prevStart, cpLen)) then Break;
+    past := prevStart;
+  end;
+  Result := Copy(s, first, past - first);
+end;
+
 function FullPostProcess(const input: string): string;
 var
   keys, vals: TStringList;
@@ -2015,46 +2126,13 @@ begin
     { 12: restore, then trim }
     for i := 0 to keys.Count - 1 do
       text := StringReplace(text, keys[i], vals[i], [rfReplaceAll]);
-    Result := Trim(text);
+    Result := JsTrim(text);
   finally
     keys.Free;
     vals.Free;
   end;
 end;
 
-function MinimalPostProcess(const input: string): string;
-var s, res: string; i: Integer;
-begin
-  s := input;
-  // collapse runs of space/tab to single space
-  res := ''; i := 1;
-  while i <= Length(s) do
-  begin
-    if (s[i] = ' ') or (s[i] = #9) then
-    begin
-      res := res + ' ';
-      while (i <= Length(s)) and ((s[i] = ' ') or (s[i] = #9)) do Inc(i);
-    end
-    else begin res := res + s[i]; Inc(i); end;
-  end;
-  s := res;
-  // remove space before , ; : ! ? .
-  res := ''; i := 1;
-  while i <= Length(s) do
-  begin
-    if (s[i] = ' ') and (i < Length(s)) and IsAsciiSentencePunct(s[i+1]) then
-      // skip the space
-    else res := res + s[i];
-    Inc(i);
-  end;
-  s := res;
-  // capitalize first ASCII letter (skip leading spaces)
-  i := 1;
-  while (i <= Length(s)) and (s[i] = ' ') do Inc(i);
-  if (i <= Length(s)) and IsAsciiLower(s[i]) then s[i] := Chr(Ord(s[i]) - 32);
-  // trim
-  Result := Trim(s);
-end;
 
 { ─── #def ordering ───────────────────────────────────────────────────────────
   Definitions must be rolled dependencies-first. Iterating the TDictionary instead
@@ -2858,5 +2936,8 @@ begin
     kinds.Free; defNames.Free; defValues.Free; seenUndef.Free;
   end;
 end;
+
+finalization
+  GAbbrevs.Free;
 
 end.

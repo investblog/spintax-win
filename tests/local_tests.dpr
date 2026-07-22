@@ -378,6 +378,65 @@ begin
 end;
 
 
+{ A string from code points, so this file stays pure ASCII while still asserting on
+  Cyrillic, Greek and Spanish text. Delphi reads an unmarked source as ANSI, so a literal
+  here would be at the mercy of the machine's codepage. }
+function U(const cps: array of LongWord): string;
+var i: Integer;
+begin
+  Result := '';
+  for i := Low(cps) to High(cps) do Result := Result + SpCodePointToStr(cps[i]);
+end;
+
+function RenderPP(const tmpl: string): string;
+var ctx: TSpContext;
+begin
+  ctx := Default(TSpContext);
+  ctx.Locale := 'en';
+  ctx.PostProcess := True;
+  ctx.Rng := TFirstRng.Create;
+  try
+    Result := SpRender(tmpl, ctx);
+  finally
+    ctx.Rng.Free;
+  end;
+end;
+
+{ Post-process cases from a differential review against the reference. Each one was a
+  DEFECT before it was a test: a stray UTF-8 continuation byte read as a Spanish opener
+  (which ate the space after most Russian letters), a word boundary modelled as "previous
+  char is not a word char" instead of a transition, ASCII-only folding for a mostly
+  Cyrillic abbreviation list, bare schemes accepted as URLs, block-tag names compared for
+  equality where the reference only needs a prefix, a lone tab rewritten to a space,
+  Pascal Trim standing in for JS trim, an empty tag treated as a tag, and a greedy TLD
+  that never backtracked to satisfy the trailing boundary.
+
+  Expectations measured from the reference on 2026-07-22. }
+procedure TestPostProcess;
+begin
+  Check('pp/cyrillic-space-kept', RenderPP(U([$0441, $0443, $043F, $0020, $0433, $043E, $0440, $044F, $0447, $0438, $0439])), U([$0421, $0443, $043F, $0020, $0433, $043E, $0440, $044F, $0447, $0438, $0439]));
+  Check('pp/cyrillic-comma', RenderPP(U([$0421, $0020, $0443, $0432, $0430, $0436, $0435, $043D, $0438, $0435, $043C, $002C, $0020, $0418, $0432, $0430, $043D])), U([$0421, $0020, $0443, $0432, $0430, $0436, $0435, $043D, $0438, $0435, $043C, $002C, $0020, $0418, $0432, $0430, $043D]));
+  Check('pp/greek-first-letter', RenderPP(U([$03BF, $0020, $03BA, $03CC, $03C3, $03BC, $03BF, $03C2])), U([$039F, $0020, $03BA, $03CC, $03C3, $03BC, $03BF, $03C2]));
+  Check('pp/cyrillic-label-not-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0063, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0020, $0043, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079]));
+  Check('pp/cyrillic-tld-not-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0440, $0444, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0020, $0420, $0444, $0020, $0074, $006F, $0064, $0061, $0079]));
+  Check('pp/abbrev-after-underscore', RenderPP(U([$005F, $0442, $002E, $0434, $002E, $0020, $006D, $006F, $0072, $0065])), U([$005F, $0442, $002E, $0434, $002E, $0020, $006D, $006F, $0072, $0065]));
+  Check('pp/uppercase-cyrillic-abbrev', RenderPP(U([$0421, $041C, $002E, $0020, $0440, $0438, $0441, $0443, $043D, $043E, $043A])), U([$0421, $041C, $002E, $0020, $0440, $0438, $0441, $0443, $043D, $043E, $043A]));
+  Check('pp/single-letter-cyrillic-abbrev', RenderPP(U([$0413, $002E, $0020, $041C, $043E, $0441, $043A, $0432, $0430])), U([$0413, $002E, $0020, $041C, $043E, $0441, $043A, $0432, $0430]));
+  Check('pp/bare-scheme-not-a-url', RenderPP(U([$0073, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0020, $0068, $0065, $0072, $0065])), U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $0020, $002F, $002F, $0020, $0068, $0065, $0072, $0065]));
+  Check('pp/bare-mailto-not-a-uri', RenderPP(U([$006D, $0061, $0069, $006C, $0074, $006F, $003A, $0020, $0073, $006F, $006D, $0065, $006F, $006E, $0065])), U([$004D, $0061, $0069, $006C, $0074, $006F, $003A, $0020, $0073, $006F, $006D, $0065, $006F, $006E, $0065]));
+  Check('pp/bare-tel-not-a-uri', RenderPP(U([$0074, $0065, $006C, $003A, $0020, $0031, $0032, $0033, $0034, $0035])), U([$0054, $0065, $006C, $003A, $0020, $0031, $0032, $0033, $0034, $0035]));
+  Check('pp/block-tag-prefix-pre', RenderPP(U([$0077, $006F, $0072, $0064, $0020, $003C, $0070, $0072, $0065, $003E, $0068, $0065, $006C, $006C, $006F])), U([$0057, $006F, $0072, $0064, $0020, $003C, $0070, $0072, $0065, $003E, $0048, $0065, $006C, $006C, $006F]));
+  Check('pp/block-tag-prefix-thead', RenderPP(U([$0077, $006F, $0072, $0064, $0020, $003C, $0074, $0068, $0065, $0061, $0064, $003E, $0078])), U([$0057, $006F, $0072, $0064, $0020, $003C, $0074, $0068, $0065, $0061, $0064, $003E, $0058]));
+  Check('pp/lone-tab-kept', RenderPP(U([$0061, $0009, $0062])), U([$0041, $0009, $0062]));
+  Check('pp/tab-after-newline', RenderPP(U([$0061, $000A, $0009, $0062])), U([$0041, $000A, $0009, $0042]));
+  Check('pp/empty-tag-is-literal', RenderPP(U([$0061, $002E, $0020, $003C, $003E, $0062])), U([$0041, $002E, $0020, $003C, $003E, $0062]));
+  Check('pp/nbsp-is-trimmed', RenderPP(U([$00A0, $0068, $0065, $006C, $006C, $006F, $00A0])), U([$0068, $0065, $006C, $006C, $006F]));
+  Check('pp/email-then-cyrillic', RenderPP(U([$006D, $0065, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $043F])), U([$006D, $0065, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $043F]));
+  Check('pp/domain-then-cyrillic', RenderPP(U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421])), U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421]));
+  Check('pp/url-keeps-sentence-stop', RenderPP(U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E])), U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E]));
+  Check('pp/sentence-run-at-end', RenderPP(U([$0057, $006F, $0077, $0021, $0021, $0021])), U([$0057, $006F, $0077, $0021, $0021, $0021]));
+end;
+
 { Comma-joined #include targets, for comparing against a measured list. }
 function Includes(const tmpl: string): string;
 var ex: TExtractResult; i: Integer;
@@ -560,6 +619,7 @@ begin
   TestEncoding;
   TestDecoderContract;
   TestCaseFolding;
+  TestPostProcess;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;
