@@ -17,8 +17,8 @@ superset: enumerations `{a|b|c}`, permutations `[a|b|c]` with `<config>`, scoped
 `%name%`, value-driven conditionals `{?VAR?a|b}`, locale-aware plurals, `#set` / `#def`
 directives, `neutralize` shielding, `extract`, and a static `validate`.
 
-Compiles under Free Pascal 3.2.2+ in `{$mode delphi}` and is intended to be
-Delphi-consumable as-is. MIT.
+Compiles under Free Pascal 3.2.2+ and Delphi 13, in `{$mode delphi}`, with the same
+measured corpus result on both (§4). MIT.
 
 ## 2. Position in the family
 
@@ -73,11 +73,14 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 cosmetic stage, and nowhere else. The full deterministic semantic gate and the static
 validator pass.
 
-**Delphi 13 Florence produced the identical result when last measured** — same totals, and
-the failing set matching case for case (2026-07-21, `tests/delphi/RESULTS.md`). **That
-measurement is stale**: the engine has changed since and only a manual rebuild of
-`tests/corpus_runner.dpr` can renew it, because no licence here grants `dcc32`. The runner
-is one source for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
+**Delphi 13 Florence produces the identical result** — same totals, failing set matching
+case for case, measured 2026-07-22 (`tests/delphi/RESULTS.md`). The runner is one source
+for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
+
+The claim is dated on purpose: no licence here grants `dcc32`, so the Delphi run is a
+manual rebuild that CI cannot gate. Treat it as stale after any engine change. What CI
+*can* now cover is the Delphi-Debug bug class: `build.sh` compiles the local suite a second
+time with `-Co -Cr`, which reproduces Delphi's overflow and range checks under FPC.
 
 The 21 are enumerated in [`tests/known-failures.txt`](../tests/known-failures.txt) and
 gated: a new failure anywhere blocks a push, and a case that starts passing also blocks
@@ -144,7 +147,12 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
 3. **Warnings must be fatal** (`-Sew -vm4046`) — FPC accepts an uninitialised function
    result or a shadowed variable with a mere warning, and those are what a port produces.
    `-vm4046` masks one warning raised by FPC's own generics RTL and nothing else.
-4. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
+4. **Delphi's Debug build enables overflow and range checks; FPC's default build does
+   not.** Arithmetic that wraps on purpose — the mulberry32 mixer — raises `EIntOverflow`
+   there and passes silently here. Suppress checks around such code with `$IFOPT`, so a
+   host that builds with checks on keeps them everywhere else. `build.sh` compiles the
+   local suite a second time with `-Co -Cr` to catch this without a Delphi.
+5. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
    reference handles — the lesson the Python port already paid for. `ParseSequence` /
    `RenderNodes` are the places to watch.
 

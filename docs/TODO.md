@@ -12,30 +12,27 @@ The single list of open work. Anything actively being built gets a plan in
 
 ## Open
 
-- [ ] **[BLOCKING A RELEASE] The Delphi parity measurement is stale.** The last full run
-      is 2026-07-21 (`143/21/4`, failing set identical to FPC), and the engine has changed
-      substantially since — a 28-site `CharInSet` sweep, the host codepage declaration,
-      dead-local removal, the RNG default, and the line-terminator rewrite. FPC and CI
-      cover Windows and Linux; **nothing covers Delphi but a human pressing Shift+F9**.
-      Until that is re-run, README and `spec-pascal-port.md` describe an engine state that
-      no longer exists.
+- [ ] **Delphi parity is dated, not defended.** Measured 2026-07-22 (`143/21/4` corpus,
+      `31/0` local, clean build). No licence available here grants `dcc32` — Starter never
+      had it, and trials exclude the command-line compilers by design
+      ([Embarcadero](https://support.embarcadero.com/article/44692)) — so the Delphi run is
+      a manual rebuild of `tests/corpus_runner.dpr` and `tests/local_tests.dpr`, and CI
+      cannot gate it. Re-run after any engine change; Architect trial expires ~2026-08-21.
+      **Decide:** buy Professional+ and gate it, or keep the dated manual check.
 
-      Two things to build there, not one: `tests/corpus_runner.dpr` **and**
-      `tests/local_tests.dpr`. The latter has never been compiled by Delphi at all — its
-      `{$IFDEF UNICODE}` branch for U+2028/U+2029 and its `in '..\src\Spintax.pas'` clause
-      are unverified on that compiler.
-- [ ] **Delphi parity is measured but not defended.** No licence available here grants
-      `dcc32` — Starter never had it, and trials exclude the command-line compilers by
-      design ([Embarcadero](https://support.embarcadero.com/article/44692)) — so the Delphi
-      run cannot be gated by a hook or by CI. Architect trial expires ~2026-08-21.
-      **Decide:** buy Professional+ and gate it, or accept a dated manual check and treat
-      every string-width-sensitive edit as requiring a re-run.
-- [ ] **Ungated surfaces: partly covered now.** `tests/local_tests.dpr` asserts line
-      terminators and the nil-RNG default. Still uncovered, and still where the sibling
-      ports' real bugs lived: `#include` resolution and depth, permutation `<config>`
-      (`minsize`/`maxsize`/`sep`/`lastsep`), plural lenient fallbacks, and the
-      `known_variables` path. Expectations must be measured against the reference, never
-      written by reading this port.
+      Partly mitigated: `build.sh` now also builds the local suite with `-Co -Cr`, which
+      reproduces Delphi's Debug overflow/range checks under FPC — verified to catch the
+      exact `EIntOverflow` that only Delphi had found. That closes one bug class, not the
+      compiler difference itself.
+
+- [ ] **Ungated surfaces: `#include` is the one left.** `tests/local_tests.dpr` now covers
+      line terminators, the nil-RNG default, the seeded generator, permutation `<config>`
+      and plural lenient fallbacks — 31 assertions, all measured against the reference.
+      Still uncovered: **`#include` resolution and depth**, and the `known_variables` path.
+      Start by establishing whether this engine resolves `#include` at render time at all
+      or treats it as a host concern; the answer decides whether there is behaviour to
+      assert. Expectations must be measured against the reference, never written by
+      reading this port.
 - [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
       listed in `../tests/known-failures.txt`. A scope decision, not a defect:
       [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer

@@ -172,11 +172,8 @@ rather than by reading.**
 Both are `{$IFDEF UNICODE}`-identical for this unit, so the package declares the 12.0–13.0
 range; only 13 has run the corpus.
 
-> **STALE — re-run needed.** Runs 4 and 5 below measured the tree at commit `4c5198c`.
-> Nine commits have touched `src/`, `tests/` and `examples/` since, including the
-> `CharInSet` sweep across 28 parser sites. FPC and CI still report `143/21/4`, but
-> nothing has re-measured Delphi. Rebuild `tests/corpus_runner.dpr` (Shift+F9) before
-> quoting the parity claim anywhere.
+> **Current as of 2026-07-22** — see run 6 at the bottom. Runs 4 and 5 measured an older
+> tree and are kept for the history of how the divergences were found.
 
 ## Run 5 — three environments agree (CI, 2026-07-21)
 
@@ -225,6 +222,43 @@ truncating on Delphi 13 — and this bug had a different cause entirely.
 log renders non-ASCII as `?` — exactly the information an encoding bug lives in. The byte
 dump (`SPINTAX_HEX=1`) settled it immediately. For a port about encoding, the harness has
 to show bytes; that should have been built before the guessing started.
+
+## Run 6 — parity re-established, and the manual build earned its keep (2026-07-22)
+
+Delphi 13 Florence, Win32/Debug, both binaries built by hand.
+
+| | FPC 3.2.2 | Delphi 13 |
+|---|---|---|
+| `corpus_runner` | 143 / 21 / 4 | **143 / 21 / 4**, failing set identical case for case |
+| `local_tests` | 31 / 0 | **31 / 0** |
+| build diagnostics | 0 from our sources | **0 errors, 0 warnings, 0 hints** |
+
+`W1050` is gone: 30 → 0, after replacing every `c in [...]` with `CharInSet`.
+
+### What only the Delphi build could find: EIntOverflow in the PRNG
+
+The first run of `local_tests` under Delphi failed on the nil-RNG case with
+`EIntOverflow`. mulberry32 is 32-bit wraparound arithmetic by definition, and Delphi's
+Debug configuration enables overflow and range checks, so every mix step raised.
+
+It hid behind two compounding facts: **the corpus skips every `kind:rng` case by design**,
+so the generator was never executed by the suite at all, and it only became reachable at
+render time when a nil `Ctx.Rng` started defaulting to it. The fix for one crash had
+introduced another, on the one compiler that could not run the tests.
+
+**The durable outcome is not the fix but the capability.** `fpc -Co -Cr` reproduces
+Delphi's Debug checks, verified by regression: removing the `$IFOPT` suppression makes the
+checked FPC build report the *same two failures* Delphi did, while the ordinary build stays
+green. `build.sh` now produces both binaries and the gate and CI run both — so this
+bug class no longer needs a human with an IDE.
+
+### A decision that paid off
+
+Delphi's editor reports `local_tests.dpr` as **ANSI**. Had the Slavic plural cases stayed
+in this file, their Cyrillic literals would have been read in the machine's ANSI codepage
+and the test would have compared the wrong bytes. Keeping the source verifiably ASCII-only
+— and leaving the Slavic buckets to the 37 corpus cases that already gate them — was what
+made this file safe to compile on both.
 
 ## What is still NOT guarded
 
