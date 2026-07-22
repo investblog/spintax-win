@@ -150,9 +150,12 @@ begin
   Result := Ord(s[i]);
   { A surrogate pair is one code point in two units. }
   if (Result >= $D800) and (Result <= $DBFF) and (i < Length(s))
-     and (Ord(s[i + 1]) >= $DC00) and (Ord(s[i + 1]) <= $DFFF) then
+     and (LongWord(Ord(s[i + 1])) >= $DC00) and (LongWord(Ord(s[i + 1])) <= $DFFF) then
   begin
-    Result := $10000 + ((Result - $D800) shl 10) + (Ord(s[i + 1]) - $DC00);
+    { Every operand stays LongWord: Ord() is signed, and mixing widths here made Delphi
+      warn (W1024) about combining signed and unsigned types. }
+    Result := LongWord($10000) + ((Result - LongWord($D800)) shl 10)
+              + (LongWord(Ord(s[i + 1])) - LongWord($DC00));
     cpLen := 2;
   end;
   {$ELSE}
@@ -2936,6 +2939,10 @@ begin
     kinds.Free; defNames.Free; defValues.Free; seenUndef.Free;
   end;
 end;
+
+initialization
+  { Delphi requires an initialization section before a finalization one; FPC does not.
+    The abbreviation list is still built lazily -- this exists only to make the pair legal. }
 
 finalization
   GAbbrevs.Free;
