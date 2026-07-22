@@ -99,6 +99,18 @@ function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpD
 function SpValidate(const Src, Locale: string;
   KnownIncludes, KnownVariables: TStringList): TSpDiagList; overload;
 
+{ Unicode helpers. Public because this port has to do Unicode work that neither compiler's
+  RTL offers portably, because a team porting the engine needs the same primitives, and
+  because the tests gate them directly rather than through the behaviour built on top.
+  Tables are baked from the reference's Unicode version -- see SpUnicodeTableVersion. }
+function SpCodePointAt(const s: string; i: Integer; out cpLen: Integer): LongWord;
+function SpCodePointToStr(cp: LongWord): string;
+function SpIsUniLower(cp: LongWord): Boolean;
+function SpIsUniLetter(cp: LongWord): Boolean;
+function SpIsUniNumber(cp: LongWord): Boolean;
+function SpUpperCodePoint(cp: LongWord): string;
+function SpUnicodeTableVersion: string;
+
 { Locale helpers }
 function NormalizeBaseLang(const Locale: string): string;
 function PluralArity(const BaseLang: string): Integer;
@@ -111,6 +123,158 @@ uses
 const
   MAX_VARIABLE_DEPTH = 50;
   PHP_WS = [' ', #9, #10, #13, #0, #11];
+
+{ Unicode tables for the post-process stage, generated from the reference's own Unicode
+  version. See scripts/gen-unicode-tables.cjs for why they are baked rather than read
+  from the host RTL. }
+{$I Spintax.Unicode.inc}
+
+{ ─── code points ─────────────────────────────────────────────────────────────
+  `string` is UTF-8 bytes under FPC and UTF-16 code units under Delphi, so anything that
+  reasons about CHARACTERS rather than bytes has to go through here. Every earlier bug in
+  this port that involved non-ASCII text came from code that skipped this step. }
+
+{ The code point starting at s[i]; CpLen is its size in code units. Malformed input yields
+  the raw unit with CpLen = 1, so a scan always advances and never loops. }
+function SpCodePointAt(const s: string; i: Integer; out cpLen: Integer): LongWord;
+{$IFNDEF UNICODE}
+var b0, b1, b2, b3: LongWord; n: Integer;
+{$ENDIF}
+begin
+  cpLen := 1;
+  Result := 0;
+  if (i < 1) or (i > Length(s)) then Exit;
+  {$IFDEF UNICODE}
+  Result := Ord(s[i]);
+  { A surrogate pair is one code point in two units. }
+  if (Result >= $D800) and (Result <= $DBFF) and (i < Length(s))
+     and (Ord(s[i + 1]) >= $DC00) and (Ord(s[i + 1]) <= $DFFF) then
+  begin
+    Result := $10000 + ((Result - $D800) shl 10) + (Ord(s[i + 1]) - $DC00);
+    cpLen := 2;
+  end;
+  {$ELSE}
+  b0 := Ord(s[i]);
+  if b0 < $80 then begin Result := b0; Exit; end;
+  if      (b0 and $E0) = $C0 then n := 2
+  else if (b0 and $F0) = $E0 then n := 3
+  else if (b0 and $F8) = $F0 then n := 4
+  else begin Result := b0; Exit; end;      { stray continuation byte }
+  if i + n - 1 > Length(s) then begin Result := b0; Exit; end;
+  b1 := Ord(s[i + 1]);
+  if (b1 and $C0) <> $80 then begin Result := b0; Exit; end;
+  case n of
+    2: Result := ((b0 and $1F) shl 6) or (b1 and $3F);
+    3: begin
+         b2 := Ord(s[i + 2]);
+         if (b2 and $C0) <> $80 then begin Result := b0; Exit; end;
+         Result := ((b0 and $0F) shl 12) or ((b1 and $3F) shl 6) or (b2 and $3F);
+       end;
+  else
+    begin
+      b2 := Ord(s[i + 2]); b3 := Ord(s[i + 3]);
+      if ((b2 and $C0) <> $80) or ((b3 and $C0) <> $80) then begin Result := b0; Exit; end;
+      Result := ((b0 and $07) shl 18) or ((b1 and $3F) shl 12)
+                or ((b2 and $3F) shl 6) or (b3 and $3F);
+    end;
+  end;
+  cpLen := n;
+  {$ENDIF}
+end;
+
+{ A code point in this compiler's string encoding. }
+function SpCodePointToStr(cp: LongWord): string;
+begin
+  {$IFDEF UNICODE}
+  if cp < $10000 then
+    Result := Chr(cp)
+  else
+  begin
+    cp := cp - $10000;
+    Result := Chr($D800 + (cp shr 10)) + Chr($DC00 + (cp and $3FF));
+  end;
+  {$ELSE}
+  if cp < $80 then
+    Result := Chr(cp)
+  else if cp < $800 then
+    Result := Chr($C0 or (cp shr 6)) + Chr($80 or (cp and $3F))
+  else if cp < $10000 then
+    Result := Chr($E0 or (cp shr 12)) + Chr($80 or ((cp shr 6) and $3F))
+              + Chr($80 or (cp and $3F))
+  else
+    Result := Chr($F0 or (cp shr 18)) + Chr($80 or ((cp shr 12) and $3F))
+              + Chr($80 or ((cp shr 6) and $3F)) + Chr($80 or (cp and $3F));
+  {$ENDIF}
+end;
+
+{ Binary search over a flat (lo, hi) range table. One routine for every table -- the
+  generator emits flat arrays so an open-array parameter can take any of them. }
+function InRangeTable(cp: LongWord; const tbl: array of LongWord): Boolean;
+var lo, hi, mid: Integer;
+begin
+  Result := False;
+  lo := 0;
+  hi := (Length(tbl) div 2) - 1;
+  while lo <= hi do
+  begin
+    mid := (lo + hi) div 2;
+    if cp < tbl[mid * 2] then hi := mid - 1
+    else if cp > tbl[mid * 2 + 1] then lo := mid + 1
+    else Exit(True);
+  end;
+end;
+
+function SpUnicodeTableVersion: string;
+begin
+  Result := UNICODE_TABLE_VERSION;
+end;
+
+function SpIsUniLower(cp: LongWord): Boolean;
+begin
+  Result := InRangeTable(cp, LL_RANGES);
+end;
+
+function SpIsUniLetter(cp: LongWord): Boolean;
+begin
+  Result := InRangeTable(cp, L_RANGES);
+end;
+
+function SpIsUniNumber(cp: LongWord): Boolean;
+begin
+  Result := InRangeTable(cp, N_RANGES);
+end;
+
+{ Uppercase of one code point, as a STRING: a few expand to more than one character
+  (sharp s -> SS), and the reference's toUpperCase() expands them too. }
+function SpUpperCodePoint(cp: LongWord): string;
+var lo, hi, mid, i: Integer;
+begin
+  { multi-character expansions first -- they are excluded from the runs }
+  lo := 0; hi := UPPER_MULTI_COUNT - 1;
+  while lo <= hi do
+  begin
+    mid := (lo + hi) div 2;
+    if cp < UPPER_MULTI_CP[mid] then hi := mid - 1
+    else if cp > UPPER_MULTI_CP[mid] then lo := mid + 1
+    else
+    begin
+      Result := '';
+      for i := 0 to UPPER_MULTI_MAXLEN - 1 do
+        if UPPER_MULTI_TO[mid * UPPER_MULTI_MAXLEN + i] <> 0 then
+          Result := Result + SpCodePointToStr(UPPER_MULTI_TO[mid * UPPER_MULTI_MAXLEN + i]);
+      Exit;
+    end;
+  end;
+  lo := 0; hi := UPPER_RUNS_COUNT - 1;
+  while lo <= hi do
+  begin
+    mid := (lo + hi) div 2;
+    if LongInt(cp) < UPPER_RUNS[mid * 3] then hi := mid - 1
+    else if LongInt(cp) > UPPER_RUNS[mid * 3 + 1] then lo := mid + 1
+    else Exit(SpCodePointToStr(LongWord(LongInt(cp) + UPPER_RUNS[mid * 3 + 2])));
+  end;
+  Result := SpCodePointToStr(cp);
+end;
 
 { ─── RNG ─────────────────────────────────────────────────────────────────── }
 

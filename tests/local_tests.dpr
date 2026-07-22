@@ -184,6 +184,75 @@ begin
   end;
 end;
 
+{ Code points rendered as a space-separated hex list, so a failure shows WHICH code point
+  differs instead of a glyph a terminal cannot draw. }
+function CpList(const s: string): string;
+var i, cpLen: Integer; cp: LongWord;
+begin
+  Result := '';
+  i := 1;
+  while i <= Length(s) do
+  begin
+    cp := SpCodePointAt(s, i, cpLen);
+    if Result <> '' then Result := Result + ' ';
+    Result := Result + '$' + IntToHex(cp, 4);
+    Inc(i, cpLen);
+  end;
+end;
+
+{ One code point against the reference's answers. Uppercase is asserted ONLY where the
+  code point is Ll: the reference applies toUpperCase() to a Unicode-Ll capture and nowhere
+  else, so the baked table is Ll-scoped on purpose. U+2170 is the case that makes this
+  explicit -- it uppercases to U+2160 in JS but is Unicode N, and the engine never asks. }
+procedure CheckCp(cp: LongWord; wantLl, wantL, wantN: Boolean; const wantUpper: string);
+var got: string;
+begin
+  Check('unicode/Ll ' + IntToHex(cp, 4), BoolToStr(SpIsUniLower(cp), True), BoolToStr(wantLl, True));
+  Check('unicode/L  ' + IntToHex(cp, 4), BoolToStr(SpIsUniLetter(cp), True), BoolToStr(wantL, True));
+  Check('unicode/N  ' + IntToHex(cp, 4), BoolToStr(SpIsUniNumber(cp), True), BoolToStr(wantN, True));
+  if wantUpper <> '' then
+  begin
+    got := CpList(SpUpperCodePoint(cp));
+    Check('unicode/upper ' + IntToHex(cp, 4), got, wantUpper);
+  end;
+  { Round-trip: encoding a code point then decoding it must return the same value on both
+    string widths. This is what catches a broken surrogate pair or UTF-8 sequence. }
+  Check('unicode/roundtrip ' + IntToHex(cp, 4), CpList(SpCodePointToStr(cp)), '$' + IntToHex(cp, 4));
+end;
+
+{ The Unicode foundation the post-process stage is built on. Expectations generated from
+  Node -- the same engine and Unicode version the reference runs on and the tables were
+  baked from. Astral code points are included because they are two code units under UTF-16
+  and four bytes under UTF-8, which is exactly where a naive scan breaks. }
+procedure TestUnicodeTables;
+begin
+  Check('unicode/table version', SpUnicodeTableVersion, '17.0');
+  CheckCp($0041, False, True , False, '');
+  CheckCp($0061, True , True , False, '$0041');
+  CheckCp($007A, True , True , False, '$005A');
+  CheckCp($0030, False, False, True , '');
+  CheckCp($00DF, True , True , False, '$0053 $0053');
+  CheckCp($00E9, True , True , False, '$00C9');
+  CheckCp($00FF, True , True , False, '$0178');
+  CheckCp($0131, True , True , False, '$0049');
+  CheckCp($0130, False, True , False, '');
+  CheckCp($03B1, True , True , False, '$0391');
+  CheckCp($03C2, True , True , False, '$03A3');
+  CheckCp($0430, True , True , False, '$0410');
+  CheckCp($044F, True , True , False, '$042F');
+  CheckCp($0451, True , True , False, '$0401');
+  CheckCp($1E9E, False, True , False, '');
+  CheckCp($FB00, True , True , False, '$0046 $0046');
+  CheckCp($FB03, True , True , False, '$0046 $0046 $0049');
+  CheckCp($2028, False, False, False, '');
+  CheckCp($1D41A, True , True , False, '$1D41A');
+  CheckCp($10428, True , True , False, '$10400');
+  CheckCp($1F600, False, False, False, '');
+  CheckCp($0660, False, False, True , '');
+  CheckCp($2160, False, False, True , '');
+  CheckCp($2170, False, False, True , '');
+end;
+
 { Comma-joined #include targets, for comparing against a measured list. }
 function Includes(const tmpl: string): string;
 var ex: TExtractResult; i: Integer;
@@ -362,6 +431,7 @@ begin
   TestPluralFallbacks;
   TestIncludes;
   TestKnownVariables;
+  TestUnicodeTables;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;
