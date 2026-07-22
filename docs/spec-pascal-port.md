@@ -126,6 +126,8 @@ function SpSafetyRestore(const Text: string): string;
 function SpStripSentinels(const Text: string): string;
 function SpExtract(const Src: string): TExtractResult;
 function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
+function SpValidate(const Src, Locale: string;
+                    KnownIncludes, KnownVariables: TStringList): TSpDiagList;
 function NormalizeBaseLang(const Locale: string): string;
 function PluralArity(const BaseLang: string): Integer;
 ```
@@ -138,6 +140,13 @@ deterministic fixtures drive.
 `SpValidate` returns `TSpDiagList` (`TList<TSpDiag>`, code + severity). Invalid iff any
 diagnostic is severity `error` — that is the verdict an editor or an LLM-repair loop
 keys off.
+
+`KnownVariables` names what the **host** will supply at render time, mirroring the
+reference's `ValidateOptions.knownVariables`: a reference to one is not "undefined", so the
+`variable.undefined` warning is suppressed for it. Matching is case-insensitive. It only
+ever silences a **warning** — an unresolved `%var%` has never made a template invalid and
+must not start to, or a host rendering with runtime variables would see its own templates
+called broken.
 
 ## 6. Trust model
 

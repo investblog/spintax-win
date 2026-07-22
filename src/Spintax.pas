@@ -88,7 +88,16 @@ function SpNeutralize(const Value: string): string;
 function SpSafetyRestore(const Text: string): string;
 function SpStripSentinels(const Text: string): string;
 function SpExtract(const Src: string): TExtractResult;
-function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
+function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList; overload;
+{ KnownVariables: names the HOST will supply at render time. A reference to one of them is
+  not "undefined", so the `variable.undefined` warning is suppressed for it — the same role
+  KnownIncludes plays for `#include` targets, and the same thing the reference's
+  ValidateOptions.knownVariables does. Pass nil to declare none.
+
+  It only ever silences a WARNING: an unresolved %var% never made a template invalid, and
+  must not start to. }
+function SpValidate(const Src, Locale: string;
+  KnownIncludes, KnownVariables: TStringList): TSpDiagList; overload;
 
 { Locale helpers }
 function NormalizeBaseLang(const Locale: string): string;
@@ -1883,6 +1892,12 @@ begin
 end;
 
 function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
+begin
+  Result := SpValidate(Src, Locale, KnownIncludes, nil);
+end;
+
+function SpValidate(const Src, Locale: string;
+  KnownIncludes, KnownVariables: TStringList): TSpDiagList;
 var text, body, line, kind, nm, val, ref: string;
     lineStart, e, n, p, q, r, i, j, termLen: Integer;
     kinds, defNames, defValues, seenUndef: TStringList;
@@ -1929,6 +1944,13 @@ begin
   seenUndef := TStringList.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues);
+    // A host-declared variable counts as defined for this check, so seeding defNames
+    // suppresses the warning at both reference sites below without duplicating the test.
+    // Names are compared lower-cased, like every other variable name in the engine.
+    if KnownVariables <> nil then
+      for i := 0 to KnownVariables.Count - 1 do
+        if defNames.IndexOf(LowerAscii(KnownVariables[i])) < 0 then
+          defNames.Add(LowerAscii(KnownVariables[i]));
     // build body = non-directive lines
     body := '';
     n := Length(text); lineStart := 1;

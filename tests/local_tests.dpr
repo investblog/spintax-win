@@ -17,7 +17,7 @@ program local_tests;
 {$APPTYPE CONSOLE}
 
 uses
-  SysUtils, Generics.Collections,
+  SysUtils, Classes, Generics.Collections,
   {$IFDEF FPC}
   Spintax;
   {$ELSE}
@@ -234,6 +234,57 @@ begin
         RenderFirst('x'#13'#include "frag"'#13'after'), 'x'#13'#include "frag"'#13'after');
 end;
 
+{ Diagnostic codes+severities, space-joined, with a host-declared variable list. }
+function Diags(const tmpl: string; const known: array of string): string;
+var d: TSpDiagList; i: Integer; kv: TStringList;
+begin
+  kv := nil;
+  if Length(known) > 0 then
+  begin
+    kv := TStringList.Create;
+    for i := 0 to High(known) do kv.Add(known[i]);
+  end;
+  try
+    Result := '';
+    d := SpValidate(tmpl, 'en', nil, kv);
+    try
+      for i := 0 to d.Count - 1 do
+      begin
+        if i > 0 then Result := Result + ' ';
+        Result := Result + d[i].Code + '/' + d[i].Severity;
+      end;
+    finally
+      d.Free;
+    end;
+  finally
+    kv.Free;
+  end;
+end;
+
+{ KnownVariables: names the host promises to supply at render time. No fixture can carry
+  them -- the corpus schema has no such field, and grep confirms the string appears in no
+  fixture -- so this is the only gate.
+
+  Measured against the reference on 2026-07-22. The severity matters as much as the code:
+  an unresolved %var% is a WARNING and must never become an error, or a host that renders
+  with runtime variables would see its templates called invalid. }
+procedure TestKnownVariables;
+begin
+  Check('knownvars/undeclared-warns',   Diags('%foo%', []),        'variable.undefined/warning');
+  Check('knownvars/declared-silent',    Diags('%foo%', ['foo']),   '');
+  Check('knownvars/other-name-warns',   Diags('%foo%', ['bar']),   'variable.undefined/warning');
+  { A definition wins on its own; the list is not needed for it. }
+  Check('knownvars/set-defined',        Diags('#set %foo% = 1'#10'%foo%', ['bar']), '');
+  Check('knownvars/def-defined',        Diags('#def %foo% = 1'#10'%foo%', ['bar']), '');
+  { Conditionals reference variables too, and obey the same list. }
+  Check('knownvars/cond-undeclared',    Diags('{?foo?a|b}', ['bar']), 'variable.undefined/warning');
+  Check('knownvars/cond-declared',      Diags('{?foo?a|b}', ['foo']), '');
+  Check('knownvars/negated-cond',       Diags('{?!foo?a}', ['foo']),  '');
+  { Matching is case-insensitive in BOTH directions -- measured, not assumed. }
+  Check('knownvars/upper-reference',    Diags('%FOO%', ['foo']), '');
+  Check('knownvars/upper-declaration',  Diags('%foo%', ['FOO']), '');
+end;
+
 function RenderIn(const tmpl, locale: string): string;
 var ctx: TSpContext;
 begin
@@ -310,6 +361,7 @@ begin
   TestPermutationConfig;
   TestPluralFallbacks;
   TestIncludes;
+  TestKnownVariables;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;

@@ -29,14 +29,6 @@ The single list of open work. Anything actively being built gets a plan in
       exact `EIntOverflow` only Delphi had found. That closes one bug class, not the
       compiler difference.
 
-- [ ] **Ungated surfaces: only `known_variables` left.** `tests/local_tests.dpr` now
-      covers line terminators, the nil-RNG default, the seeded generator, permutation
-      `<config>`, plural lenient fallbacks and `#include` -- 41 assertions, every
-      expectation measured against the reference. `#include` turned out to need no engine
-      work: resolution is a host concern in both engines, and with no resolver the
-      directive survives rendering verbatim. What was missing was the gate, since the
-      corpus renders no `#include` at all.
-
 - [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
       listed in `../tests/known-failures.txt`. A scope decision, not a defect:
       [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
@@ -48,6 +40,12 @@ The single list of open work. Anything actively being built gets a plan in
 - [ ] **Repository is private.** Publishing is a decision, not a step.
 
 ## Done
+
+- [x] **Ungated surfaces are covered.** `tests/local_tests.dpr` — 51 assertions, every
+      expectation measured against the reference — now gates line terminators, the nil-RNG
+      default, the seeded generator, permutation `<config>`, plural lenient fallbacks,
+      `#include` render behaviour and `knownVariables`. None of these can be expressed as a
+      corpus fixture, and each one was proved to fail when its behaviour is removed.
 
 - [x] Bootstrapped from the drafts; `.agents/` chain, hooks, CI and docs (2026-07-21).
 - [x] Published to `investblog/spintax-win`; CI green on ubuntu, windows and shellcheck.
