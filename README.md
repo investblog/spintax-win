@@ -12,9 +12,15 @@ The local suite (`31` assertions on surfaces no fixture can express) passes on
 both, and the Delphi build is clean: 0 errors, 0 warnings, 0 hints. Measurements
 in [tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
 
-The claim carries a date because it cannot be automated: no licence available for
-this project grants Delphi's command-line compiler, so the Delphi run is a manual
-rebuild and **CI cannot gate it**. Treat it as stale after any engine change.
+The claim carries a date because it cannot be automated: Delphi's command-line
+compiler is not available under any licence this project will hold, so the Delphi
+run is a manual IDE rebuild and **CI cannot gate it**. Treat it as stale after any
+engine change.
+
+Delphi support exists so the engine can be **ported into a Delphi codebase**, not
+so it can be installed as a package — which is why source clarity and a clean
+Delphi compile matter more here than the DPM spec does. See
+[docs/spec-pascal-port.md](docs/spec-pascal-port.md) §2.
 
 Two defects had to be fixed to get there, and **neither was findable under FPC
 alone**: the sentinel literals were UTF-8 bytes that a UTF-16 `string` decoded

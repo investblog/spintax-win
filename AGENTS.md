@@ -31,6 +31,12 @@ corpus as the TypeScript, PHP and Python engines. Zero dependencies, MIT, FPC 3.
   transcribe it**; that would pull GPL into an MIT package. Reimplement from the behavior
   contract plus the corpus. `@spintax/core` (TS) is our own MIT code and IS a legitimate
   reference — mirror its *behavior*, not its TypeScript.
+- **Why Delphi is supported.** One reason: so the **GSA SER** dev team can port this
+  engine into their codebase. Not for Delphi consumers installing a package, and **no
+  Delphi licences will be bought** — so `dcc32` is permanently out of reach, CI can never
+  gate Delphi, and the parity claim is dated rather than enforced. Delphi 12 Starter is
+  installed permanently and its IDE compiles Win32, which is what keeps the manual check
+  possible indefinitely. Details in `docs/spec-pascal-port.md` §2.
 - **Corpus-first.** The acceptance suite is the shared JSON corpus at
   `spintax-js/packages/conformance/fixtures/`, reached through `SPINTAX_FIXTURES` locally
   and an `actions/checkout` of `investblog/spintax-js` in CI. **Never vendored** — a copy

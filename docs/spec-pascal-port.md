@@ -34,6 +34,26 @@ measured corpus result on both (§4). MIT.
 package. Reimplement from the behavior contract plus the corpus. `@spintax/core` is our
 own MIT code and IS a legitimate reference — mirror its *behavior*, never its TypeScript.
 
+### Why Delphi is a target at all
+
+Delphi support exists for **one** purpose: so the **GSA SER** development team can port
+this engine into their codebase without friction. It is not aimed at Delphi consumers
+installing a package, and the project will **not** buy Delphi licences.
+
+Three consequences follow, and they explain choices that would otherwise look odd:
+
+1. **Source portability outranks distribution.** What matters is that `src/Spintax.pas`
+   compiles clean under Delphi and reads plainly. That is why the file stays free of
+   FPC-only constructs and why `{$IFDEF UNICODE}` branches exist wherever a specific code
+   point is spelled.
+2. **The Delphi check is manual, permanently.** No available licence grants `dcc32`, and
+   none will be bought, so CI can never gate Delphi. The parity claim is therefore dated
+   rather than continuously enforced, and every string-width-sensitive change needs a
+   rebuild in the IDE. **Delphi 12 Starter is installed permanently** and its IDE compiles
+   Win32, so this survives the Architect trial expiring.
+3. **DPM packaging is optional, not load-bearing.** `Spintax.Core.dspec` targets a package
+   manager nobody in this use case needs; treat it as a nice-to-have, not a release gate.
+
 ## 3. Parity: required, allowed, non-goal
 
 **REQUIRED** — divergence here is a defect:

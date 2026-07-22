@@ -12,18 +12,22 @@ The single list of open work. Anything actively being built gets a plan in
 
 ## Open
 
-- [ ] **Delphi parity is dated, not defended.** Measured 2026-07-22 (`143/21/4` corpus,
-      `31/0` local, clean build). No licence available here grants `dcc32` — Starter never
-      had it, and trials exclude the command-line compilers by design
-      ([Embarcadero](https://support.embarcadero.com/article/44692)) — so the Delphi run is
-      a manual rebuild of `tests/corpus_runner.dpr` and `tests/local_tests.dpr`, and CI
-      cannot gate it. Re-run after any engine change; Architect trial expires ~2026-08-21.
-      **Decide:** buy Professional+ and gate it, or keep the dated manual check.
+- [ ] **Re-measure Delphi after any engine change.** Last measured 2026-07-22
+      (`143/21/4` corpus, `41/0` local, clean build). It is a manual IDE rebuild of
+      `tests/corpus_runner.dpr` and `tests/local_tests.dpr`, and CI cannot gate it: no
+      licence grants `dcc32` (Starter never had it; trials exclude the command-line
+      compilers by design, [Embarcadero](https://support.embarcadero.com/article/44692)).
+      **This is settled, not an open decision** -- see the Delphi purpose in
+      `spec-pascal-port.md` sec.2. Buying a licence is not on the table.
 
-      Partly mitigated: `build.sh` now also builds the local suite with `-Co -Cr`, which
-      reproduces Delphi's Debug overflow/range checks under FPC — verified to catch the
-      exact `EIntOverflow` that only Delphi had found. That closes one bug class, not the
-      compiler difference itself.
+      Verification survives the Architect trial expiring (~2026-08-21): **Delphi 12
+      Starter is installed permanently and its IDE compiles**, Win32. That is enough for
+      both binaries.
+
+      Partly mitigated already: `build.sh` also builds the local suite with `-Co -Cr`,
+      reproducing Delphi's Debug overflow/range checks under FPC -- verified to catch the
+      exact `EIntOverflow` only Delphi had found. That closes one bug class, not the
+      compiler difference.
 
 - [ ] **Ungated surfaces: only `known_variables` left.** `tests/local_tests.dpr` now
       covers line terminators, the nil-RNG default, the seeded generator, permutation
@@ -37,9 +41,10 @@ The single list of open work. Anything actively being built gets a plan in
       listed in `../tests/known-failures.txt`. A scope decision, not a defect:
       [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
       needs URL/email shielding or Spanish sentence openers.
-- [ ] **DPM packaging unverified.** The spec's shape matches DPM's definitive docs and its
-      JSON content parses (the reader is YAML-only, but `VSoft.YAML` reads JSON). Whether
-      the package actually *builds* is untested. DPM now has a Delphi to run on.
+- [ ] **DPM packaging: verify, or drop it.** `Spintax.Core.dspec` has never been built by
+      DPM. But the reason Delphi is supported at all is source portability for another
+      team (spec sec.2), not distribution through a package manager -- so decide whether
+      the dspec earns its place before spending effort proving it works.
 - [ ] **Repository is private.** Publishing is a decision, not a step.
 
 ## Done
