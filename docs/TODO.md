@@ -29,10 +29,13 @@ The single list of open work. Anything actively being built gets a plan in
       exact `EIntOverflow` only Delphi had found. That closes one bug class, not the
       compiler difference.
 
-- [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
-      listed in `../tests/known-failures.txt`. A scope decision, not a defect:
-      [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
-      needs URL/email shielding or Spanish sentence openers.
+- [ ] **[IN PROGRESS] Full post-process parity** — plan:
+      [`../.agents/plans/active/postprocess-parity.md`](../.agents/plans/active/postprocess-parity.md).
+      The 21 remaining fixtures are the visible part; the goal is behavioural equivalence
+      with the reference's 12-step pipeline, Spanish openers included. **This reverses the
+      scope decision in [decisions/0002](decisions/0002-postprocess-remainder.md)**: it is
+      not cosmetic, since spun options are authored lower-case and every sentence after the
+      first currently comes out uncapitalised.
 - [ ] **DPM packaging: verify, or drop it.** `Spintax.Core.dspec` has never been built by
       DPM. But the reason Delphi is supported at all is source portability for another
       team (spec sec.2), not distribution through a package manager -- so decide whether
