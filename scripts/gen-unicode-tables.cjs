@@ -140,6 +140,37 @@ function emitMulti(cps) {
   return lines.join('\n');
 }
 
+// The single-token abbreviation list, taken verbatim from the reference and emitted as
+// code points so the .inc stays pure ASCII: several entries are Cyrillic, and a compiler's
+// source-encoding rule must not get a vote on their bytes. Lower-cased because the
+// reference matches them case-insensitively.
+const SINGLE_ABBREVS = [
+  'соц','эл','см','ср','ст','ул','пр','пер','г','р','руб','коп',
+  'тыс','млн','млрд','трлн','доп','напр','прим','изд','обл','респ',
+  'стр','табл','рис','мин','макс','тел','факс',
+  'etc','vs','mr','mrs','ms','dr','prof','sr','jr','inc','ltd','co',
+  'corp','no','st','ave','blvd',
+];
+
+function emitAbbrevs(list) {
+  const lines = [];
+  lines.push('  { Single-token abbreviations, lower-cased, as code points. Flat, with each entry');
+  lines.push('    preceded by its length, so one loop rebuilds them in either string width. }');
+  lines.push(`  ABBREV_COUNT = ${list.length};`);
+  const flat = [];
+  for (const a of list) {
+    const cps = [...a].map((c) => c.codePointAt(0));
+    flat.push(cps.length, ...cps);
+  }
+  lines.push(`  ABBREV_DATA: array[0..${flat.length - 1}] of LongWord = (`);
+  const body = flat.map(hex);
+  for (let i = 0; i < body.length; i += 10) {
+    lines.push('    ' + body.slice(i, i + 10).join(', ') + (i + 10 < body.length ? ',' : ''));
+  }
+  lines.push('  );');
+  return lines.join(String.fromCharCode(10));
+}
+
 const ll = ranges(isLl);
 const l = ranges(isL);
 const n = ranges(isN);
@@ -175,6 +206,8 @@ out.push('');
 out.push(emitRuns('UPPER_RUNS', upRuns));
 out.push('');
 out.push(emitMulti(upMulti));
+out.push('');
+out.push(emitAbbrevs(SINGLE_ABBREVS));
 out.push('');
 
 process.stdout.write(out.join('\n'));

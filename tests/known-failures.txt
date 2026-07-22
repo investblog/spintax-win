@@ -1,34 +1,16 @@
-# Known-failing corpus cases — the deliberate remainder, not a wishlist.
+# Known-failing corpus cases.
 #
-# Every line is one case the cosmetic post-process stage does not implement yet (see
-# README "Scope and known remainder" and docs/spec-pascal-port.md §4). They are ALL in
-# render-postprocess.json; every other fixture file is at 100%.
+# EMPTY. The whole golden corpus passes: PASS=164 FAIL=0 SKIP=4, the 4 skips being
+# kind:rng render cases, which assert within-engine reproducibility rather than a
+# cross-engine output and are engine-private by design.
+#
+# It was not always empty. The cosmetic post-process stage was originally ported in a
+# minimal form and 21 render-postprocess cases failed; they are listed in the history of
+# this file. The stage is now a full port of the reference's 12-step pipeline.
 #
 # check-corpus.sh diffs the runner's actual failures against this file, so:
-#   * a NEW failure anywhere is a regression and blocks the push;
-#   * a case here that starts PASSING also blocks, until the line is deleted — an
-#     improvement has to be recorded, not absorbed silently.
+#   * ANY failure is now a regression and blocks the push;
+#   * if a case ever legitimately becomes expected-to-fail, add it here WITH a reason --
+#     an empty baseline is a claim, and it should not be weakened silently.
 #
 # Format: <fixture file><space><space><case id>. Sorted. Comments and blank lines ignored.
-
-render-postprocess.json  postprocess/add-space-after-comma
-render-postprocess.json  postprocess/bare-domain-shielded-then-sentence
-render-postprocess.json  postprocess/capitalize-after-ellipsis
-render-postprocess.json  postprocess/capitalize-after-linebreak
-render-postprocess.json  postprocess/capitalize-after-period
-render-postprocess.json  postprocess/es-opener-after-block-tag
-render-postprocess.json  postprocess/es-opener-after-line-break
-render-postprocess.json  postprocess/es-opener-before-inline-tag
-render-postprocess.json  postprocess/es-opener-before-link-in-block-tag
-render-postprocess.json  postprocess/es-opener-binds-to-word
-render-postprocess.json  postprocess/es-opener-capitalize-after-sentence
-render-postprocess.json  postprocess/es-opener-capitalize-start
-render-postprocess.json  postprocess/es-opener-double-mark
-render-postprocess.json  postprocess/es-opener-double-mark-reversed
-render-postprocess.json  postprocess/mailto-uri-in-href-shielded
-render-postprocess.json  postprocess/mailto-uri-trailing-punctuation
-render-postprocess.json  postprocess/opener-set-excludes-quotes
-render-postprocess.json  postprocess/period-then-letter-spaced-and-capped
-render-postprocess.json  postprocess/sentence-run-ascii-ellipsis
-render-postprocess.json  postprocess/sentence-run-interrobang
-render-postprocess.json  postprocess/sentence-run-then-word

@@ -1375,6 +1375,653 @@ end;
 
 { ─── public render pipeline ──────────────────────────────────────────────── }
 
+{ ─── post-process: shielding ─────────────────────────────────────────────────
+  Faithful port of the reference pipeline. URLs, emails, domains, decimals and
+  abbreviations are replaced by placeholders BEFORE the spacing and capitalization
+  passes, then restored, so those passes cannot corrupt them.
+
+  The regexes are hand-scanned here because neither compiler has Unicode-property
+  matching. Each scanner mirrors one regex and is named after it. Whitespace is the
+  explicit ASCII set throughout, matching the reference: JS -s- is Unicode, PHP's is not,
+  and using either would diverge around NBSP and thin spaces. }
+
+const
+  SENTENCE_OPENER_1 = $00BF;   { inverted question mark }
+  SENTENCE_OPENER_2 = $00A1;   { inverted exclamation mark }
+
+function IsPpWs(c: Char): Boolean;
+begin
+  Result := (c = ' ') or (c = #9) or (c = #13) or (c = #10) or (c = #12) or (c = #11);
+end;
+
+{ The set that terminates a URL or URI: whitespace, or one of  < > " ' )  ] }
+function IsUriStop(c: Char): Boolean;
+begin
+  Result := IsPpWs(c) or (c = '<') or (c = '>') or (c = '"') or (c = '''')
+            or (c = ')') or (c = ']');
+end;
+
+function LowerAsciiCh(c: Char): Char;
+begin
+  if CharInSet(c, ['A'..'Z']) then Result := Chr(Ord(c) + 32) else Result := c;
+end;
+
+{ Case-insensitive ASCII compare of s[i..] against lit. }
+function MatchesAt(const s: string; i: Integer; const lit: string): Boolean;
+var k: Integer;
+begin
+  Result := False;
+  if i + Length(lit) - 1 > Length(s) then Exit;
+  for k := 1 to Length(lit) do
+    if LowerAsciiCh(s[i + k - 1]) <> LowerAsciiCh(lit[k]) then Exit;
+  Result := True;
+end;
+
+{ JS -b- is ASCII: word chars are A-Za-z0-9 and underscore. }
+function IsBoundaryWordCh(const s: string; i: Integer): Boolean;
+begin
+  Result := (i >= 1) and (i <= Length(s)) and IsAsciiWord(s[i]);
+end;
+
+{ Start index of the code point that ENDS at i-1, i.e. the one before position i.
+  UTF-8 continuation bytes and UTF-16 low surrogates are not code-point starts, so a
+  lookbehind that just does i-1 reads the middle of a character. }
+function PrevCodePointStart(const s: string; i: Integer): Integer;
+begin
+  Result := i - 1;
+  if Result < 1 then Exit(1);
+  {$IFDEF UNICODE}
+  if (Result > 1) and (Ord(s[Result]) >= $DC00) and (Ord(s[Result]) <= $DFFF)
+     and (Ord(s[Result - 1]) >= $D800) and (Ord(s[Result - 1]) <= $DBFF) then
+    Dec(Result);
+  {$ELSE}
+  while (Result > 1) and ((Ord(s[Result]) and $C0) = $80) do Dec(Result);
+  {$ENDIF}
+end;
+
+{ Letter or digit at i, using the CASE-FOLDED tables. The email, domain and
+  single-abbreviation rules are all -giu- in the reference, and under -iu- a property
+  escape is folded, so the folded predicate is the faithful one there. }
+function IsLetterOrNumFoldedAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
+var cp: LongWord;
+begin
+  cpLen := 1;
+  Result := False;
+  if (i < 1) or (i > Length(s)) then Exit;
+  cp := SpCodePointAt(s, i, cpLen);
+  Result := SpIsUniLetterFolded(cp) or SpIsUniNumber(cp);
+end;
+
+function IsLetterFoldedAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
+var cp: LongWord;
+begin
+  cpLen := 1;
+  Result := False;
+  if (i < 1) or (i > Length(s)) then Exit;
+  cp := SpCodePointAt(s, i, cpLen);
+  Result := SpIsUniLetterFolded(cp);
+end;
+
+{ Strict letter, for the multi-abbreviation rule, which is -gu- and not folded. }
+function IsLetterStrictAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
+var cp: LongWord;
+begin
+  cpLen := 1;
+  Result := False;
+  if (i < 1) or (i > Length(s)) then Exit;
+  cp := SpCodePointAt(s, i, cpLen);
+  Result := SpIsUniLetter(cp);
+end;
+
+{ One DOMAIN_PART: one or more dot-terminated labels followed by a TLD.
+    label = optional xn-- prefix, then letters/digits, then any number of
+            hyphen-joined letter/digit groups
+    tld   = xn-- plus 2..59 of a-z 0-9 hyphen, OR a letter followed by 1..62
+            letter / digit / hyphen
+  Greedy on the labels, with backtracking, because the last label can double as the TLD:
+  in example.com the regex takes example. as the label and com as the TLD. }
+function ScanDomainPart(const s: string; i: Integer): Integer;
+var
+  p, cpLen, labelEnd, tldLen, k, n: Integer;
+  dotEnds: array of Integer;
+  cnt: Integer;
+begin
+  Result := 0;
+  SetLength(dotEnds, 0);
+  cnt := 0;
+  p := i;
+  { collect as many dot-terminated labels as possible }
+  while True do
+  begin
+    labelEnd := p;
+    if MatchesAt(s, labelEnd, 'xn--') then Inc(labelEnd, 4);
+    n := 0;
+    while IsLetterOrNumFoldedAt(s, labelEnd, cpLen) do begin Inc(labelEnd, cpLen); Inc(n); end;
+    if n = 0 then Break;
+    { hyphen-joined groups }
+    while (labelEnd <= Length(s)) and (s[labelEnd] = '-') do
+    begin
+      k := labelEnd + 1;
+      n := 0;
+      while IsLetterOrNumFoldedAt(s, k, cpLen) do begin Inc(k, cpLen); Inc(n); end;
+      if n = 0 then Break;
+      labelEnd := k;
+    end;
+    if (labelEnd > Length(s)) or (s[labelEnd] <> '.') then Break;
+    Inc(labelEnd);                       { consume the dot }
+    SetLength(dotEnds, cnt + 1);
+    dotEnds[cnt] := labelEnd;
+    Inc(cnt);
+    p := labelEnd;
+  end;
+  if cnt = 0 then Exit;
+
+  { try the TLD after the longest run of labels, backtracking one label at a time }
+  for k := cnt - 1 downto 0 do
+  begin
+    p := dotEnds[k];
+    tldLen := 0;
+    if MatchesAt(s, p, 'xn--') then
+    begin
+      n := 0;
+      labelEnd := p + 4;
+      while (labelEnd <= Length(s))
+            and (CharInSet(s[labelEnd], ['a'..'z', 'A'..'Z', '0'..'9', '-'])) do
+      begin Inc(labelEnd); Inc(n); end;
+      if (n >= 2) and (n <= 59) then tldLen := labelEnd - p;
+    end;
+    if tldLen = 0 then
+    begin
+      if IsLetterFoldedAt(s, p, cpLen) then
+      begin
+        labelEnd := p + cpLen;
+        n := 0;
+        while (n < 62) and (labelEnd <= Length(s)) do
+        begin
+          if s[labelEnd] = '-' then begin Inc(labelEnd); Inc(n); end
+          else if IsLetterOrNumFoldedAt(s, labelEnd, cpLen) then
+            begin Inc(labelEnd, cpLen); Inc(n); end
+          else Break;
+        end;
+        if n >= 1 then tldLen := labelEnd - p;
+      end;
+    end;
+    if tldLen > 0 then Exit(p + tldLen - i);
+  end;
+end;
+
+{ https:// http:// ftp:// then everything up to whitespace or one of the stop chars. }
+function ScanUrl(const s: string; i: Integer): Integer;
+var p: Integer;
+begin
+  Result := 0;
+  if MatchesAt(s, i, 'https://') then p := i + 8
+  else if MatchesAt(s, i, 'http://') then p := i + 7
+  else if MatchesAt(s, i, 'ftp://') then p := i + 6
+  else Exit;
+  while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
+  if p > i + 6 then Result := p - i;
+end;
+
+{ mailto: and tel: have no authority part, so the URL scanner misses them. Without this
+  shield the email and domain passes swallow the address, the bare prefix is left behind,
+  and the space-after-colon rule splits it into a malformed href. }
+function ScanMailTel(const s: string; i: Integer): Integer;
+var p: Integer;
+begin
+  Result := 0;
+  if MatchesAt(s, i, 'mailto:') then p := i + 7
+  else if MatchesAt(s, i, 'tel:') then p := i + 4
+  else Exit;
+  while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
+  Result := p - i;
+end;
+
+function ScanEmail(const s: string; i: Integer): Integer;
+var p, dom: Integer;
+begin
+  Result := 0;
+  p := i;
+  while (p <= Length(s))
+        and CharInSet(s[p], ['a'..'z', 'A'..'Z', '0'..'9', '.', '_', '%', '+', '-']) do
+    Inc(p);
+  if (p = i) or (p > Length(s)) or (s[p] <> '@') then Exit;
+  Inc(p);
+  dom := ScanDomainPart(s, p);
+  if dom = 0 then Exit;
+  Inc(p, dom);
+  { trailing word boundary }
+  if IsBoundaryWordCh(s, p) then Exit;
+  Result := p - i;
+end;
+
+function ScanDomain(const s: string; i: Integer): Integer;
+var dom: Integer;
+begin
+  Result := 0;
+  { leading word boundary: previous char must not be a word char }
+  if IsBoundaryWordCh(s, i - 1) then Exit;
+  dom := ScanDomainPart(s, i);
+  if dom = 0 then Exit;
+  if IsBoundaryWordCh(s, i + dom) then Exit;
+  Result := dom;
+end;
+
+function ScanDecimal(const s: string; i: Integer): Integer;
+var p, a, b: Integer;
+begin
+  Result := 0;
+  if IsBoundaryWordCh(s, i - 1) then Exit;
+  p := i; a := 0;
+  while (p <= Length(s)) and CharInSet(s[p], ['0'..'9']) do begin Inc(p); Inc(a); end;
+  if (a = 0) or (p > Length(s)) or (s[p] <> '.') then Exit;
+  Inc(p); b := 0;
+  while (p <= Length(s)) and CharInSet(s[p], ['0'..'9']) do begin Inc(p); Inc(b); end;
+  if b = 0 then Exit;
+  if IsBoundaryWordCh(s, p) then Exit;
+  Result := p - i;
+end;
+
+{ Two or more groups of one-or-two letters each followed by a dot and optional
+  whitespace. This is the -gu- rule, so letters are strict, not folded. }
+function ScanMultiAbbr(const s: string; i: Integer): Integer;
+var p, cpLen, groups, letters, lastEnd: Integer;
+begin
+  Result := 0;
+  if IsBoundaryWordCh(s, i - 1) then Exit;
+  p := i; groups := 0; lastEnd := i;
+  while True do
+  begin
+    letters := 0;
+    while (letters < 2) and IsLetterStrictAt(s, p, cpLen) do
+    begin Inc(p, cpLen); Inc(letters); end;
+    if (letters = 0) or (p > Length(s)) or (s[p] <> '.') then Break;
+    Inc(p);
+    while (p <= Length(s)) and IsPpWs(s[p]) do Inc(p);
+    Inc(groups);
+    lastEnd := p;
+  end;
+  if groups >= 2 then Result := lastEnd - i;
+end;
+
+{ Rebuilt once from the generated code-point table, in whatever width this compiler uses. }
+var
+  GAbbrevs: TStringList = nil;
+
+procedure EnsureAbbrevs;
+var i, k, n, len: Integer; a: string;
+begin
+  if GAbbrevs <> nil then Exit;
+  GAbbrevs := TStringList.Create;
+  i := 0;
+  for k := 1 to ABBREV_COUNT do
+  begin
+    len := ABBREV_DATA[i]; Inc(i);
+    a := '';
+    for n := 1 to len do begin a := a + SpCodePointToStr(ABBREV_DATA[i]); Inc(i); end;
+    GAbbrevs.Add(a);
+  end;
+end;
+
+{ One of the known abbreviations, then a dot, with no letter or digit before it and
+  whitespace, end of text, or a tag right after. Case-insensitive, hence the folded
+  predicate for the preceding character. }
+function ScanSingleAbbr(const s: string; i: Integer): Integer;
+var k, p, cpLen, prev: Integer; a: string;
+begin
+  Result := 0;
+  EnsureAbbrevs;
+  { negative lookbehind: no letter or digit immediately before }
+  if i > 1 then
+  begin
+    prev := PrevCodePointStart(s, i);
+    if IsLetterOrNumFoldedAt(s, prev, cpLen) then Exit;
+  end;
+  for k := 0 to GAbbrevs.Count - 1 do
+  begin
+    a := GAbbrevs[k];
+    if not MatchesAt(s, i, a) then Continue;
+    p := i + Length(a);
+    if (p > Length(s)) or (s[p] <> '.') then Continue;
+    Inc(p);
+    if (p > Length(s)) or IsPpWs(s[p]) or (s[p] = '<') then Exit(p - i);
+  end;
+end;
+
+type
+  TScanFn = function(const s: string; i: Integer): Integer;
+
+{ Replace every match of one scanner with a placeholder, left to right. The key is
+  NUL prefix underscore counter NUL, exactly the reference's shape: NUL cannot occur in
+  rendered output, so nothing else can collide with it. }
+procedure ShieldPass(var text: string; scan: TScanFn; const prefix: string;
+  keys, vals: TStringList; var counter: Integer; stripTrailingPunct: Boolean);
+var
+  res, matched, key, suffix: string;
+  i, len, cut: Integer;
+begin
+  res := '';
+  i := 1;
+  while i <= Length(text) do
+  begin
+    len := scan(text, i);
+    if len > 0 then
+    begin
+      matched := Copy(text, i, len);
+      suffix := '';
+      if stripTrailingPunct then
+      begin
+        { A URL at the end of a sentence must give the sentence its full stop back, or
+          the sentence never ends. Only a trailing run of  . , ; : !  is returned. }
+        cut := Length(matched);
+        while (cut > 0) and CharInSet(matched[cut], ['.', ',', ';', ':', '!']) do Dec(cut);
+        if cut < Length(matched) then
+        begin
+          suffix := Copy(matched, cut + 1, Length(matched) - cut);
+          matched := Copy(matched, 1, cut);
+        end;
+      end;
+      if matched = '' then
+        res := res + suffix
+      else
+      begin
+        key := #0 + prefix + '_' + IntToStr(counter) + #0;
+        Inc(counter);
+        keys.Add(key);
+        vals.Add(matched);
+        res := res + key + suffix;
+      end;
+      Inc(i, len);
+    end
+    else
+    begin
+      res := res + text[i];
+      Inc(i);
+    end;
+  end;
+  text := res;
+end;
+
+{ Steps 6 and 7: collapse space runs, then punctuation spacing. }
+function SpacingPasses(const input: string): string;
+var s, res: string; i, runEnd: Integer;
+begin
+  s := input;
+
+  { 6: collapse runs of space and tab to one space }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    if (s[i] = ' ') or (s[i] = #9) then
+    begin
+      res := res + ' ';
+      while (i <= Length(s)) and ((s[i] = ' ') or (s[i] = #9)) do Inc(i);
+    end
+    else begin res := res + s[i]; Inc(i); end;
+  end;
+  s := res;
+
+  { 7: remove whitespace before  , ; : ! ? .  }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    if IsPpWs(s[i]) then
+    begin
+      runEnd := i;
+      while (runEnd <= Length(s)) and IsPpWs(s[runEnd]) do Inc(runEnd);
+      if (runEnd <= Length(s)) and CharInSet(s[runEnd], [',', ';', ':', '!', '?', '.']) then
+      begin
+        i := runEnd;                 { drop the whitespace run entirely }
+        Continue;
+      end;
+      res := res + Copy(s, i, runEnd - i);
+      i := runEnd;
+      Continue;
+    end;
+    res := res + s[i];
+    Inc(i);
+  end;
+  s := res;
+
+  { 7: a space after  , ; :  unless a digit, whitespace, end of text or a tag follows }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    res := res + s[i];
+    if CharInSet(s[i], [',', ';', ':']) and (i < Length(s))
+       and not CharInSet(s[i + 1], ['0'..'9']) and not IsPpWs(s[i + 1])
+       and (s[i + 1] <> '<') then
+      res := res + ' ';
+    Inc(i);
+  end;
+  s := res;
+
+  { 7: a space after a RUN of  . ! ?  -- a run is ONE sentence end, so the space goes
+    after the whole run or "Wow!!!" becomes "Wow!! !". }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    if CharInSet(s[i], ['.', '!', '?']) then
+    begin
+      runEnd := i;
+      while (runEnd <= Length(s)) and CharInSet(s[runEnd], ['.', '!', '?']) do Inc(runEnd);
+      res := res + Copy(s, i, runEnd - i);
+      if (runEnd <= Length(s)) and not CharInSet(s[runEnd], ['0'..'9'])
+         and not IsPpWs(s[runEnd]) and (s[runEnd] <> '<') then
+        res := res + ' ';
+      i := runEnd;
+      Continue;
+    end;
+    res := res + s[i];
+    Inc(i);
+  end;
+  s := res;
+
+  { 7a: a Spanish opener binds to the word it opens. BEFORE capitalization, so the
+    capitalizer sees the real first letter instead of a space. }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    res := res + s[i];
+    if (SpCodePointAt(s, i, runEnd) = SENTENCE_OPENER_1)
+       or (SpCodePointAt(s, i, runEnd) = SENTENCE_OPENER_2) then
+    begin
+      { copy the rest of the opener's code units, then eat the whitespace run }
+      res := res + Copy(s, i + 1, runEnd - 1);
+      Inc(i, runEnd);
+      while (i <= Length(s)) and IsPpWs(s[i]) do Inc(i);
+      Continue;
+    end;
+    Inc(i);
+  end;
+  Result := res;
+end;
+
+{ The LEAD: everything that can sit between a sentence boundary and the first letter --
+  HTML tags, Spanish sentence openers and whitespace, in any order and any number.
+  A single optional opener is not enough: the RAE form for a sentence that is both a
+  question and an exclamation opens with TWO marks, and the opened word is routinely
+  wrapped in markup, which puts a tag AFTER the opener. }
+function ScanLead(const s: string; i: Integer): Integer;
+var p, cpLen, k: Integer; cp: LongWord;
+begin
+  p := i;
+  while p <= Length(s) do
+  begin
+    if s[p] = '<' then
+    begin
+      k := p + 1;
+      while (k <= Length(s)) and (s[k] <> '>') do Inc(k);
+      if k > Length(s) then Break;
+      p := k + 1;
+      Continue;
+    end;
+    if IsPpWs(s[p]) then begin Inc(p); Continue; end;
+    cp := SpCodePointAt(s, p, cpLen);
+    if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) then
+    begin Inc(p, cpLen); Continue; end;
+    Break;
+  end;
+  Result := p - i;
+end;
+
+{ Uppercase the code point at i, if it is a lowercase letter. Folded chooses which
+  predicate applies: the block-tag step is -giu- in the reference and the others are not.
+  Returns the replacement text and its source length, or 0 when nothing applies. }
+function CapAt(const s: string; i: Integer; folded: Boolean; out repl: string): Integer;
+var cp: LongWord; cpLen: Integer; isLow: Boolean;
+begin
+  Result := 0;
+  repl := '';
+  if (i < 1) or (i > Length(s)) then Exit;
+  cp := SpCodePointAt(s, i, cpLen);
+  if folded then isLow := SpIsUniLowerFolded(cp) else isLow := SpIsUniLower(cp);
+  if not isLow then Exit;
+  repl := SpUpperCodePoint(cp);
+  Result := cpLen;
+end;
+
+{ Steps 8-11. Each finds a boundary, skips the LEAD, and upper-cases the first lowercase
+  letter after it. }
+function CapitalizePasses(const input: string): string;
+var
+  s, res, repl: string;
+  i, leadLen, capLen, k: Integer;
+  cp: LongWord; cpLen: Integer;
+
+  function IsBlockTagAt(const t: string; at: Integer; out tagLen: Integer): Boolean;
+  var q, nameStart: Integer; name: string;
+  begin
+    Result := False; tagLen := 0;
+    if (at > Length(t)) or (t[at] <> '<') then Exit;
+    q := at + 1;
+    if (q <= Length(t)) and (t[q] = '/') then Inc(q);
+    nameStart := q;
+    while (q <= Length(t)) and CharInSet(t[q], ['a'..'z', 'A'..'Z', '0'..'9']) do Inc(q);
+    name := LowerAscii(Copy(t, nameStart, q - nameStart));
+    while (q <= Length(t)) and (t[q] <> '>') do Inc(q);
+    if q > Length(t) then Exit;
+    if (name = 'p') or (name = 'li') or (name = 'blockquote') or (name = 'div')
+       or (name = 'td') or (name = 'th')
+       or ((Length(name) = 2) and (name[1] = 'h') and CharInSet(name[2], ['1'..'6'])) then
+    begin
+      Result := True;
+      tagLen := q + 1 - at;
+    end;
+  end;
+
+begin
+  s := input;
+
+  { 8: the first letter, skipping the lead }
+  leadLen := ScanLead(s, 1);
+  capLen := CapAt(s, 1 + leadLen, False, repl);
+  if capLen > 0 then
+    s := Copy(s, 1, leadLen) + repl + Copy(s, 1 + leadLen + capLen, MaxInt);
+
+  { 9: after sentence punctuation, through the lead }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    cp := SpCodePointAt(s, i, cpLen);
+    if (cpLen = 1) and CharInSet(s[i], ['.', '!', '?']) or (cp = $2026) then
+    begin
+      res := res + Copy(s, i, cpLen);
+      Inc(i, cpLen);
+      leadLen := ScanLead(s, i);
+      res := res + Copy(s, i, leadLen);
+      Inc(i, leadLen);
+      capLen := CapAt(s, i, False, repl);
+      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      Continue;
+    end;
+    res := res + Copy(s, i, cpLen);
+    Inc(i, cpLen);
+  end;
+  s := res;
+
+  { 10: after a block-level tag. This one is -giu- in the reference, so the CASE-FOLDED
+    predicate applies -- 1446 extra code points, 32 with a differing uppercase. }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    if IsBlockTagAt(s, i, k) then
+    begin
+      res := res + Copy(s, i, k);
+      Inc(i, k);
+      leadLen := ScanLead(s, i);
+      res := res + Copy(s, i, leadLen);
+      Inc(i, leadLen);
+      capLen := CapAt(s, i, True, repl);
+      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      Continue;
+    end;
+    res := res + s[i];
+    Inc(i);
+  end;
+  s := res;
+
+  { 11: after a line break }
+  res := ''; i := 1;
+  while i <= Length(s) do
+  begin
+    if s[i] = #10 then
+    begin
+      res := res + s[i];
+      Inc(i);
+      leadLen := ScanLead(s, i);
+      res := res + Copy(s, i, leadLen);
+      Inc(i, leadLen);
+      capLen := CapAt(s, i, False, repl);
+      if capLen > 0 then begin res := res + repl; Inc(i, capLen); end;
+      Continue;
+    end;
+    res := res + s[i];
+    Inc(i);
+  end;
+  Result := res;
+end;
+
+{ The full pipeline, in the reference's order. Phase 1 covers shielding and spacing;
+  the capitalization steps land next and must come AFTER shielding, or the engine starts
+  capitalising inside example.com and after an abbreviation. }
+function FullPostProcess(const input: string): string;
+var
+  keys, vals: TStringList;
+  text: string;
+  counter, i: Integer;
+begin
+  keys := TStringList.Create;
+  vals := TStringList.Create;
+  try
+    text := input;
+    counter := 0;
+    { 1-5: shield. mailto and tel before email so the whole URI survives instead of the
+      address being carved out from under its prefix. }
+    ShieldPass(text, @ScanUrl,        'URL',   keys, vals, counter, True);
+    ShieldPass(text, @ScanMailTel,    'URI',   keys, vals, counter, True);
+    ShieldPass(text, @ScanEmail,      'EMAIL', keys, vals, counter, False);
+    ShieldPass(text, @ScanDomain,     'DOM',   keys, vals, counter, False);
+    ShieldPass(text, @ScanDecimal,    'NUM',   keys, vals, counter, False);
+    ShieldPass(text, @ScanMultiAbbr,  'ABBR',  keys, vals, counter, False);
+    ShieldPass(text, @ScanSingleAbbr, 'ABBR',  keys, vals, counter, False);
+
+    { 6, 7, 7a }
+    text := SpacingPasses(text);
+
+    { 8-11: capitalization, only now that URLs and abbreviations are out of the way }
+    text := CapitalizePasses(text);
+
+    { 12: restore, then trim }
+    for i := 0 to keys.Count - 1 do
+      text := StringReplace(text, keys[i], vals[i], [rfReplaceAll]);
+    Result := Trim(text);
+  finally
+    keys.Free;
+    vals.Free;
+  end;
+end;
+
 function MinimalPostProcess(const input: string): string;
 var s, res: string; i: Integer;
 begin
@@ -1618,7 +2265,7 @@ begin
       nodes.Free;
     end;
 
-    if Ctx.PostProcess then outp := MinimalPostProcess(outp);
+    if Ctx.PostProcess then outp := FullPostProcess(outp);
     Result := SpSafetyRestore(outp);
   finally
     setDefs.Free; defDefs.Free; vars.Free; outranked.Free; ownedRng.Free;

@@ -87,14 +87,13 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 | render-deterministic | 6 | 6 |
 | extract | 2 | 2 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
-| **render-postprocess** | **39** | **18** |
+| **render-postprocess** | **39** | **39** |
 
-`PASS=143 FAIL=21 SKIP=4`. **All 21 failures are in `render-postprocess.json`** — the
-cosmetic stage, and nowhere else. The full deterministic semantic gate and the static
-validator pass.
+**`PASS=164 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+cases, which are engine-private by design.
 
-**Delphi 13 Florence produces the identical result** — same totals, failing set matching
-case for case, measured 2026-07-22 (`tests/delphi/RESULTS.md`). The runner is one source
+**Delphi last matched on 2026-07-22 and that measurement is STALE** — the post-process
+stage has been rewritten since (`tests/delphi/RESULTS.md`). The runner is one source
 for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
 
 The claim is dated on purpose: no licence here grants `dcc32`, so the Delphi run is a
@@ -102,20 +101,30 @@ manual rebuild that CI cannot gate. Treat it as stale after any engine change. W
 *can* now cover is the Delphi-Debug bug class: `build.sh` compiles the local suite a second
 time with `-Co -Cr`, which reproduces Delphi's overflow and range checks under FPC.
 
-The 21 are enumerated in [`tests/known-failures.txt`](../tests/known-failures.txt) and
-gated: a new failure anywhere blocks a push, and a case that starts passing also blocks
-until its line is deleted, so an improvement is recorded rather than absorbed.
+[`tests/known-failures.txt`](../tests/known-failures.txt) is empty and gated in both
+directions: any failure blocks a push, and a case that starts passing must be recorded
+rather than absorbed.
 
-### Deliberately minimal: cosmetic post-process
+### The cosmetic post-process is now a full port
 
-Ported: ASCII space collapsing, punctuation spacing, first-letter capitalization.
+All twelve steps, in the reference's order: shield URLs / `mailto:` and `tel:` URIs /
+emails / bare domains / decimals / multi-part and single-token abbreviations into
+placeholders, collapse space runs, punctuation spacing, bind Spanish openers to their
+word, then capitalize first / after sentence punctuation / after block tags / after line
+breaks, restore and trim.
 
-Not ported (the 21): URL / email / domain / decimal / abbreviation shielding, Spanish
-sentence openers (`¿` `¡`), capitalization after sentence boundaries and block tags
-through Unicode, and the sentence-run cases that depend on them.
+Two things about it are easy to get wrong and are written down because they were:
 
-This is a **scope decision, not a bug backlog** — see
-[`decisions/0002-postprocess-remainder.md`](decisions/0002-postprocess-remainder.md).
+- **Order is load-bearing.** Shielding must precede capitalization or the engine
+  capitalises inside `example.com` and after `e.g.`; `mailto:` must be shielded before
+  the email rule or the address is carved out from under its prefix; the opener must bind
+  to its word before capitalization, or the capitalizer sees a space.
+- **The reference does not use one flag set.** `CAP_AFTER_BLOCK_RE`, `EMAIL_RE`,
+  `DOMAIN_RE` and `SINGLE_ABBR_RE` are `/giu/`, where property escapes are case-folded;
+  the rest are strict. See §7 hazard 6.
+
+This **reverses** [`decisions/0002`](decisions/0002-postprocess-remainder.md), which
+recorded the minimal stage as a deliberate scope decision.
 
 ## 5. Public API
 
@@ -181,7 +190,13 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
    there and passes silently here. Suppress checks around such code with `$IFOPT`, so a
    host that builds with checks on keeps them everywhere else. `build.sh` compiles the
    local suite a second time with `-Co -Cr` to catch this without a Delphi.
-5. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
+5. **The reference does not use one regex flag set.** `EMAIL_RE`, `DOMAIN_RE`,
+   `SINGLE_ABBR_RE` and `CAP_AFTER_BLOCK_RE` carry `/giu/`; the rest are `/gu/` or `/u/`.
+   Under `/iu` a property escape is CASE-FOLDED: Ll gains 1446 code points (32 with a
+   differing uppercase) and L gains U+0345. Use `SpIsUniLowerFolded` /
+   `SpIsUniLetterFolded` for those rules and the strict predicates everywhere else.
+   Check the flags before porting any regex; this was caught in review, not by the corpus.
+6. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
    reference handles — the lesson the Python port already paid for. `ParseSequence` /
    `RenderNodes` are the places to watch.
 

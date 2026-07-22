@@ -1,11 +1,21 @@
 ---
 type: decision
-status: active
+status: archived
 tags: [scope, postprocess, corpus]
 project: spintax-win
 ---
 
 # 0002 — The cosmetic post-process stage stays minimal, and the gap is gated
+
+> **SUPERSEDED 2026-07-22.** The stage is now a full port of the reference's 12-step
+> pipeline and the corpus passes `164/0/4`; `tests/known-failures.txt` is empty. The
+> decision below was reversed on evidence, not taste: measured,
+> `{hello|hi}. {world|earth}` rendered `Hello. World` in the reference and `Hello. world`
+> here. Spintax options are authored lower-case and assembled into sentences, so every
+> sentence after the first came out uncapitalised -- visible in every multi-sentence
+> output, which is not what "cosmetic" implies. The reasoning below is kept because the
+> *gating* argument in it still stands and is why the improvement could not be absorbed
+> silently.
 
 **Date:** 2026-07-21
 
