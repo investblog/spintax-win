@@ -92,8 +92,8 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 **`PASS=164 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
-**Delphi last matched on 2026-07-22 and that measurement is STALE** — the post-process
-stage has been rewritten since (`tests/delphi/RESULTS.md`). The runner is one source
+**Delphi 13 Florence produces the identical result** — `164/0/4`, measured 2026-07-22
+with the full post-process pipeline (`tests/delphi/RESULTS.md`). The runner is one source
 for both compilers; `tests/SpxJson.pas` is the only place their APIs differ.
 
 The claim is dated on purpose: no licence here grants `dcc32`, so the Delphi run is a

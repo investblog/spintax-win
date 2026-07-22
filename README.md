@@ -5,13 +5,10 @@ same shared golden-fixture corpus as the TypeScript, PHP, and Python
 implementations. Zero external dependencies. Compiles under Free Pascal 3.2.2 in
 `{$mode delphi}`.
 
-**Delphi status: last measured at parity on 2026-07-22 — now STALE.** On that date
-both engines produced identical corpus results and the Delphi build was clean.
-The post-process stage has since been rewritten from minimal to a full port of
-the reference pipeline, and **no Delphi run has re-confirmed it**. Treat the
-Delphi claim as dated, not current, until `tests/corpus_runner.dpr` and
-`tests/local_tests.dpr` are rebuilt in the IDE — see
-[tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
+**Delphi status: at parity, measured 2026-07-22.** The whole golden corpus passes
+under both Delphi 13 Florence and Free Pascal 3.2.2 — `PASS=164 FAIL=0 SKIP=4` on
+each, with the full post-process pipeline — and the Delphi build is clean.
+Measurements in [tests/delphi/RESULTS.md](tests/delphi/RESULTS.md).
 
 The claim can only ever be dated: Delphi's command-line compiler is not available
 under any licence this project will hold, so the Delphi run is a manual IDE
@@ -145,6 +142,16 @@ UTF-16 and the engine's sentinel literals branch on `UNICODE` accordingly.
 This is not theoretical — it is what made the Linux CI leg fail while Windows
 passed, and it took a byte dump to see, because every log renders the corruption
 as `?`.
+
+## One API-shape difference from the reference
+
+`Default(TSpContext)` leaves `PostProcess` **False**, while the reference defaults
+`postProcess: true`. A host that fills the record itself and never sets the flag
+therefore gets no cosmetic stage at all, silently.
+
+This is deliberate — a Pascal record has no notion of "unset", so `False` is what
+zeroed memory means and inventing a tri-state to mimic a JS default would be worse.
+**Set it explicitly.** Both `tests/corpus_runner.dpr` and `examples/demo.lpr` do.
 
 ## Public API
 

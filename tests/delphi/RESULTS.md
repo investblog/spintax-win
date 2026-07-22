@@ -7,6 +7,9 @@ project: spintax-win
 
 # Delphi probe — measured results
 
+> **Current as of 2026-07-22 — see run 7 at the bottom.** Earlier runs measured older
+> trees and are kept for the history of how the divergences were found.
+
 Delphi 12 Athens (CompilerVersion 36), Win32/Debug, `dcc32` via the IDE
 (Starter edition has no command-line compiler). Engine unit compiled with
 **0 errors**.
@@ -172,8 +175,6 @@ rather than by reading.**
 Both are `{$IFDEF UNICODE}`-identical for this unit, so the package declares the 12.0–13.0
 range; only 13 has run the corpus.
 
-> **Current as of 2026-07-22** — see run 6 at the bottom. Runs 4 and 5 measured an older
-> tree and are kept for the history of how the divergences were found.
 
 ## Run 5 — three environments agree (CI, 2026-07-21)
 
@@ -259,6 +260,38 @@ in this file, their Cyrillic literals would have been read in the machine's ANSI
 and the test would have compared the wrong bytes. Keeping the source verifiably ASCII-only
 — and leaving the Slavic buckets to the 37 corpus cases that already gate them — was what
 made this file safe to compile on both.
+
+## Run 7 — full post-process, both compilers agree (2026-07-22)
+
+The cosmetic stage went from minimal to a complete port of the reference's 12-step
+pipeline. Delphi 13 Florence, Win32/Debug, both binaries rebuilt by hand.
+
+| | FPC 3.2.2 | Delphi 13 |
+|---|---|---|
+| `corpus_runner` | **164 / 0 / 4** | **164 / 0 / 4** |
+| `local_tests` | 292 / 0 | 272 / 0 |
+| build | clean | 0 errors, 0 warnings |
+
+`tests/known-failures.txt` is empty: the whole golden corpus passes on both.
+
+The local counts differ by exactly 20 **by design**: ten decoder-contract assertions are
+`{$IFNDEF UNICODE}`, because malformed UTF-8 has no meaning under UTF-16.
+
+### What the rebuild caught, again
+
+The first attempt failed to compile where FPC was clean:
+
+- `E2029` — Delphi requires an `initialization` section before a `finalization` one; FPC
+  accepts `finalization` alone. The finalization had been added the commit before, on a
+  reviewer's note about a leaked global, and verified under FPC only.
+- `W1024` — the surrogate-pair arithmetic mixed signed `Ord()` with an unsigned `LongWord`
+  result. Harmless on that path, but a warning in a file whose warnings are meant to be
+  fatal teaches people to ignore them.
+
+The pipeline itself needed **no** changes for UTF-16, which was the open risk: the new
+scanners are full of index arithmetic and code units are not bytes there. The Unicode
+foundation from Phase 0 is why -- everything that reasons about characters goes through
+`SpCodePointAt`, so the arithmetic never assumed a width.
 
 ## What is still NOT guarded
 

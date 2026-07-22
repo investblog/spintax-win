@@ -29,13 +29,6 @@ The single list of open work. Anything actively being built gets a plan in
       exact `EIntOverflow` only Delphi had found. That closes one bug class, not the
       compiler difference.
 
-- [ ] **[IN PROGRESS] Full post-process parity** — plan:
-      [`../.agents/plans/active/postprocess-parity.md`](../.agents/plans/active/postprocess-parity.md).
-      The 21 remaining fixtures are the visible part; the goal is behavioural equivalence
-      with the reference's 12-step pipeline, Spanish openers included. **This reverses the
-      scope decision in [decisions/0002](decisions/0002-postprocess-remainder.md)**: it is
-      not cosmetic, since spun options are authored lower-case and every sentence after the
-      first currently comes out uncapitalised.
 - [ ] **DPM packaging: verify, or drop it.** `Spintax.Core.dspec` has never been built by
       DPM. But the reason Delphi is supported at all is source portability for another
       team (spec sec.2), not distribution through a package manager -- so decide whether
@@ -43,6 +36,10 @@ The single list of open work. Anything actively being built gets a plan in
 - [ ] **Repository is private.** Publishing is a decision, not a step.
 
 ## Done
+
+- [x] **Full post-process parity** (2026-07-22). All twelve reference steps; the whole
+      corpus passes on FPC and Delphi. Plan in `../.agents/plans/done/postprocess-parity.md`;
+      supersedes [decisions/0002](decisions/0002-postprocess-remainder.md).
 
 - [x] **Ungated surfaces are covered.** `tests/local_tests.dpr` — 51 assertions, every
       expectation measured against the reference — now gates line terminators, the nil-RNG
