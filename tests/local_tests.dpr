@@ -138,6 +138,52 @@ begin
   end;
 end;
 
+{ TMulberry32Rng is 32-bit wraparound arithmetic, and NOTHING else exercises it: the
+  corpus skips every kind:rng case by design, so the generator ran untested until a nil
+  Ctx.Rng started defaulting to it. Under Delphi's Debug configuration, which enables
+  overflow checks, every mix step raised EIntOverflow.
+
+  Cross-engine RNG parity is a non-goal, so this asserts only what must hold anywhere:
+  it must not raise, it must stay inside the requested bounds, and the same seed must
+  reproduce within this engine. }
+procedure TestSeededRng;
+var r1, r2: TSpRng; i, v, a, b: Integer; seq1, seq2: string;
+begin
+  Inc(Checks);
+  try
+    r1 := TMulberry32Rng.Create(12345);
+    r2 := TMulberry32Rng.Create(12345);
+    try
+      seq1 := ''; seq2 := ''; a := 0; b := 9;
+      for i := 1 to 200 do
+      begin
+        v := r1.Next(a, b);
+        if (v < a) or (v > b) then
+        begin
+          Inc(Failures);
+          Writeln('FAIL seeded-rng/out of bounds: ', v);
+          Exit;
+        end;
+        seq1 := seq1 + IntToStr(v);
+        seq2 := seq2 + IntToStr(r2.Next(a, b));
+      end;
+      if seq1 <> seq2 then
+      begin
+        Inc(Failures);
+        Writeln('FAIL seeded-rng/same seed must reproduce within this engine');
+      end;
+    finally
+      r1.Free; r2.Free;
+    end;
+  except
+    on E: Exception do
+    begin
+      Inc(Failures);
+      Writeln('FAIL seeded-rng/must not raise, got ', E.ClassName, ': ', E.Message);
+    end;
+  end;
+end;
+
 function RenderIn(const tmpl, locale: string): string;
 var ctx: TSpContext;
 begin
@@ -210,6 +256,7 @@ begin
 
   TestLineTerminators;
   TestNilRng;
+  TestSeededRng;
   TestPermutationConfig;
   TestPluralFallbacks;
 

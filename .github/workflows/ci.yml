@@ -88,6 +88,13 @@ jobs:
         shell: bash
         run: ./tests/local_tests
 
+      # The same assertions compiled with overflow and range checks on, which is
+      # what Delphi's Debug configuration does. FPC's default build wraps silently,
+      # so without this the mulberry32 overflow was invisible outside Delphi.
+      - name: Local tests with overflow checks (Delphi Debug equivalent)
+        shell: bash
+        run: ./tests/local_tests_checked
+
   # The shell scripts are part of the build contract (build.sh drives every consumer's
   # first five minutes with this repo), so they are gated like source, not trusted.
   shellcheck:

@@ -11,5 +11,12 @@ rm -rf lib
 mkdir -p lib
 fpc -Mdelphi -Fusrc -Futests -FUlib -O2 tests/corpus_runner.dpr -otests/corpus_runner
 fpc -Mdelphi -Fusrc -Futests -FUlib -O2 tests/local_tests.dpr -otests/local_tests
+# Second build with overflow and range checks ON (-Co -Cr), into its own unit dir so it
+# cannot poison the optimised one. This reproduces Delphi's Debug configuration, which is
+# how EIntOverflow in the mulberry32 mixer reached a released tree: FPC's default build
+# wraps silently, Delphi's Debug build raises. Cheap to run, and it turns a
+# Delphi-only bug class into one FPC can catch.
+mkdir -p lib/checked
+fpc -Mdelphi -Co -Cr -Fusrc -Futests -FUlib/checked tests/local_tests.dpr -otests/local_tests_checked
 fpc -Mdelphi -Fusrc -FUlib -O2 examples/demo.lpr -oexamples/demo
-echo "built: tests/corpus_runner, tests/local_tests, examples/demo"
+echo "built: tests/corpus_runner, tests/local_tests(+checked), examples/demo"

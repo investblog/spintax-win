@@ -58,6 +58,8 @@ tests/corpus_runner
 tests/corpus_runner.exe
 tests/local_tests
 tests/local_tests.exe
+tests/local_tests_checked
+tests/local_tests_checked.exe
 examples/demo
 examples/demo.exe
 

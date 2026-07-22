@@ -146,16 +146,21 @@ begin
   FState := ASeed;
 end;
 
+{ mulberry32 is 32-bit wraparound arithmetic by definition: the additions and
+  multiplications below are MEANT to overflow. Delphi's Debug configuration enables
+  overflow and range checks, which turned every one of them into EIntOverflow — the
+  corpus never caught it because kind:rng cases are skipped, and it only became
+  reachable once a nil Ctx.Rng started defaulting to this generator.
+
+  Checks are disabled only around this arithmetic and restored to whatever the build
+  had, via $IFOPT, so a host compiling with checks on keeps them everywhere else. }
+{$IFOPT Q+}{$DEFINE SPX_Q_WAS_ON}{$Q-}{$ENDIF}
+{$IFOPT R+}{$DEFINE SPX_R_WAS_ON}{$R-}{$ENDIF}
+
 function TMulberry32Rng.NextUnit: Double;
 var a, t: LongWord;
 begin
-  a := FState + LongWord($6D2B79F5);
-  FState := a;
-  t := a xor (a shr 15);
-  t := t * (1 or a);
-  t := t + ((t xor (t shr 7)) * (61 or t));
-  t := t xor t; // placeholder to mirror mixing (see below)
-  // Faithful mulberry32:
+  FState := FState + LongWord($6D2B79F5);
   a := FState;
   t := a xor (a shr 15);
   t := LongWord(t * (1 or a));
@@ -167,6 +172,9 @@ function TMulberry32Rng.Next(min, max: Integer): Integer;
 begin
   Result := min + Trunc(NextUnit * (max - min + 1));
 end;
+
+{$IFDEF SPX_R_WAS_ON}{$R+}{$UNDEF SPX_R_WAS_ON}{$ENDIF}
+{$IFDEF SPX_Q_WAS_ON}{$Q+}{$UNDEF SPX_Q_WAS_ON}{$ENDIF}
 
 { ─── small helpers ───────────────────────────────────────────────────────── }
 
@@ -1314,12 +1322,19 @@ end;
 var
   GRngCounter: LongWord = 0;
 
+{ The multiply is a hash mixer and wraps on purpose, like the generator itself. }
+{$IFOPT Q+}{$DEFINE SPX_Q_WAS_ON}{$Q-}{$ENDIF}
+{$IFOPT R+}{$DEFINE SPX_R_WAS_ON}{$R-}{$ENDIF}
+
 function MakeDefaultRng: TSpRng;
 begin
   Inc(GRngCounter);
   Result := TMulberry32Rng.Create(
-    LongWord(Round(Frac(Now) * 86400000)) xor (GRngCounter * 2654435761));
+    LongWord(Round(Frac(Now) * 86400000)) xor LongWord(GRngCounter * 2654435761));
 end;
+
+{$IFDEF SPX_R_WAS_ON}{$R+}{$UNDEF SPX_R_WAS_ON}{$ENDIF}
+{$IFDEF SPX_Q_WAS_ON}{$Q+}{$UNDEF SPX_Q_WAS_ON}{$ENDIF}
 
 function SpRender(const Template: string; const Ctx: TSpContext): string;
 var setDefs, defDefs, vars, aliases: TStrMap;
