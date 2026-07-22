@@ -184,6 +184,56 @@ begin
   end;
 end;
 
+{ Comma-joined #include targets, for comparing against a measured list. }
+function Includes(const tmpl: string): string;
+var ex: TExtractResult; i: Integer;
+begin
+  Result := '';
+  ex := SpExtract(tmpl);
+  try
+    for i := 0 to ex.Includes.Count - 1 do
+    begin
+      if i > 0 then Result := Result + ',';
+      Result := Result + ex.Includes[i];
+    end;
+  finally
+    ex.Refs.Free; ex.Sets.Free; ex.Defs.Free; ex.Includes.Free;
+  end;
+end;
+
+{ #include resolution is a HOST concern in both engines: with no resolver the directive
+  survives rendering verbatim. The corpus covers #include under extract and validate, but
+  has ZERO render cases for it, so the render-side behaviour is gated only here.
+
+  Measured against the reference on 2026-07-22. The line-anchoring rules are the subtle
+  part: an inline #include is not a directive, quotes are required, leading whitespace is
+  allowed, and a CR-delimited line counts as a line -- which is why this doubles as a
+  guard on the line-terminator rewrite. }
+procedure TestIncludes;
+begin
+  Check('include/line-survives-render',
+        RenderFirst('#include "frag"'#10'after'), '#include "frag"'#10'after');
+  Check('include/inline-survives-render',
+        RenderFirst('before #include "frag" inline'), 'before #include "frag" inline');
+  Check('include/indented-survives-render',
+        RenderFirst('   #include "frag"'#10'after'), '   #include "frag"'#10'after');
+  { #set is stripped, #include is not -- only #set/#def are directives to remove. }
+  Check('include/kept-while-set-is-stripped',
+        RenderFirst('#set %v% = V'#10'#include "frag"'#10'%v%'), #10'#include "frag"'#10'V');
+
+  Check('include/extract-line',      Includes('#include "frag"'#10'after'), 'frag');
+  Check('include/extract-indented',  Includes('   #include "frag"'#10'after'), 'frag');
+  { Inline is not line-anchored, so it is not a directive and not extracted. }
+  Check('include/extract-inline-none', Includes('before #include "frag" inline'), '');
+  { The target must be quoted. }
+  Check('include/extract-unquoted-none', Includes('#include frag'#10'after'), '');
+  { A CR-delimited line is a line: this also guards the line-terminator rewrite, since
+    treating CR as ordinary text would make the whole input one line and lose the anchor. }
+  Check('include/extract-after-CR',   Includes('x'#13'#include "frag"'#13'after'), 'frag');
+  Check('include/CR-survives-render',
+        RenderFirst('x'#13'#include "frag"'#13'after'), 'x'#13'#include "frag"'#13'after');
+end;
+
 function RenderIn(const tmpl, locale: string): string;
 var ctx: TSpContext;
 begin
@@ -259,6 +309,7 @@ begin
   TestSeededRng;
   TestPermutationConfig;
   TestPluralFallbacks;
+  TestIncludes;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;
