@@ -80,7 +80,7 @@ Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 | **render-postprocess** | **39** | **39** |
 
-**`PASS=164 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=167 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last

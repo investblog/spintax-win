@@ -109,7 +109,7 @@ cross-engine gate. Measured on this port:
 | validate               | 40    | 40     | bracket/directive/permutation/plural/variable diagnostics |
 | render-postprocess     | 39    | 39     | full 12-step pipeline                 |
 
-Totals: **`PASS=164 FAIL=0 SKIP=4`** over 168 cases. Only `kind:rng` render cases
+Totals: **`PASS=167 FAIL=0 SKIP=4`** over 171 cases. Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 

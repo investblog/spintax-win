@@ -466,14 +466,13 @@ begin
   Check('nul/fake-key-unclaimed',
         RenderPP(#0'FOO'#0' and '#0'URL_0'#0' end'),
         #0'FOO'#0' and '#0'URL_0'#0' end');
-  { A mailto: run swallows the NUL and carries the fake key inside its own value. With a
-    real URL present, URL_0 genuinely exists -- so a restore that rescanned what it just
-    inserted WOULD substitute it. The reference does not, and neither may this port.
-    This is the case that discriminates; without the real URL there is no URL_0 to
-    substitute and any implementation passes. }
+  { Before spintax-js#53 a mailto: run swallowed the #0 and carried the fake key inside
+    its own value, so it survived to the output literally. The URI body now stops at #0,
+    so the caller's token stays a token, names a key that genuinely exists, and the
+    restore substitutes it. Re-measured against the reference after #53. }
   Check('nul/key-leaked-into-a-value',
         RenderPP('https://a.example.com then mailto:x@y.com'#0'URL_0'#0' end'),
-        'https://a.example.com then mailto:x@y.com'#0'URL_0'#0' end');
+        'https://a.example.com then mailto:x@y.comhttps://a.example.com end');
   Check('nul/key-leaked-no-such-key',
         RenderPP('see mailto:x@y.com'#0'URL_0'#0' end'),
         'See mailto:x@y.com'#0'URL_0'#0' end');
@@ -489,6 +488,17 @@ begin
   Check('nul/caller-token-between-shields',
         RenderPP('http://x.io/p?q=1'#0'ABBR_1'#0#9'  e.g.'#0'DOM_3'#0#9),
         'http://x.io/p?q=1e.g. e.g.'#0'DOM_3'#0);
+  { The one shape the guard does NOT cover, and it carries no #0 at all: two placeholders
+    landing flush around caller text that spells a bare key name. Here "e.g. " and
+    "mailto:x@y.io" both shield, leaving #0 ABBR_2 #0 URL_0 #0 URI_1 #0 -- and the closing
+    delimiter of one token plus the opening delimiter of the next spell a THIRD occurrence
+    of the URL_0 key, which the reference-shaped loop substitutes, destroying both real
+    tokens. The fast pass tokenises left to right, consumes ABBR_2 whole, and never sees
+    the forgery. We deliberately keep the fast pass's answer: the loop returns wreckage
+    with raw sentinels in it. Measured against the reference (spintax-js#52). }
+  Check('nul-free/forged-key-between-two-shields',
+        RenderPP('https://a.io e.g. URL_0mailto:x@y.io'),
+        'https://a.io e.g. URL_0mailto:x@y.io');
 end;
 
 { Comma-joined #include targets, for comparing against a measured list. }

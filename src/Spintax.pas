@@ -1410,7 +1410,10 @@ end;
 { The set that terminates a URL or URI: whitespace, or one of  < > " ' )  ] }
 function IsUriStop(c: Char): Boolean;
 begin
-  Result := IsPpWs(c) or (c = '<') or (c = '>') or (c = '"') or (c = '''')
+  { #0 stops a URI body. Nothing is shielded yet when this pass runs, so on ordinary
+    input it never bites; it is there for a caller-supplied #0, which would otherwise
+    let a URI match run through the delimiters of a placeholder minted after it. }
+  Result := IsPpWs(c) or (c = #0) or (c = '<') or (c = '>') or (c = '"') or (c = '''')
             or (c = ')') or (c = ']');
 end;
 
@@ -1626,13 +1629,35 @@ begin
 end;
 
 { https:// http:// ftp:// then everything up to whitespace or one of the stop chars. }
-function ScanUrl(const s: string; i: Integer): Integer;
+{ URIs -- https/http/ftp (with a // authority) and mailto:/tel: (without one) -- are
+  shielded in ONE pass, deliberately.
+
+  They used to be two passes, URLs then mailto:/tel:. A URI body runs to the first stop
+  character, so the two match sets overlap whenever one URI contains the other's scheme,
+  and with two passes the second one ran into a placeholder the first had already minted:
+  mailto:sales@x.com?body=see%20https://shop.x.com/cart shielded the URL first, then
+  stored a mailto: value with URL_0's key inside it. Restore was past that key by the time
+  the value landed, so the engine emitted a raw #0 -- illegal in XML, U+FFFD to an HTML
+  parser, rejected by Postgres text, and a live key again as soon as an edit detaches it
+  from the prefix that was shielding it (spintax-js#53).
+
+  Neither pass order fixes it, because whichever runs second is the one that gets split:
+  shielding mailto:/tel: first only moves the damage onto a URL whose path carries a
+  mailto:, where the leading half then loses its trailing dot to the punctuation pass.
+  A single alternation has no second pass to damage -- the leftmost match wins and takes
+  the whole token, whichever scheme it is.
+
+  Without this shield at all, the email and domain passes swallow the address, the bare
+  prefix is left behind, and the space-after-colon rule splits it into a malformed href. }
+function ScanUri(const s: string; i: Integer): Integer;
 var p, k: Integer;
 begin
   Result := 0;
   if MatchesAt(s, i, 'https://') then p := i + 8
   else if MatchesAt(s, i, 'http://') then p := i + 7
   else if MatchesAt(s, i, 'ftp://') then p := i + 6
+  else if MatchesAt(s, i, 'mailto:') then p := i + 7
+  else if MatchesAt(s, i, 'tel:') then p := i + 4
   else Exit;
   { The reference's [^...]+ needs at least one character after the scheme, so a bare
     "https://" is not a URL. The old guard compared against a fixed length and let the
@@ -1642,19 +1667,14 @@ begin
   if p > k then Result := p - i;
 end;
 
-{ mailto: and tel: have no authority part, so the URL scanner misses them. Without this
-  shield the email and domain passes swallow the address, the bare prefix is left behind,
-  and the space-after-colon rule splits it into a malformed href. }
-function ScanMailTel(const s: string; i: Integer): Integer;
-var p, k: Integer;
+{ Which placeholder prefix a match gets. Kept distinct (URL vs URI) even though one pass
+  mints both: the prefixes are what the other engines' fixtures speak. }
+function UriPrefix(const matched: string): string;
 begin
-  Result := 0;
-  if MatchesAt(s, i, 'mailto:') then p := i + 7
-  else if MatchesAt(s, i, 'tel:') then p := i + 4
-  else Exit;
-  k := p;
-  while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
-  if p > k then Result := p - i;
+  if MatchesAt(matched, 1, 'mailto:') or MatchesAt(matched, 1, 'tel:') then
+    Result := 'URI'
+  else
+    Result := 'URL';
 end;
 
 function ScanEmail(const s: string; i: Integer): Integer;
@@ -1839,8 +1859,11 @@ begin
   Result := Data;
 end;
 
+{ perMatchPrefix: the URI pass mints two prefixes from one alternation, so it derives the
+  prefix from the match instead of taking the fixed one. Every other pass passes False. }
 procedure ShieldPass(var text: string; scan: TScanFn; const prefix: string;
-  keys, vals: TStringList; var counter: Integer; stripTrailingPunct: Boolean);
+  keys, vals: TStringList; var counter: Integer; stripTrailingPunct: Boolean;
+  perMatchPrefix: Boolean);
 var
   buf: TStrBuf;
   matched, key, suffix: string;
@@ -1871,7 +1894,10 @@ begin
         buf.AppendStr(suffix)
       else
       begin
-        key := #0 + prefix + '_' + IntToStr(counter) + #0;
+        if perMatchPrefix then
+          key := #0 + UriPrefix(matched) + '_' + IntToStr(counter) + #0
+        else
+          key := #0 + prefix + '_' + IntToStr(counter) + #0;
         Inc(counter);
         keys.Add(key);
         vals.Add(matched);
@@ -2237,15 +2263,15 @@ begin
   try
     text := input;
     counter := 0;
-    { 1-5: shield. mailto and tel before email so the whole URI survives instead of the
-      address being carved out from under its prefix. }
-    ShieldPass(text, @ScanUrl,        'URL',   keys, vals, counter, True);
-    ShieldPass(text, @ScanMailTel,    'URI',   keys, vals, counter, True);
-    ShieldPass(text, @ScanEmail,      'EMAIL', keys, vals, counter, False);
-    ShieldPass(text, @ScanDomain,     'DOM',   keys, vals, counter, False);
-    ShieldPass(text, @ScanDecimal,    'NUM',   keys, vals, counter, False);
-    ShieldPass(text, @ScanMultiAbbr,  'ABBR',  keys, vals, counter, False);
-    ShieldPass(text, @ScanSingleAbbr, 'ABBR',  keys, vals, counter, False);
+    { 1-5: shield. Every URI scheme in ONE pass, so neither can run into a placeholder the
+      other minted (spintax-js#53), and always before email and domain, so the whole
+      mailto: survives instead of the address being carved out from under its prefix. }
+    ShieldPass(text, @ScanUri,        'URL',   keys, vals, counter, True,  True);
+    ShieldPass(text, @ScanEmail,      'EMAIL', keys, vals, counter, False, False);
+    ShieldPass(text, @ScanDomain,     'DOM',   keys, vals, counter, False, False);
+    ShieldPass(text, @ScanDecimal,    'NUM',   keys, vals, counter, False, False);
+    ShieldPass(text, @ScanMultiAbbr,  'ABBR',  keys, vals, counter, False, False);
+    ShieldPass(text, @ScanSingleAbbr, 'ABBR',  keys, vals, counter, False, False);
 
     { 6, 7, 7a }
     text := SpacingPasses(text);
@@ -2263,23 +2289,31 @@ begin
       pair with the opening #0 of a real placeholder to form a key that was never
       minted. A single left-to-right pass cannot reproduce either effect.
 
-      When the input carries no #0 of its own, the two are identical: every #0 in
-      the working text is then one the shield placed, the keys are well formed,
-      uniquely numbered and disjoint, and passes 6-11 touch only whitespace,
-      punctuation and lowercase letters, so none of them can break a key open.
+      The guard removes the #0-borne disagreements, and that is ALL it does. Two
+      earlier drafts of this comment claimed it made the two restores identical on
+      #0-free input. That is false, and the false version propagated to the other
+      engines before it was caught (spintax-js#52), so it is worth stating plainly
+      what survives the guard:
 
-      A shielded value CAN itself contain a key, and that does not break the
-      equivalence -- mailto: and tel: do not exclude #0, so one glued to an
-      already-shielded URL stores a value carrying URL_0's key (spintax-js#53).
-      The key inside it is always from an EARLIER pass, so the loop is past it by
-      the time the value lands in the text, and the fast pass never rescans what
-      it appended. Both leave it literal. An earlier draft of this comment claimed
-      no value could contain a #0, which is simply false; the conclusion held for
-      this reason instead.
+        #0 ABBR_2 #0 URL_0 #0 URI_1 #0
 
-      So the fast pass runs on every input that is not carrying a NUL, which is
-      every input anyone actually renders, and the reference-shaped loop still
-      runs on the ones that are. }
+      Two placeholders landing flush around caller text that spells a bare key
+      name. The closing delimiter of one and the opening delimiter of the next
+      spell a THIRD occurrence of the URL_0 key. The loop substitutes it and
+      destroys both real tokens; the fast pass consumes ABBR_2 whole and never
+      sees the forgery. It needs no #0 in the input -- only prose containing
+      URL_0, which any document about this engine has.
+
+      We keep the fast pass's answer there deliberately: the loop returns wreckage
+      with raw sentinels in it, so this is not a contract worth preserving. It is
+      pinned by nul-free/forged-key-between-two-shields.
+
+      What the guard IS for: with no #0 in the input, every #0 in the working text
+      is one the shield placed, so a caller cannot forge or split a delimiter, and
+      passes 6-11 touch only whitespace, punctuation and lowercase letters, so
+      none of them can break a key open. The reference-shaped loop still runs on
+      the inputs that do carry a #0, where the delimiters no longer pair as the
+      shield placed them. }
     if Pos(#0, input) = 0 then
     begin
       restored.Init(Length(text) + 16);
