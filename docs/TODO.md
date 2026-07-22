@@ -25,14 +25,14 @@ The single list of open work. Anything actively being built gets a plan in
       exact `EIntOverflow` that only Delphi had found. That closes one bug class, not the
       compiler difference itself.
 
-- [ ] **Ungated surfaces: `#include` is the one left.** `tests/local_tests.dpr` now covers
-      line terminators, the nil-RNG default, the seeded generator, permutation `<config>`
-      and plural lenient fallbacks — 31 assertions, all measured against the reference.
-      Still uncovered: **`#include` resolution and depth**, and the `known_variables` path.
-      Start by establishing whether this engine resolves `#include` at render time at all
-      or treats it as a host concern; the answer decides whether there is behaviour to
-      assert. Expectations must be measured against the reference, never written by
-      reading this port.
+- [ ] **Ungated surfaces: only `known_variables` left.** `tests/local_tests.dpr` now
+      covers line terminators, the nil-RNG default, the seeded generator, permutation
+      `<config>`, plural lenient fallbacks and `#include` -- 41 assertions, every
+      expectation measured against the reference. `#include` turned out to need no engine
+      work: resolution is a host concern in both engines, and with no resolver the
+      directive survives rendering verbatim. What was missing was the gate, since the
+      corpus renders no `#include` at all.
+
 - [ ] **Cosmetic post-process remainder** — 21 fixtures, all in `render-postprocess.json`,
       listed in `../tests/known-failures.txt`. A scope decision, not a defect:
       [decisions/0002](decisions/0002-postprocess-remainder.md). Pick up only if a consumer
