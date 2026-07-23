@@ -29,9 +29,10 @@ The single list of open work.
       body→source offset map so it locates against the real source. Coordinates are reported
       against the original source through a stripped→source map, so `/# … #/` comments (which
       drop characters and inner newlines) don't shift positions — detection stays on the same
-      stripped text, verdicts unchanged. `TestDiagPositions` (316 local, up from 304) pins
+      stripped text, verdicts unchanged. `TestDiagPositions` (320 local, up from 304) pins
       line/column/span for the editor-critical codes, with a Cyrillic case that a byte-column
-      implementation would fail and after-comment cases that the strip map fixes.
+      implementation would fail and comment cases (before, after, and inside) handled by the
+      strip map and the split start/end mapping.
 
 - [x] **Post-process is linear again** (2026-07-22). It was quadratic: sixteen passes each
       accumulating with `res := res + s[i]`, plus a placeholder restore that ran one

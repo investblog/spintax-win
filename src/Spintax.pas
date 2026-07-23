@@ -2701,14 +2701,31 @@ begin
   end;
 end;
 
-{ Translate a 1-based offset in the comment-stripped text back to the original source, via
-  the map StripComments filled. Offsets past the last mapped char (an exclusive span end at
-  the very end) map to one past the source. off <= 0 stays 0 (unknown). }
-function MapPos(map: TList<Integer>; off, srcLen: Integer): Integer;
+{ Map an INCLUSIVE 1-based stripped offset (a span start) to its source offset. off past the
+  end maps to one past the source; off <= 0 stays 0 (unknown). }
+function MapStart(map: TList<Integer>; off, srcLen: Integer): Integer;
 begin
   if off <= 0 then Exit(0);
   if off <= map.Count then Exit(map[off - 1]);
   Exit(srcLen + 1);
+end;
+
+{ Map an EXCLUSIVE 1-based stripped offset (a span end -- one past the last included char) to
+  the source position just AFTER the last included character. Mapping it like a start would
+  return the next SURVIVING char, which after a comment sits beyond it -- so `%x%/# c #/` would
+  stretch the span across the comment. Instead take the last included char's source offset and
+  step one code point (not one code unit -- the token may end on a multi-byte char). }
+function MapEnd(const src: string; map: TList<Integer>; off, srcLen: Integer): Integer;
+var last, srcOff, cpLen: Integer;
+begin
+  if off <= 1 then Exit(MapStart(map, off, srcLen));
+  last := off - 1;                    // stripped position of the last included char
+  if last > map.Count then last := map.Count;
+  if last < 1 then Exit(MapStart(map, off, srcLen));
+  srcOff := map[last - 1];
+  cpLen := 1;
+  if (srcOff >= 1) and (srcOff <= srcLen) then SpCodePointAt(src, srcOff, cpLen);
+  Exit(srcOff + cpLen);
 end;
 
 { Add a diagnostic, located at a STRIPPED-text offset (1-based) that is mapped back to the
@@ -2722,8 +2739,8 @@ procedure AddDiagAt(list: TSpDiagList; const code, sev: string; const src: strin
 var d: TSpDiag; sl: Integer;
 begin
   d.Code := code; d.Severity := sev; sl := Length(src);
-  SourceLineCol(src, MapPos(map, startOff, sl), d.Line, d.Column);
-  if endOff > 0 then SourceLineCol(src, MapPos(map, endOff, sl), d.EndLine, d.EndColumn)
+  SourceLineCol(src, MapStart(map, startOff, sl), d.Line, d.Column);
+  if endOff > 0 then SourceLineCol(src, MapEnd(src, map, endOff, sl), d.EndLine, d.EndColumn)
   else begin d.EndLine := 0; d.EndColumn := 0; end;
   list.Add(d);
 end;
@@ -3182,7 +3199,7 @@ begin
 
   // undefined-variable warnings: scan body (directive lines dropped), skip defined names
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
-  seenUndef := TStringList.Create;
+  seenUndef := TStringList.Create; bmap := TList<Integer>.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues);
     // A host-declared variable counts as defined for this check, so seeding defNames
@@ -3196,7 +3213,7 @@ begin
     // so a warning found in the rebuilt body can be pointed back at the real source. The #10
     // that stands in for each line break (and for a dropped directive line) maps to the
     // break position; a %var% never matches there, so that approximation is never surfaced.
-    body := ''; bmap := TList<Integer>.Create;
+    body := '';
     n := Length(text); lineStart := 1;
     while lineStart <= n + 1 do
     begin

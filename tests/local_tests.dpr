@@ -732,6 +732,20 @@ begin
         DiagPos('/# %missing% #/ok', 'en', 'variable.undefined', []), 'not-found');
   Check('pos/no-bracket-diag-inside-comment',
         DiagPos('/# ] #/ok', 'en', 'bracket.unexpected-closing', []), 'not-found');
+  { comment IMMEDIATELY AFTER the token: the span's exclusive end must land just past the
+    token, not on the next surviving char beyond the comment -- else the squiggle swallows
+    the comment. The end-offset is mapped differently from the start for exactly this. }
+  Check('pos/span-not-stretched-by-trailing-comment',
+        DiagPos('%x%/# c #/ ok', 'en', 'variable.undefined', []), 'warning @1:1..1:4');
+  Check('pos/bracket-span-before-trailing-comment',
+        DiagPos(']/# c #/', 'en', 'bracket.unexpected-closing', []), 'error @1:1..1:2');
+  { permutation.unknown-key uses a unique p+1+k .. p+1+b formula -- pin it so a future
+    change to the config scan cannot silently misplace it. Key "foo" is columns 3..5. }
+  Check('pos/perm-unknown-key',
+        DiagPos('[<foo=1>]', 'en', 'permutation.unknown-key', []), 'error @1:3..1:6');
+  { the conditional {?name? path is scanned separately from %var%; span is the {?name? head }
+  Check('pos/undefined-conditional-head',
+        DiagPos('{?missing?yes}', 'en', 'variable.undefined', []), 'warning @1:1..1:11');
 end;
 
 begin
