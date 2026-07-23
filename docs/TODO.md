@@ -11,9 +11,24 @@ The single list of open work.
 
 ## Open
 
-_Nothing open._
+- [ ] **Release the located diagnostics.** `TSpDiag` gained `Line`/`Column`/`EndLine`/
+      `EndColumn` — a public, additive API change, so the next tag is a **minor bump**
+      (`v0.2.0`), and `spintax-studio` then bumps its engine submodule off `v0.1.0`. Release
+      is tag-driven and only on the user's explicit command.
 
 ## Done
+
+- [x] **Validator diagnostics carry source positions** (2026-07-23). `TSpDiag` now has
+      1-based `Line`/`Column`/`EndLine`/`EndColumn` on top of `Code`/`Severity`, so
+      spintax-studio can draw squiggles and jump to errors without reimplementing the
+      validator scan. Positions are best-effort, code-point columns, editor EOL, and
+      explicitly **not** corpus-gated — `Code`/`Severity` and every verdict are unchanged
+      (corpus still 168/0/4). The char-scan checks made this cheap; two collectors
+      (`CollectOccurrences`, `FindPluralBlocks`) grew position overloads, and
+      `variable.undefined` — which scans a rebuilt body with directive lines dropped — got a
+      body→source offset map so it locates against the real source. `TestDiagPositions`
+      (312 local, up from 304) pins line/column/span for the editor-critical codes, with a
+      Cyrillic case that a byte-column implementation would fail.
 
 - [x] **Post-process is linear again** (2026-07-22). It was quadratic: sixteen passes each
       accumulating with `res := res + s[i]`, plus a placeholder restore that ran one

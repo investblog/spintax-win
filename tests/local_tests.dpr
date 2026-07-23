@@ -666,6 +666,58 @@ begin
 
 end;
 
+{ Best-effort source position of the first diagnostic with a given code, as
+  "severity @line:col..endline:endcol". No fixture can express positions (the corpus gates
+  code+severity only), so this is the only gate. Columns count CODE POINTS. Codes and
+  severities are asserted too, to prove locating a finding never changed its verdict. }
+function DiagPos(const tmpl, locale, code: string; const knownInc: array of string): string;
+var d: TSpDiagList; i: Integer; ki: TStringList;
+begin
+  ki := nil;
+  if Length(knownInc) > 0 then
+  begin
+    ki := TStringList.Create;
+    for i := 0 to High(knownInc) do ki.Add(knownInc[i]);
+  end;
+  try
+    Result := 'not-found';
+    d := SpValidate(tmpl, locale, ki, nil);
+    try
+      for i := 0 to d.Count - 1 do
+        if d[i].Code = code then
+        begin
+          Result := Format('%s @%d:%d..%d:%d',
+            [d[i].Severity, d[i].Line, d[i].Column, d[i].EndLine, d[i].EndColumn]);
+          Break;
+        end;
+    finally d.Free; end;
+  finally ki.Free; end;
+end;
+
+procedure TestDiagPositions;
+begin
+  { The editor-critical diagnostics get a 1-based line/column and a span. These are the
+    exact positions the brief asks Studio to rely on for squiggles and jump-to-error. }
+  Check('pos/unexpected-closing',   DiagPos(']', 'en', 'bracket.unexpected-closing', []),
+        'error @1:1..1:2');
+  Check('pos/unclosed-line-2',      DiagPos('ok'#10'{a|b', 'en', 'bracket.unclosed', []),
+        'error @2:1..2:2');
+  Check('pos/set-malformed',        DiagPos('#set broken', 'en', 'set.malformed', []),
+        'error @1:1..1:5');
+  Check('pos/duplicate-later-line', DiagPos('#set %a% = 1'#10'#set %a% = 2', 'en',
+        'definition.duplicate-name', []), 'error @2:1..2:5');
+  Check('pos/undefined-var-token',  DiagPos('hi %missing%', 'en', 'variable.undefined', []),
+        'warning @1:4..1:13');
+  Check('pos/include-slug',         DiagPos('#include "missing"', 'en',
+        'include.unknown-target', ['other']), 'error @1:11..1:18');
+  Check('pos/plural-arity-block',   DiagPos('{plural %n%: a|b|c}', 'en', 'plural.arity', []),
+        'error @1:1..1:9');
+  { A byte column would land mid-character on non-ASCII; a code-point column does not.
+    Cyrillic "нет " is 4 code points, so %x% opens at column 5 whatever the byte width. }
+  Check('pos/undefined-after-cyrillic',
+        DiagPos('нет %x%', 'en', 'variable.undefined', []), 'warning @1:5..1:8');
+end;
+
 begin
   {$IFDEF FPC}
   DefaultSystemCodePage := CP_UTF8;
@@ -685,6 +737,7 @@ begin
   TestCaseFolding;
   TestPostProcess;
   TestNulInInput;
+  TestDiagPositions;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;

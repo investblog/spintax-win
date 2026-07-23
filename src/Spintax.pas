@@ -86,9 +86,23 @@ type
   { A single validator finding. Severity is 'error' or 'warning'; a template is
     "invalid" iff any diagnostic is 'error' (positions are not modelled — the
     corpus asserts codes + severity only). }
+  { A single validator finding. Code + Severity are the parity contract (the golden
+    corpus gates only those). Line/Column/EndLine/EndColumn are BEST-EFFORT source
+    positions for editors, NOT parity-gated and never identical across engines:
+      - all 1-based; 0 means "position unknown", which is a valid, common answer;
+      - Column/EndColumn count CODE POINTS from the line start, so the value is the
+        same under FPC (UTF-8) and a UTF-16 compiler and points at a character, not a
+        byte -- the corpus is full of Cyrillic where a byte column would be wrong;
+      - Line uses editor end-of-line semantics (\n, \r\n, \r each one line), which is
+        deliberately not the engine's /gmu render-time line model;
+      - End* give a span when one is cheap to compute, else 0. }
   TSpDiag = record
     Code: string;
     Severity: string;
+    Line: Integer;
+    Column: Integer;
+    EndLine: Integer;
+    EndColumn: Integer;
   end;
   TSpDiagList = TList<TSpDiag>;
 
@@ -2649,10 +2663,46 @@ begin
   Result := (Length(s) >= Length(p)) and (Copy(s, 1, Length(p)) = p);
 end;
 
-procedure AddDiag(list: TSpDiagList; const code, sev: string);
+{ Editor coordinates for a 1-based source offset: line by \n / \r\n / \r, column in
+  CODE POINTS from the line start (SpCodePointAt steps one code point whatever the string
+  width, so the column matches under FPC and a UTF-16 compiler). offset <= 0 -> 0/0. }
+procedure SourceLineCol(const text: string; offset: Integer; out line, col: Integer);
+var i, n, cpLen: Integer;
+begin
+  if offset <= 0 then begin line := 0; col := 0; Exit; end;
+  line := 1; col := 1; i := 1; n := Length(text);
+  while (i < offset) and (i <= n) do
+  begin
+    if text[i] = #13 then
+    begin
+      if (i < n) and (text[i + 1] = #10) then Inc(i, 2) else Inc(i);
+      Inc(line); col := 1;
+    end
+    else if text[i] = #10 then
+    begin
+      Inc(i); Inc(line); col := 1;
+    end
+    else
+    begin
+      SpCodePointAt(text, i, cpLen);
+      Inc(i, cpLen); Inc(col);
+    end;
+  end;
+end;
+
+{ Add a diagnostic, located at a source offset (1-based into text). startOff = 0 means the
+  position is unknown and yields Line/Column = 0, the honest answer for a finding that cannot
+  be cheaply and safely located. endOff = 0 leaves the span empty; endOff > 0 fills End* from
+  it. Every finding goes through here -- Code and Severity are the contract, the positions are
+  best-effort on top. }
+procedure AddDiagAt(list: TSpDiagList; const code, sev: string; const text: string;
+  startOff, endOff: Integer);
 var d: TSpDiag;
 begin
   d.Code := code; d.Severity := sev;
+  SourceLineCol(text, startOff, d.Line, d.Column);
+  if endOff > 0 then SourceLineCol(text, endOff, d.EndLine, d.EndColumn)
+  else begin d.EndLine := 0; d.EndColumn := 0; end;
   list.Add(d);
 end;
 
@@ -2669,8 +2719,11 @@ begin
   Result := False;
 end;
 
-{ Collect well-formed #set/#def occurrences in source order (parallel lists). }
-procedure CollectOccurrences(const text: string; kinds, names, values: TStringList);
+{ Collect well-formed #set/#def occurrences in source order (parallel lists). The overload
+  also records, per occurrence, the source offset of the line's '#' -- the anchor for the
+  diagnostics that reference these occurrences. Pass poss = nil when positions are not wanted. }
+procedure CollectOccurrences(const text: string; kinds, names, values: TStringList;
+  poss: TList<Integer>); overload;
 var lineStart, e, n, termLen: Integer; line, kind, nm, val: string;
 begin
   n := Length(text); lineStart := 1;
@@ -2681,14 +2734,24 @@ begin
     if TryParseDirective(line, kind, nm, val) then
     begin
       kinds.Add(kind); names.Add(nm); values.Add(val);
+      if poss <> nil then
+        poss.Add(lineStart + (Length(line) - Length(PhpLtrim(line))));
     end;
     if e > n then Break;
     lineStart := e + termLen;
   end;
 end;
 
-{ Brace-aware scan for plural blocks (finds them inside permutations too). }
-procedure FindPluralBlocks(const text: string; counts, forms: TStringList);
+procedure CollectOccurrences(const text: string; kinds, names, values: TStringList); overload;
+begin
+  CollectOccurrences(text, kinds, names, values, nil);
+end;
+
+{ Brace-aware scan for plural blocks (finds them inside permutations too). The overload
+  also records, per block, the source offset of its '{plural ' start -- the anchor for the
+  plural diagnostics. Pass starts = nil when positions are not wanted. }
+procedure FindPluralBlocks(const text: string; counts, forms: TStringList;
+  starts: TList<Integer>); overload;
 const PREFIX = '{plural ';
 var i, start, j, depth, colon: Integer; inner: string;
 begin
@@ -2710,8 +2773,14 @@ begin
     if colon = 0 then begin i := j + 1; Continue; end;
     counts.Add(Copy(inner, 1, colon - 1));
     forms.Add(Copy(inner, colon + 1, MaxInt));
+    if starts <> nil then starts.Add(start);
     i := j + 1;
   end;
+end;
+
+procedure FindPluralBlocks(const text: string; counts, forms: TStringList); overload;
+begin
+  FindPluralBlocks(text, counts, forms, nil);
 end;
 
 { Set-macro names whose value is unresolved-at-plural-time, propagated through %refs%. }
@@ -2747,29 +2816,32 @@ begin
 end;
 
 procedure CheckBrackets(const text: string; res: TSpDiagList);
-type TOpen = record ch: Char; end;
-var stack: array of Char; top, i: Integer; ch, opener: Char;
+var stack: array of Char; spos: array of Integer; top, i: Integer; ch, opener: Char;
 begin
-  SetLength(stack, 0); top := 0;
+  SetLength(stack, 0); SetLength(spos, 0); top := 0;
   for i := 1 to Length(text) do
   begin
     ch := text[i];
     if (ch = '{') or (ch = '[') then
     begin
-      SetLength(stack, top + 1); stack[top] := ch; Inc(top);
+      SetLength(stack, top + 1); SetLength(spos, top + 1);
+      stack[top] := ch; spos[top] := i; Inc(top);
     end
     else if (ch = '}') or (ch = ']') then
     begin
-      if top = 0 then AddDiag(res, 'bracket.unexpected-closing', 'error')
+      { brackets are ASCII, so one code unit -- the span is [i, i+1) }
+      if top = 0 then AddDiagAt(res, 'bracket.unexpected-closing', 'error', text, i, i + 1)
       else
       begin
         opener := stack[top - 1]; Dec(top);
         if ((opener = '{') and (ch <> '}')) or ((opener = '[') and (ch <> ']')) then
-          AddDiag(res, 'bracket.mismatched', 'error');
+          AddDiagAt(res, 'bracket.mismatched', 'error', text, i, i + 1);
       end;
     end;
   end;
-  for i := 0 to top - 1 do AddDiag(res, 'bracket.unclosed', 'error');
+  { each still-open bracket, at the position of the opener that was never closed }
+  for i := 0 to top - 1 do
+    AddDiagAt(res, 'bracket.unclosed', 'error', text, spos[i], spos[i] + 1);
 end;
 
 procedure CheckDirectivesV(const text: string; res: TSpDiagList);
@@ -2777,6 +2849,7 @@ var lineStart, e, n, i, seenIdx, p, termLen: Integer;
     line, t, kind, nm, val: string;
     isSet, isDef: Boolean;
     kinds, names, values, seen: TStringList;
+    poss: TList<Integer>;
 begin
   // malformed lines
   n := Length(text); lineStart := 1;
@@ -2789,8 +2862,10 @@ begin
     isDef := SpStartsWith(t, '#def ') or SpStartsWith(t, '#def'#9);
     if (isSet or isDef) and (not TryParseDirective(line, kind, nm, val)) then
     begin
-      if isDef then AddDiag(res, 'def.malformed', 'error')
-      else AddDiag(res, 'set.malformed', 'error');
+      { point at the '#' (first non-space on the line); span = the 4-char keyword }
+      p := lineStart + (Length(line) - Length(t));
+      if isDef then AddDiagAt(res, 'def.malformed', 'error', text, p, p + 4)
+      else AddDiagAt(res, 'set.malformed', 'error', text, p, p + 4);
     end;
     if e > n then Break;
     lineStart := e + termLen;
@@ -2798,23 +2873,25 @@ begin
 
   // duplicate names + #include in a #def value
   kinds := TStringList.Create; names := TStringList.Create; values := TStringList.Create;
-  seen := TStringList.Create;
+  seen := TStringList.Create; poss := TList<Integer>.Create;
   try
-    CollectOccurrences(text, kinds, names, values);
+    CollectOccurrences(text, kinds, names, values, poss);
     for i := 0 to names.Count - 1 do
     begin
       seenIdx := seen.IndexOf(names[i]);
-      if seenIdx >= 0 then AddDiag(res, 'definition.duplicate-name', 'error')
+      { duplicate is reported at the LATER occurrence -- poss[i] is that line's '#' }
+      if seenIdx >= 0 then
+        AddDiagAt(res, 'definition.duplicate-name', 'error', text, poss[i], poss[i] + 4)
       else seen.Add(names[i]);
       if kinds[i] = 'def' then
       begin
         p := Pos('#include', values[i]);
         if (p > 0) and ((p + 8 > Length(values[i])) or (not IsAsciiWord(values[i][p + 8]))) then
-          AddDiag(res, 'def.include-in-value', 'error');
+          AddDiagAt(res, 'def.include-in-value', 'error', text, poss[i], poss[i] + 4);
       end;
     end;
   finally
-    kinds.Free; names.Free; values.Free; seen.Free;
+    kinds.Free; names.Free; values.Free; seen.Free; poss.Free;
   end;
 end;
 
@@ -2884,24 +2961,29 @@ begin
         if (b2 <= Length(configStr)) and (configStr[b2] = '=') then
         begin
           low := LowerAscii(key);
+          { key at configStr[k..b) maps to source text[p+1+k .. p+1+b) }
           if (low <> 'minsize') and (low <> 'maxsize') and (low <> 'sep') and (low <> 'lastsep') then
-            AddDiag(res, 'permutation.unknown-key', 'error');
+            AddDiagAt(res, 'permutation.unknown-key', 'error', text, p + 1 + k, p + 1 + b);
         end;
         k := b;
       end
       else Inc(k);
     end;
 
+    { the offending value sits inside the config; anchor at the config open [<...> }
     numv := ExtractNum(configStr, 'minsize');
-    if (numv <> #1) and (not DigitsOnly(numv)) then AddDiag(res, 'permutation.minsize-not-integer', 'error');
+    if (numv <> #1) and (not DigitsOnly(numv)) then
+      AddDiagAt(res, 'permutation.minsize-not-integer', 'error', text, p, q + 1);
     numv := ExtractNum(configStr, 'maxsize');
-    if (numv <> #1) and (not DigitsOnly(numv)) then AddDiag(res, 'permutation.maxsize-not-integer', 'error');
+    if (numv <> #1) and (not DigitsOnly(numv)) then
+      AddDiagAt(res, 'permutation.maxsize-not-integer', 'error', text, p, q + 1);
   end;
 end;
 
 procedure CheckPluralsV(const text, locale: string; res: TSpDiagList);
 var base: string; arity, i, k, cnt, m: Integer;
     counts, forms, tainted, kinds, names, values, refs: TStringList;
+    starts: TList<Integer>;
     hasBracket: Boolean;
 begin
   base := '';
@@ -2911,13 +2993,15 @@ begin
   kinds := TStringList.Create; names := TStringList.Create; values := TStringList.Create;
   tainted := TStringList.Create;
   counts := TStringList.Create; forms := TStringList.Create;
+  starts := TList<Integer>.Create;
   try
     CollectOccurrences(text, kinds, names, values);
     BuildMacroTaint(kinds, names, values, tainted);
-    FindPluralBlocks(text, counts, forms);
+    FindPluralBlocks(text, counts, forms, starts);
 
     for i := 0 to counts.Count - 1 do
     begin
+      { every plural diagnostic anchors at the block's '{plural ' (8-char prefix span) }
       // count-macro: a tainted #set name referenced in the count slot
       refs := TStringList.Create;
       try
@@ -2925,7 +3009,7 @@ begin
         for k := 0 to refs.Count - 1 do
           if tainted.IndexOf(refs[k]) >= 0 then
           begin
-            AddDiag(res, 'plural.count-macro', 'error'); Break;
+            AddDiagAt(res, 'plural.count-macro', 'error', text, starts[i], starts[i] + 8); Break;
           end;
       finally
         refs.Free;
@@ -2936,7 +3020,7 @@ begin
         if CharInSet(forms[i][m], ['{', '}', '[', ']']) then begin hasBracket := True; Break; end;
       if hasBracket then
       begin
-        AddDiag(res, 'plural.nested-brackets', 'error');
+        AddDiagAt(res, 'plural.nested-brackets', 'error', text, starts[i], starts[i] + 8);
         Continue;
       end;
 
@@ -2944,16 +3028,18 @@ begin
       begin
         cnt := 1;
         for m := 1 to Length(forms[i]) do if forms[i][m] = '|' then Inc(cnt);
-        if cnt <> arity then AddDiag(res, 'plural.arity', 'error');
+        if cnt <> arity then
+          AddDiagAt(res, 'plural.arity', 'error', text, starts[i], starts[i] + 8);
       end;
     end;
   finally
-    kinds.Free; names.Free; values.Free; tainted.Free; counts.Free; forms.Free;
+    kinds.Free; names.Free; values.Free; tainted.Free; counts.Free; forms.Free; starts.Free;
   end;
 end;
 
 procedure DetectCycleV(const current: string; defNames, defValues: TStringList;
-  visited: TStringList; res: TSpDiagList; var reported: Boolean);
+  visited: TStringList; res: TSpDiagList; var reported: Boolean;
+  const text: string; anchor: Integer);
 var idx, k: Integer; refs: TStringList; ref: string;
 begin
   if reported then Exit;
@@ -2968,13 +3054,13 @@ begin
       if ref = current then Continue;
       if visited.IndexOf(ref) >= 0 then
       begin
-        AddDiag(res, 'variable.circular-reference', 'error');
+        AddDiagAt(res, 'variable.circular-reference', 'error', text, anchor, anchor + 4);
         reported := True; Exit;
       end;
       if defNames.IndexOf(ref) >= 0 then
       begin
         visited.Add(ref);
-        DetectCycleV(ref, defNames, defValues, visited, res, reported);
+        DetectCycleV(ref, defNames, defValues, visited, res, reported, text, anchor);
         visited.Delete(visited.Count - 1);
         if reported then Exit;
       end;
@@ -2986,29 +3072,32 @@ end;
 
 procedure CheckVariableRefsV(const text: string; KnownIncludes: TStringList; res: TSpDiagList);
 var kinds, defNames, defValues, visited: TStringList; i: Integer; reported: Boolean;
+    poss: TList<Integer>;
 begin
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
+  poss := TList<Integer>.Create;
   try
-    CollectOccurrences(text, kinds, defNames, defValues);
-    // self-reference
+    CollectOccurrences(text, kinds, defNames, defValues, poss);
+    // self-reference -- at the offending #set/#def line
     for i := 0 to defNames.Count - 1 do
       if Pos('%' + defNames[i] + '%', LowerAscii(defValues[i])) > 0 then
-        AddDiag(res, 'variable.self-reference', 'error');
-    // circular
+        AddDiagAt(res, 'variable.self-reference', 'error', text, poss[i], poss[i] + 4);
+    // circular -- anchored at the definition that starts the detected cycle
     for i := 0 to defNames.Count - 1 do
     begin
       reported := False;
       visited := TStringList.Create;
       try
         visited.Add(defNames[i]);
-        DetectCycleV(defNames[i], defNames, defValues, visited, res, reported);
+        DetectCycleV(defNames[i], defNames, defValues, visited, res, reported,
+                     text, poss[i]);
       finally
         visited.Free;
       end;
     end;
     // (undefined-variable warnings are emitted in SpValidate against the body scan)
   finally
-    kinds.Free; defNames.Free; defValues.Free;
+    kinds.Free; defNames.Free; defValues.Free; poss.Free;
   end;
 end;
 
@@ -3022,6 +3111,7 @@ function SpValidate(const Src, Locale: string;
 var text, body, line, kind, nm, val, ref: string;
     lineStart, e, n, p, q, r, i, j, termLen: Integer;
     kinds, defNames, defValues, seenUndef: TStringList;
+    bmap: TList<Integer>;
 begin
   Result := TSpDiagList.Create;
   text := StripComments(Src);
@@ -3051,7 +3141,10 @@ begin
           if r > q then
           begin
             ref := Copy(line, q + 1, r - q - 1);
-            if KnownIncludes.IndexOf(ref) < 0 then AddDiag(Result, 'include.unknown-target', 'error');
+            { span of the slug between the quotes: line pos q+1..r-1 -> source lineStart+q .. }
+            if KnownIncludes.IndexOf(ref) < 0 then
+              AddDiagAt(Result, 'include.unknown-target', 'error', text,
+                        lineStart + q, lineStart + r - 1);
           end;
         end;
       end;
@@ -3072,19 +3165,26 @@ begin
       for i := 0 to KnownVariables.Count - 1 do
         if defNames.IndexOf(LowerAscii(KnownVariables[i])) < 0 then
           defNames.Add(LowerAscii(KnownVariables[i]));
-    // build body = non-directive lines
-    body := '';
+    // build body = non-directive lines, and bmap[k] = the source offset of body char k+1,
+    // so a warning found in the rebuilt body can be pointed back at the real source. The #10
+    // that stands in for each line break (and for a dropped directive line) maps to the
+    // break position; a %var% never matches there, so that approximation is never surfaced.
+    body := ''; bmap := TList<Integer>.Create;
     n := Length(text); lineStart := 1;
     while lineStart <= n + 1 do
     begin
       e := NextLineBreak(text, lineStart, termLen);
       line := Copy(text, lineStart, e - lineStart);
-      if not TryParseDirective(line, kind, nm, val) then body := body + line;
-      body := body + #10;
+      if not TryParseDirective(line, kind, nm, val) then
+      begin
+        body := body + line;
+        for j := 1 to Length(line) do bmap.Add(lineStart + j - 1);
+      end;
+      body := body + #10; bmap.Add(e);
       if e > n then Break;
       lineStart := e + termLen;
     end;
-    // %var% refs
+    // %var% refs -- span the %name% token in the source
     i := 1;
     while i <= Length(body) do
     begin
@@ -3098,14 +3198,15 @@ begin
           if (defNames.IndexOf(nm) < 0) and (seenUndef.IndexOf(nm) < 0) then
           begin
             seenUndef.Add(nm);
-            AddDiag(Result, 'variable.undefined', 'warning');
+            AddDiagAt(Result, 'variable.undefined', 'warning', text,
+                      bmap[i - 1], bmap[j - 1] + 1);
           end;
           i := j + 1; Continue;
         end;
       end;
       Inc(i);
     end;
-    // {?name? / {?!name? refs
+    // {?name? / {?!name? refs -- span the conditional head {?..name..?
     i := 1;
     while i <= Length(body) do
     begin
@@ -3124,7 +3225,8 @@ begin
             if (defNames.IndexOf(nm) < 0) and (seenUndef.IndexOf(nm) < 0) then
             begin
               seenUndef.Add(nm);
-              AddDiag(Result, 'variable.undefined', 'warning');
+              AddDiagAt(Result, 'variable.undefined', 'warning', text,
+                        bmap[i - 1], bmap[j - 1] + 1);
             end;
           end;
         end;
@@ -3132,7 +3234,7 @@ begin
       Inc(i);
     end;
   finally
-    kinds.Free; defNames.Free; defValues.Free; seenUndef.Free;
+    kinds.Free; defNames.Free; defValues.Free; seenUndef.Free; bmap.Free;
   end;
 end;
 

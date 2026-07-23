@@ -137,9 +137,29 @@ locale, a `PostProcess` flag, and an injected `TSpRng`. The RNG seam ships `TFir
 `TLastRng`, `TSequenceRng` and a seeded `TMulberry32Rng` — the first three are what the
 deterministic fixtures drive.
 
-`SpValidate` returns `TSpDiagList` (`TList<TSpDiag>`, code + severity). Invalid iff any
-diagnostic is severity `error` — that is the verdict an editor or an LLM-repair loop
-keys off.
+`SpValidate` returns `TSpDiagList` (`TList<TSpDiag>`). Each `TSpDiag` carries `Code` and
+`Severity` — the parity contract, the only fields the corpus gates — plus **best-effort
+source positions** `Line`, `Column`, `EndLine`, `EndColumn` for editors (squiggles,
+jump-to-error, LLM-repair prompts). Invalid iff any diagnostic is severity `error` — that
+is the verdict an editor or an LLM-repair loop keys off.
+
+The positions are deliberately outside the parity claim and are **not** required to match
+`@spintax/core` or the PHP validator, which report their own line/column. The contract:
+
+- all 1-based; **0 means unknown**, a valid and common answer — a finding that cannot be
+  cheaply and safely located stays `0/0` rather than guessing;
+- `Column`/`EndColumn` count **code points** from the line start, so the value is identical
+  under FPC (UTF-8) and a UTF-16 compiler and points at a character, not a byte — the corpus
+  is full of Cyrillic, where a byte column would land mid-glyph;
+- `Line` uses editor end-of-line semantics (`\n`, `\r\n`, `\r` each one line), on purpose
+  distinct from the engine's `/gmu` render-time line model;
+- `End*` give a span when one is cheap, else 0.
+
+The editor-critical codes are located (brackets, malformed `#set`/`#def`, undefined
+variables, unknown includes, plural arity, and the rest); `tests/local_tests.dpr`
+(`TestDiagPositions`) pins the exact line/column/span for a representative set, including a
+Cyrillic case that a byte-column implementation would fail. Positions add fields to a record
+whose old readers used only `Code`/`Severity`, so they stay source-compatible.
 
 `KnownVariables` names what the **host** will supply at render time, mirroring the
 reference's `ValidateOptions.knownVariables`: a reference to one is not "undefined", so the
