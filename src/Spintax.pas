@@ -83,10 +83,8 @@ type
     Refs, Sets, Defs, Includes: TStringList;
   end;
 
-  { A single validator finding. Severity is 'error' or 'warning'; a template is
-    "invalid" iff any diagnostic is 'error' (positions are not modelled — the
-    corpus asserts codes + severity only). }
-  { A single validator finding. Code + Severity are the parity contract (the golden
+  { A single validator finding. Severity is 'error' or 'warning'; a template is "invalid"
+    iff any diagnostic is 'error'. Code + Severity are the parity contract (the golden
     corpus gates only those). Line/Column/EndLine/EndColumn are BEST-EFFORT source
     positions for editors, NOT parity-gated and never identical across engines:
       - all 1-based; 0 means "position unknown", which is a valid, common answer;
