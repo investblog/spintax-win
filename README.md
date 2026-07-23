@@ -55,7 +55,6 @@ seam ships `TFirstRng`, `TLastRng`, `TSequenceRng` and a seeded `TMulberry32Rng`
   ([source](https://github.com/investblog/spintax-py)).
 - **WordPress:** [the original plugin](https://github.com/investblog/spintax) -- the origin
   engine, GPL.
-- **OpenCart 3.x:** [Spintax SEO](https://github.com/investblog/spintax-opencart).
 
 The engines are independent implementations held together by the shared corpus, not
 ports of one another's code.
