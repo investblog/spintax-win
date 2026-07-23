@@ -161,6 +161,14 @@ variables, unknown includes, plural arity, and the rest); `tests/local_tests.dpr
 Cyrillic case that a byte-column implementation would fail. Positions add fields to a record
 whose old readers used only `Code`/`Severity`, so they stay source-compatible.
 
+Coordinates are reported against the **original source**, not the comment-stripped text the
+validator scans. `/# … #/` comments remove characters and the newlines inside them, so a
+position taken from the stripped text would drift after any block comment. `SpValidate`
+keeps a stripped→source offset map (`StripComments` fills it) and reports through it, so
+detection is byte-identical to before — the same stripped text, the same verdicts — while
+`Line`/`Column` land where an editor sees them. Pinned by the after-comment cases in
+`TestDiagPositions`.
+
 `KnownVariables` names what the **host** will supply at render time, mirroring the
 reference's `ValidateOptions.knownVariables`: a reference to one is not "undefined", so the
 `variable.undefined` warning is suppressed for it. Matching is case-insensitive. It only

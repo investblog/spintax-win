@@ -716,6 +716,22 @@ begin
     Cyrillic "нет " is 4 code points, so %x% opens at column 5 whatever the byte width. }
   Check('pos/undefined-after-cyrillic',
         DiagPos('нет %x%', 'en', 'variable.undefined', []), 'warning @1:5..1:8');
+
+  { Comments are stripped before validation, dropping characters AND the newlines inside
+    them. Coordinates must still be the SOURCE's, not the stripped text's -- so a diagnostic
+    after a block comment lands where an editor sees it, not shifted up/left. }
+  { multiline comment before the ref: the block is 2 source lines, so %missing% is line 3 }
+  Check('pos/undefined-after-multiline-comment',
+        DiagPos('/# comment'#10'   block #/'#10'%missing%', 'en', 'variable.undefined', []),
+        'warning @3:1..3:10');
+  { inline comment before the diagnostic: the column is the source column, not the stripped one }
+  Check('pos/bracket-after-inline-comment',
+        DiagPos('x /# c #/]', 'en', 'bracket.unexpected-closing', []), 'error @1:10..1:11');
+  { a construct INSIDE a comment yields no diagnostic at all (it was stripped) }
+  Check('pos/no-var-diag-inside-comment',
+        DiagPos('/# %missing% #/ok', 'en', 'variable.undefined', []), 'not-found');
+  Check('pos/no-bracket-diag-inside-comment',
+        DiagPos('/# ] #/ok', 'en', 'bracket.unexpected-closing', []), 'not-found');
 end;
 
 begin
