@@ -94,9 +94,12 @@ type
       also what the reference does when no resolver is supplied. Set it and the engine
       resolves includes the way the family does: see SP_DEFAULT_INCLUDE_DEPTH. }
     IncludeResolver: TSpIncludeResolver;   // caller owns
-    { How deep #include may nest before a further one resolves to ''. 0 = the family's
-      default of SP_DEFAULT_INCLUDE_DEPTH. Counts the include stack ONLY -- parse nesting
-      and variable expansion have their own limits. }
+    { How deep #include may nest before a further one resolves to ''. Counts the include
+      stack ONLY -- parse nesting and variable expansion have their own limits.
+
+      0 = the family's default, SP_DEFAULT_INCLUDE_DEPTH, and so is any negative value: a
+      zeroed record field cannot be told from a deliberate 0, so this field cannot carry the
+      reference's "0 means resolve nothing". To resolve nothing, leave IncludeResolver nil. }
     MaxIncludeDepth: Integer;
   end;
 
@@ -906,9 +909,12 @@ end;
 
       /^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu
 
-  which the PHP core and the plugin spell the same way (`\s` under /u is that ASCII set, and
-  the reference writes it out rather than trusting JS's Unicode \s -- so an NBSP after
-  #include is NOT whitespace here, in any engine).
+  The PHP core and the plugin write `\s` under /u where the reference spells the class out.
+  The reference's own comment says it does that for PHP parity, i.e. it believes PHP's \s is
+  this ASCII set; PCRE2 under /u also sets UCP, which would make \s match NBSP, so the two
+  may in fact disagree on `#include<NBSP>"x"`. Unmeasured -- no PHP on this machine -- and
+  recorded in docs/TODO.md as a question for the family. This port follows @spintax/core,
+  which the charter makes the normative reference, so an NBSP is not whitespace here.
 
   This port used to read it as "#include at a line start, then the first quoted string
   anywhere on the line", which is looser in five ways and stricter in one. Since
@@ -953,6 +959,25 @@ end;
   The trailing [ \t\n\r\f\x0B]*$ is greedy and then backtracks to the last $ it can reach,
   so walking the run forward and keeping the LAST $ seen inside it gives the same answer as
   the regex engine gives coming back from the end. }
+{ After a match, a line-by-line scan must carry on from the MATCH END, not from the next line
+  start: the reference scans with /g, and the whitespace class holds terminators, so a match
+  can swallow line starts that are no longer ^ positions. Retrying them invents includes --
+  measured, and it moves a verdict:
+
+    #include "a          the reference sees ONE include, `a\n#include `; scanning every line
+    #include "           start finds a second, `   \nb`, because the quotes inside the first
+    b"                   target line up again from there.
+
+  MatchEnd is a $ position by construction, so it is either past the end or on a terminator;
+  E and TermLen are moved onto it, and the caller's `lineStart := e + termLen` then lands on
+  the next real ^. }
+procedure ResumeAfterInclude(const text: string; matchEnd: Integer;
+  var e, termLen: Integer);
+begin
+  e := matchEnd;
+  termLen := LineBreakLen(text, e);
+end;
+
 function MatchIncludeAt(const text: string; from: Integer;
   out ref: string; out refStart, refEnd, matchEnd: Integer): Boolean;
 var p, n, runStart, q: Integer;
@@ -1011,15 +1036,23 @@ begin
     { Keep the terminator that was actually there. Emitting #10 for every line would turn a
       bare CR into LF; the reference preserves the character it broke on.
 
-      With ONE exception, which is the same `[ \t]*\r?$` that trims the value: the reference
-      removes the whole MATCH, and a CR is inside it when a CRLF follows -- the optional \r
-      is consumed and $ still holds before the \n. So a directive line ending in CRLF leaves
-      only the LF. A LONE CR is not consumed (then $ would have to hold after it, and it does
-      not), so it stays, and so do U+2028/9. Measured: `#set %x% = A` + CRLF + `%x%` renders
-      "\nA" there, and used to render "\r\nA" here. }
+      With one exception, which is the same `[ \t]*\r?$` that trims the value: the reference
+      removes the whole MATCH, and the optional \r is greedy, so it takes the CR whenever $
+      still holds AFTER it. $ under /m holds at end of input and before ANY line terminator,
+      so that is: end of text, another CR, an LF, U+2028 and U+2029 -- everything except an
+      ordinary character. Measured on @spintax/core, `#set %x% = A` + CR + <what follows>:
+
+        (end)  ""      CR  "\rZ"     LF  "\nZ"     U+2028  "<LS>Z"     U+2029  "<PS>Z"
+        Z      "\rZ"   -- the only shape where the CR survives
+
+      So: drop the CR, keep whatever the terminator has after it (the LF of a CRLF; nothing
+      at all for a bare CR). Getting this wrong is what shipped in v0.3.1, which handled the
+      CRLF case only and said in this comment that a lone CR is never consumed -- a wrong
+      justification, next to code that was right for one shape out of five. }
     if termLen > 0 then
-      if isDirective and (termLen = 2) then
-        kept := kept + #10
+      if isDirective and (text[e] = #13)
+         and ((e + 1 > n) or (LineBreakLen(text, e + 1) > 0)) then
+        kept := kept + Copy(text, e + 1, termLen - 1)
       else
         kept := kept + Copy(text, e, termLen);
     if e > n then Break;
@@ -2891,7 +2924,10 @@ begin
   begin
     e := NextLineBreak(text, lineStart, termLen);
     if MatchIncludeAt(text, lineStart, ref, p, q, r) then
+    begin
       if not HasExact(Result.Includes, ref) then Result.Includes.Add(ref);
+      ResumeAfterInclude(text, r, e, termLen);
+    end;
     if e > n then Break;
     lineStart := e + termLen;
   end;
@@ -3089,7 +3125,15 @@ begin
           kind := 'include';
           val := '';
           spanEnd := r;
+          { The trailing whitespace class holds CR, so a CRLF-terminated include line ends
+            its match BETWEEN the CR and the LF -- a position the editor line model has no
+            coordinate for, and one that puts the line's own terminator inside the span.
+            Both Text and the span exclude terminators (see TSpDirective), and a host
+            replacing the span must not swallow the line break, so give the CR back. }
+          if (spanEnd > lineStart) and (text[spanEnd - 1] = #13) then Dec(spanEnd);
           found := True;
+          { ...but the SCAN carries on from the real match end. }
+          ResumeAfterInclude(text, r, e, termLen);
         end;
       if found then
       begin
@@ -3539,8 +3583,11 @@ begin
       e := NextLineBreak(text, lineStart, termLen);
       { the diagnostic points at the slug between the quotes, not at the whole line }
       if MatchIncludeAt(text, lineStart, ref, p, q, r) then
+      begin
         if not HasExact(KnownIncludes, ref) then
           AddDiagAt(Result, 'include.unknown-target', 'error', Src, smap, p, q);
+        ResumeAfterInclude(text, r, e, termLen);
+      end;
       if e > n then Break;
       lineStart := e + termLen;
     end;

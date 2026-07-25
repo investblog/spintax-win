@@ -95,12 +95,20 @@ const
 begin
   Check('terminator/LF render',    RenderFirst('#set %x% = A'#10'%x%'), #10'A');
   Check('terminator/CR render',    RenderFirst('#set %x% = A'#13'%x%'), #13'A');
-  { CRLF is the one terminator a directive line does NOT leave whole: the reference's
-    `[ \t]*\r?$` consumes the CR as part of the match, and $ still holds before the LF, so
-    the removal takes the CR with it. A lone CR (above) is not consumed, because $ would
-    then have to hold AFTER it. Re-measured 2026-07-25; this line used to expect CRLF back,
-    on a "measurement" that was never taken for this shape. }
+  { A directive line does not leave its CR whole. The reference's `[ \t]*\r?$` is greedy, so
+    it takes the CR whenever $ still holds AFTER it -- and under /m that is end of input or
+    ANY line terminator. So the CR goes for (end), CR, LF, U+2028 and U+2029, and survives
+    only in front of an ordinary character, as in `terminator/CR render` above. All six
+    measured 2026-07-25; this line first expected the CRLF back on a measurement never
+    taken, and then, once corrected, the rule was written as "CRLF only", which is one shape
+    out of five. }
   Check('terminator/CRLF render',  RenderFirst('#set %x% = A'#13#10'%x%'), #10'A');
+  Check('terminator/CR at end of input', RenderFirst('#set %x% = A'#13), '');
+  Check('terminator/CR before CR',  RenderFirst('#set %x% = A'#13#13'%x%'), #13'A');
+  Check('terminator/CR before U2028',
+        RenderFirst('#set %x% = A'#13 + U2028 + '%x%'), U2028 + 'A');
+  Check('terminator/CR before U2029',
+        RenderFirst('#set %x% = A'#13 + U2029 + '%x%'), U2029 + 'A');
   Check('terminator/CRLF def render', RenderFirst('#def %x% = A'#13#10'%x%'), #10'A');
   Check('terminator/CRLF two directives',
         RenderFirst('#set %x% = A'#13#10'#set %y% = B'#13#10'%x%%y%'), #10#10'AB');
@@ -612,7 +620,8 @@ end;
 
       /^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu
 
-  in the reference, the PHP core and the plugin alike. This port used to read it as
+  in the reference; the PHP core and the plugin apply the same rule spelled `\s` under /u,
+  which may not be the same set for NBSP (see the unit's own note). This port used to read it as
   "#include at a line start, then the first quoted string on the line": looser on five
   shapes, stricter on one, and since include.unknown-target is an error the loose half moved
   VERDICTS -- parity-REQUIRED by spec §3, and invisible to a corpus that carries two plain
@@ -655,6 +664,14 @@ begin
   Check('anchor/u2028-tail',        Includes('#include "frag"' + U2028 + 'x'), 'frag');
   { The target is [^"]+, so it may hold spaces. }
   Check('anchor/target-with-space', Includes('#include "my frag"'), 'my frag');
+
+  { A match may swallow the line starts inside it, and those are no longer ^ positions: the
+    reference scans with /g and resumes at the match end. Retrying them finds a SECOND
+    include here, because the quotes line up again from the swallowed line -- one target in
+    the family, two here, and with a slug list that is a verdict. Measured: the reference
+    reports exactly `a` + LF + `#include `. }
+  Check('anchor/match-swallows-the-next-line-start',
+        Includes('#include "a'#10'#include "   '#10'b"'#10), 'a'#10'#include ');
 
   { The verdict half: the rejected shapes are VALID templates, the accepted ones report an
     unknown target. This is the parity that was broken. }
@@ -1057,7 +1074,9 @@ end;
 
 { SpExtractDirectives is the editor-side companion to SpExtract: same scans, but every
   OCCURRENCE, in order, with its source span, value and text. It has no counterpart in the
-  reference, so nothing here is measured against it -- the expectations come from the two
+  PUBLIC counterpart in the reference (its parser has an internal occurrence list for
+  #set/#def only: no includes, no spans, and its line count is over the STRIPPED text), so
+  nothing here is measured against it -- the expectations come from the two
   contracts this port already holds: what the renderer treats as a directive (corpus-gated,
   and cross-checked against SpRender/SpExtract below) and the TSpDiag position contract
   (1-based, code-point columns, editor EOL, exclusive End*, source coordinates).
@@ -1128,7 +1147,8 @@ begin
         'set:a=ЖЖЖ@1:1..1:15');
 
   { Macro names are lower-cased (that is how directives are keyed); an include target is
-    verbatim, because matching against KnownIncludes is case-insensitive anyway. }
+    verbatim: a slug is a host identifier, compared exactly here and against KnownIncludes
+    (v0.2.2), where every variable name this unit reports is case-folded. }
   Check('dir/name-case', Directives('#set %Name% = 1'#10'#include "Frag"'),
         'set:name=1@1:1..1:16 | include:Frag=@2:1..2:16');
 
@@ -1178,6 +1198,28 @@ begin
     span has to remove both halves or it leaves a stray `"frag"` behind. }
   Check('dir/include-across-lines',
         Directives('#include'#10'"frag"'), 'include:frag=@1:1..2:7');
+
+  { ...but the match end is NOT always the span end. The trailing whitespace class holds CR,
+    so a CRLF-terminated include line matches through the CR and ends between it and the LF
+    -- a position the editor line model cannot name, and one that puts the line's own
+    terminator into the span. Span and Text exclude terminators, so the CR goes back: a host
+    replacing this span must not swallow the line break. Compare the bare-CR line, which
+    never had the problem. }
+  Check('dir/include-crlf-span-excludes-the-cr',
+        Directives('A'#13#10'#include "f"'#13#10'B'), 'include:f=@2:1..2:13');
+  Check('dir/include-crlf-text-excludes-the-cr',
+        DirectiveTexts('A'#13#10'#include "f"'#13#10'B'), '#include "f"');
+  Check('dir/include-cr-span',
+        Directives('A'#13'#include "f"'#13'B'), 'include:f=@2:1..2:13');
+
+  { The occurrence half of anchor/match-swallows-the-next-line-start: the swallowed line
+    start is not a second occurrence, and the span runs to the end of the match -- the last
+    matched character is the third space on line 2 (column 13), so the exclusive end is
+    2:14, not the start of line 3. Hand-derived and then checked against the scan; the first
+    expectation written here said 3:1 and was wrong. }
+  Check('dir/swallowed-line-start-is-one-occurrence',
+        Directives('#include "a'#10'#include "   '#10'b"'#10),
+        'include:a'#10'#include =@1:1..2:14');
 end;
 
 begin

@@ -11,6 +11,39 @@ The single list of open work.
 
 ## Open
 
+Three pre-existing divergences, all measured by the review sweep of 2026-07-25, none of them
+from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
+
+- [ ] **An unterminated `/#` swallows the rest of the document; the reference leaves it as
+      text.** `StripComments` (`src/Spintax.pas`) drops from `/#` to end of input when no
+      `#/` follows; the reference's `/\/#[\s\S]*?#\//g` simply does not match, so the text
+      stays. `price /# note` renders `price ` here and `price /# note` there. Verdicts move
+      with it: `/#` + LF + `#include "nope"` is **invalid** in the reference
+      (`include.unknown-target`) and valid here; `/#` + LF + `{a` is `bracket.unclosed` there
+      and clean here. 114 of 202 differences in a 3 000-case fuzz.
+
+- [ ] **`PhpLtrim` in the malformed-directive check.** `src/Spintax.pas` uses PHP's charlist
+      (` \t\n\r\0\x0B`) where the reference uses `/^[ \t]+/` (`validator.ts:112`), and splits
+      on five terminators where the reference splits on `\n` only (`validator.ts:110`). So
+      `<VT>#set %x% = A`, `<NUL>#set broken`, `x<CR>#set broken` and `x<U+2028>#set broken`
+      all report `set.malformed/error` here and nothing in the reference — a valid template
+      called invalid. Same charlist family as the `TryParseDirective` defect fixed in
+      `v0.3.1`, whose commit noted `PhpRtrim` stays for the permutation scan and did not
+      audit `PhpLtrim`'s other user.
+
+- [ ] **An extra `variable.self-reference`.** `#def %x% = #set %x% = ` + LF + `#set %x% = A`
+      → the reference reports `definition.duplicate-name/error`, this port adds
+      `variable.self-reference/error`. The verdict is invalid either way, so this is a code
+      set difference rather than a verdict one — the corpus gates codes, so it would fail if
+      a fixture covered it.
+
+- [ ] **Ask the family whether `#include<NBSP>"x"` is an include.** The reference spells the
+      whitespace class out as ASCII "for PHP parity"; the PHP core and the plugin write `\s`
+      under `/u`, and PCRE2 with `/u` also sets `UCP`, which makes `\s` match `\p{Z}` — NBSP
+      included. If that is right, PHP accepts a line JS and this port reject, and the
+      reference's comment has the reason backwards. Unmeasured: no PHP on this machine. This
+      port follows `@spintax/core` either way (§2), so nothing here is blocked on it.
+
 - [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
       document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
       tail of a 124 KB document, 84 ms against 7.8 ms. It builds its body by appending line
@@ -19,6 +52,26 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **Three defects the same-day review found in the day's own work** (2026-07-25,
+      `v0.3.2`), each measured against `@spintax/core` over a corpus built to ask the
+      question the earlier ones could not — 699 cases, **control run 210 render / 8
+      target-list / 9 verdict differences, zero after**:
+
+      - **Which CR a directive line takes.** `v0.3.1` fixed CRLF and wrote the rule down as
+        "CRLF only, a lone CR is never consumed". The `\r?` is greedy and takes the CR
+        whenever `$` holds after it, which is end of input or *any* terminator: five of six
+        followers, not one. See §5.0 — the wrong reason had reached five files.
+      - **The include scans retried line starts a match had already swallowed**, where the
+        reference's `/g` resumes at the match end, inventing a second include (and with a
+        slug list, an `include.unknown-target` error) out of `#include "a` ⏎ `#include "` ⏎
+        `b"`. `ResolveIncludes` had always resumed correctly; the three editor/validator
+        scans had not. One helper now, `ResumeAfterInclude`.
+      - **A CRLF-terminated `#include` reported a span containing its own line break.** The
+        anchor's trailing class takes the CR, so the match ends between CR and LF — a
+        position the editor line model cannot name. Span and `Text` now give the CR back, as
+        `TSpDirective` documents and as `#set`/`#def` always did; a host replacing the span
+        no longer deletes the line break.
 
 - [x] **A directive line is trimmed the way the reference trims it** (2026-07-25, `v0.3.1`).
       Both halves of `(.*?)[ \t]*\r?$`, spec §5.0:

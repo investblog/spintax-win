@@ -243,22 +243,35 @@ The tail is the part with the surprises, and both of them are in `[ \t]*\r?$`:
 - the value is right-trimmed of **spaces and tabs only**. This port used PHP's `rtrim`
   charlist, which also eats `\0` and `\x0B`, so `#set %x% = A` + NUL rendered `A` here and
   `A\0` in the reference. Form feed was always kept by both;
-- the optional `\r` is **inside the match**, so removing a directive line removes the CR of a
-  CRLF with it and leaves the bare LF. A **lone** CR survives — `$` would then have to hold
-  *after* it, and it does not — and so do U+2028/9. This port used to leave `\r\n` whole, and
-  the local suite pinned that with a comment claiming it had been measured; it had not been,
-  for this shape.
+- the optional `\r` is **inside the match** and **greedy**, so removing a directive line takes
+  a trailing CR with it whenever `$` still holds *after* the CR. Under `/m` that is end of
+  input or **any** line terminator, so the CR goes in five of six cases and survives only in
+  front of an ordinary character:
 
-The second one has a knock-on effect: a CRLF-terminated directive line now contributes a bare
-LF, so runs of them reach the blank-run collapse (three or more `\n` become two) exactly as LF
-lines always did. Mixed runs collapse only the part that became bare LFs. All of it measured
-against the reference — 720 cases in the differential, 274 of them different beforehand.
+  | `#set %x% = A` + CR + … | render |
+  |---|---|
+  | end of input | `` |
+  | CR / LF / U+2028 / U+2029 | the follower, without the CR |
+  | `Z` | `\rZ` — the CR stays |
+
+Knock-on: a CR-shedding directive line contributes a bare terminator, so runs of them reach
+the blank-run collapse (three or more `\n` become two) exactly as LF lines always did, and a
+mixed run collapses only the part that became bare LFs.
+
+This one took three attempts, and the first two are the point. The port left `\r\n` whole,
+and the local suite pinned that with a comment claiming a measurement that was never taken
+for the shape. Corrected in `v0.3.1` — as "CRLF only", written down here and in four other
+places as an absolute, with a reason (*"`$` would have to hold after the CR, and it does
+not"*) that is simply false. Review caught it the same day, against a corpus that varied the
+CR's follower — the previous 720 cases had never made it a free variable. Measured: 699
+cases, 210 render differences before, zero after.
 
 ### 5.1 The `#include` anchor, and what this engine does NOT do with it
 
 One rule, one implementation (`MatchIncludeAt`), three callers — `SpExtract`, `SpValidate`,
-`SpExtractDirectives`. It is the family's, spelled the same in the reference, the PHP core and
-the plugin:
+`SpExtractDirectives`. It is the reference's, and the same rule the PHP core and the plugin
+apply — though not the same spelling: both of those write `\s` under `/u`, where the reference
+writes the class out:
 
 ```
 /^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu
@@ -276,6 +289,17 @@ Two consequences a line-by-line reading gets wrong, and this port did until 2026
   them too;
 - everything else on the line disqualifies it. `#include "a" junk`, `#include"a"`,
   `#include ""`, `#includes "a"` and `#include "a" "b"` are **plain text**, not includes.
+
+A third consequence, and the one that is easy to miss: the scans must resume at the **match
+end**, not at the next line start. The reference runs the rule with `/g`, so a match that
+swallowed line starts leaves them behind — they are not `^` positions any more. Retrying them
+invents includes, because the quotes can line up again from inside the previous target:
+
+```
+#include "a          one include in the family, target `a` + LF + `#include `;
+#include "           scanning every line start finds a second one, `   ` + LF + `b`,
+b"                   and with a slug list that is a verdict.
+```
 
 That second half is not cosmetic: `include.unknown-target` is an **error**, so a loose anchor
 calls valid templates invalid — a verdict divergence, which §3 lists as REQUIRED parity.
@@ -309,7 +333,10 @@ a host gets wrong, and the reason the seam exists at all:
 - cycles are keyed on the ref **string**, so two aliases of one template are not a cycle and
   unwind until the depth cap;
 - `MaxIncludeDepth` counts the include stack **only** — parse nesting and variable expansion
-  have their own limits. `0` selects `SP_DEFAULT_INCLUDE_DEPTH = 20`.
+  have their own limits. `0` selects `SP_DEFAULT_INCLUDE_DEPTH = 20`, and so does any
+  negative value — a zeroed record field cannot be distinguished from a deliberate `0`, so
+  this field cannot carry the reference's "`0` resolves nothing"; leave the resolver `nil`
+  for that.
 
 Resolution runs at the end of a document's render and **before** the cosmetic pipeline, which
 is the reference's order: the post-process and the mandatory safety restore each run **once**,

@@ -69,7 +69,7 @@ paid for before, and a bare function pointer cannot carry the host's template st
 
 1. **Resolution runs at the END of a document's render, before post-process.** The reference's
    order is `renderAst` (which ends with `resolveIncludes`) → `postProcess` → `safetyRestore`
-   (`pipeline.ts:39-47`). So the cosmetic pipeline runs **once**, over parent and children
+   (`pipeline.ts:43`, `:46`, `:48`). So the cosmetic pipeline runs **once**, over parent and children
    together, and sentinels a child emitted are restored **once**, at the top. A child is
    rendered by the inner function, never by the public entry point — it must not be
    post-processed on its own.
