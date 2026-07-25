@@ -95,7 +95,7 @@ paid for before, and a bare function pointer cannot carry the host's template st
    `#include` by the parent — the child resolved its own. Match extents may cross line
    terminators (spec §5.1), so the pass continues from the match end, not from the next line.
 
-### Step 0, first and separately: case-sensitive target matching
+### Step 0, first and separately: case-sensitive target matching — done in `v0.2.2`
 
 Found while writing this record, and it ships in `v0.2.1`: `KnownIncludes.IndexOf(ref)` and
 the `Includes` dedup in `SpExtract` use `TStringList.IndexOf`, which is **case-insensitive**

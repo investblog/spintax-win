@@ -95,7 +95,8 @@ type
 
       Kind   'set' | 'def' | 'include'.
       Name   macro name, lower-cased (as directives are keyed), or the include target
-             verbatim -- targets are matched case-insensitively, like KnownIncludes.
+             verbatim -- a slug is a host identifier, compared EXACTLY here and against
+             KnownIncludes, where every variable name this unit reports is case-folded.
       Value  the right-hand side for set/def, trimmed as the renderer trims it; '' for
              include.
       Text   the directive's line WITHOUT its terminator and with comments already removed
@@ -883,6 +884,23 @@ end;
   the run before the target and the run after it may CROSS line terminators, and the target
   is [^"]+, so it may contain them too. `#include` + newline + `"frag"` is one include to
   every other engine in the family. }
+
+{ Include targets are compared EXACTLY -- TStringList.IndexOf ignores case, the reference
+  uses a Set and Array.includes, and extract's own docblock says slugs are left "as
+  authored" where every other name it collects is lower-cased. They are host identifiers,
+  not variable names. Measured: `#include "OK"` against KnownIncludes ['ok'] is invalid in
+  the reference and used to be valid here, and `#include "a"` + `#include "A"` is two
+  targets there and used to be one here.
+
+  A helper rather than the list's CaseSensitive property: the list belongs to the caller,
+  and setting that on a sorted one re-sorts it. }
+function HasExact(list: TStringList; const s: string): Boolean;
+var i: Integer;
+begin
+  for i := 0 to list.Count - 1 do
+    if list[i] = s then Exit(True);
+  Result := False;
+end;
 
 { The whitespace class above, which is NOT the same set as a line terminator: U+2028/9 end a
   line for ^ and $ but are not whitespace, and CR/LF are both. }
@@ -2735,7 +2753,7 @@ begin
   begin
     e := NextLineBreak(text, lineStart, termLen);
     if MatchIncludeAt(text, lineStart, ref, p, q, r) then
-      if Result.Includes.IndexOf(ref) < 0 then Result.Includes.Add(ref);
+      if not HasExact(Result.Includes, ref) then Result.Includes.Add(ref);
     if e > n then Break;
     lineStart := e + termLen;
   end;
@@ -3383,7 +3401,7 @@ begin
       e := NextLineBreak(text, lineStart, termLen);
       { the diagnostic points at the slug between the quotes, not at the whole line }
       if MatchIncludeAt(text, lineStart, ref, p, q, r) then
-        if KnownIncludes.IndexOf(ref) < 0 then
+        if not HasExact(KnownIncludes, ref) then
           AddDiagAt(Result, 'include.unknown-target', 'error', Src, smap, p, q);
       if e > n then Break;
       lineStart := e + termLen;

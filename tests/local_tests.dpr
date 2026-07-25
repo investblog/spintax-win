@@ -629,6 +629,21 @@ begin
   Check('anchor/verdict-newline-gap',   IncludeDiags('#include'#10'"frag"'),
         'include.unknown-target/error');
   Check('anchor/verdict-known-target',  IncludeDiags('#include "ok"'), '');
+
+  { A slug is a HOST identifier, so it is compared exactly -- unlike every variable name this
+    unit reports, which is case-folded. TStringList.IndexOf ignores case, which made
+    `#include "OK"` valid against a list holding only `ok`, and collapsed two distinct
+    targets into one. Measured against the reference 2026-07-25; the 86 419-case anchor
+    corpus could not see it, because every target in it matched the slug list in case. }
+  Check('anchor/case-target-differs',   IncludeDiags('#include "OK"'),
+        'include.unknown-target/error');
+  Check('anchor/case-target-differs-2', IncludeDiags('#include "Ok"'),
+        'include.unknown-target/error');
+  Check('anchor/case-dedup-keeps-both', Includes('#include "a"'#10'#include "A"'), 'a,A');
+  Check('anchor/case-dedup-same-once',  Includes('#include "a"'#10'#include "a"'), 'a');
+  { Non-ASCII too: a locale-aware IndexOf folds Cyrillic as happily as ASCII. }
+  Check('anchor/case-dedup-cyrillic',
+        Includes('#include "путь"'#10'#include "ПУТЬ"'), 'путь,ПУТЬ');
 end;
 
 { Diagnostic codes+severities, space-joined, with a host-declared variable list. }

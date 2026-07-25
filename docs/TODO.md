@@ -11,17 +11,6 @@ The single list of open work.
 
 ## Open
 
-- [ ] **`#include` targets are matched case-insensitively; the family compares exactly.**
-      `KnownIncludes.IndexOf(ref)` in `SpValidate` and the `Includes` dedup in `SpExtract` go
-      through `TStringList.IndexOf`, which ignores case unless told otherwise. Measured
-      against `@spintax/core` with `knownIncludes = ['ok']`: `#include "OK"` and
-      `#include "Ok"` are **invalid** there (`include.unknown-target`) and valid here. A
-      verdict divergence, §3 REQUIRED, and the 86 419-case include differential could not see
-      it — every target in that corpus matched the slug list in case, so it was incapable of
-      asking. `TSpDirective`'s doc comment states the wrong behaviour as intentional and goes
-      with the fix. Compare exactly with a helper; do NOT set `CaseSensitive` on the caller's
-      list. Patch bump `v0.2.2`, before Studio pins an engine and before the resolver below.
-
 - [ ] **Add the `#include` resolver seam** — see
       [ADR 0004](decisions/0004-include-resolver-seam.md), accepted 2026-07-25. `TSpContext`
       gains `IncludeResolver: TSpIncludeResolver` (abstract class, caller-owned, like
@@ -62,6 +51,31 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **`#include` targets are compared exactly** (2026-07-25, `v0.2.2`). `KnownIncludes`
+      membership in `SpValidate` and the `Includes` dedup in `SpExtract` went through
+      `TStringList.IndexOf`, which ignores case; the reference uses a `Set` and
+      `Array.includes`, and its extract docblock says slugs are left "as authored" where every
+      other name it collects is lower-cased. A slug is a host identifier, not a variable name.
+
+      | | reference | before |
+      |---|---|---|
+      | `#include "OK"` with `knownIncludes ['ok']` | **invalid** | valid |
+      | `#include "a"` + `#include "A"` | two targets | one |
+      | `#include "путь"` + `#include "ПУТЬ"` | two targets | one |
+
+      A verdict divergence — and it **shipped in `v0.2.1`**, because the 86 419-case anchor
+      differential could not ask the question: every target in that corpus matched the slug
+      list in case. The third time this repository has been bitten by a green run over a
+      corpus incapable of expressing the counterexample.
+
+      Fixed with an exact-comparison helper rather than the list's `CaseSensitive`, which
+      belongs to the caller and would re-sort a sorted list. Gated by a second differential —
+      3 732 records over 933 sources × 4 slug lists, including case-differing pairs and an
+      anchor regression subset: **control run 16 include-list and 108 verdict differences,
+      zero after**. Five checks in `TestIncludeAnchor`, 372 local checks in both builds.
+      `TSpDirective`'s doc comment, which stated the old behaviour as intentional, went with
+      it.
 
 - [x] **`#include` is recognised the way the family recognises it** (2026-07-25). One
       matcher, `MatchIncludeAt`, called by `SpExtract`, `SpValidate` and
