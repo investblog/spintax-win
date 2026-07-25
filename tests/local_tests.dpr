@@ -748,6 +748,159 @@ begin
         DiagPos('{?missing?yes}', 'en', 'variable.undefined', []), 'warning @1:1..1:11');
 end;
 
+{ The whole directive list as `kind:name=value@L:C..L:C`, joined by ' | ' -- one string per
+  document, so a case pins order, duplicates and spans together. }
+function Directives(const tmpl: string): string;
+var d: TSpDirectiveList; i: Integer;
+begin
+  Result := '';
+  d := SpExtractDirectives(tmpl);
+  try
+    for i := 0 to d.Count - 1 do
+    begin
+      if i > 0 then Result := Result + ' | ';
+      Result := Result + Format('%s:%s=%s@%d:%d..%d:%d', [d[i].Kind, d[i].Name, d[i].Value,
+        d[i].Line, d[i].Column, d[i].EndLine, d[i].EndColumn]);
+    end;
+    if Result = '' then Result := '<none>';
+  finally d.Free; end;
+end;
+
+{ Just the Text fields, pipe-joined -- what a host re-emits as a prelude. }
+function DirectiveTexts(const tmpl: string): string;
+var d: TSpDirectiveList; i: Integer;
+begin
+  Result := '';
+  d := SpExtractDirectives(tmpl);
+  try
+    for i := 0 to d.Count - 1 do
+    begin
+      if i > 0 then Result := Result + ' | ';
+      Result := Result + d[i].Text;
+    end;
+    if Result = '' then Result := '<none>';
+  finally d.Free; end;
+end;
+
+{ SpExtractDirectives is the editor-side companion to SpExtract: same scans, but every
+  OCCURRENCE, in order, with its source span, value and text. It has no counterpart in the
+  reference, so nothing here is measured against it -- the expectations come from the two
+  contracts this port already holds: what the renderer treats as a directive (corpus-gated,
+  and cross-checked against SpRender/SpExtract below) and the TSpDiag position contract
+  (1-based, code-point columns, editor EOL, exclusive End*, source coordinates).
+
+  The reason the API exists is the first case below: SpExtract deduplicates targets, so a
+  host that substitutes #include by NAME cannot tell a commented-out occurrence from a live
+  one and expands both -- and since comments do not nest, an included fragment carrying its
+  own `/# ... #/` then escapes the comment it landed in. }
+procedure TestExtractDirectives;
+const
+  U2028 = {$IFDEF UNICODE} #$2028 {$ELSE} #$E2#$80#$A8 {$ENDIF};
+  U2029 = {$IFDEF UNICODE} #$2029 {$ELSE} #$E2#$80#$A9 {$ENDIF};
+  { U+E000, the first reserved sentinel, spelled per string width like the engine's own. }
+  SENT = {$IFDEF UNICODE} #$E000 {$ELSE} #$EE#$80#$80 {$ENDIF};
+begin
+  { Source order, all three kinds, spans covering the directive's line. }
+  Check('dir/three-kinds',
+        Directives('#set %a% = 1'#10'#def %b% = x'#10'#include "frag"'),
+        'set:a=1@1:1..1:13 | def:b=x@2:1..2:13 | include:frag=@3:1..3:16');
+
+  { THE case. Same target commented out and live: SpExtract sees one entry, this sees the
+    live occurrence only, at its source line. }
+  Check('dir/commented-and-live-include',
+        Directives('/#'#10'#include "frag"'#10'#/'#10'#include "frag"'),
+        'include:frag=@4:1..4:16');
+  Check('dir/commented-and-live-include-vs-extract',
+        Includes('/#'#10'#include "frag"'#10'#/'#10'#include "frag"'), 'frag');
+
+  { Occurrences are NOT deduplicated -- that is the difference from SpExtract. }
+  Check('dir/duplicates-kept',
+        Directives('#include "a"'#10'#include "a"'),
+        'include:a=@1:1..1:13 | include:a=@2:1..2:13');
+  Check('dir/duplicates-deduped-by-extract', Includes('#include "a"'#10'#include "a"'), 'a');
+
+  { A #set inside a block comment is not a directive -- the renderer never sees it, so a
+    prelude built from this list cannot smuggle it into scope. }
+  Check('dir/set-inside-comment', Directives('/#'#10'#set %x% = A'#10'#/'#10'[%x%]'), '<none>');
+
+  { A comment on the same line shrinks the span to what survived it: replacing the span
+    leaves the comment where it was. }
+  Check('dir/comment-before-on-line', Directives('/# c #/#set %a% = 1'),
+        'set:a=1@1:8..1:20');
+  { ...and a trailing comment does not stretch the end across it. }
+  Check('dir/comment-after-on-line', Directives('#set %a% = 1 /# c #/'),
+        'set:a=1@1:1..1:14');
+
+  { CRLF and a bare CR -- the terminators an editor actually produces -- end a directive
+    line AND advance Line, because the engine's line model and the editor's agree on them. }
+  Check('dir/crlf-and-cr-lines',
+        Directives('#set %a% = 1'#13#10'#include "b"'#13'#set %c% = 3'),
+        'set:a=1@1:1..1:13 | include:b=@2:1..2:13 | set:c=3@3:1..3:13');
+
+  { U+2028/9 are where the two models part, and this is the only place that shows it: they
+    END a directive (five terminators, TestLineTerminators pins that for render/validate)
+    but do NOT advance Line, which follows the editor EOL contract of TSpDiag. So two
+    directives, ONE line, the second at the column just past the separator -- which is what
+    an editor that does not break on U+2028 will draw. }
+  Check('dir/u2028-splits-directives-not-lines',
+        Directives('#set %a% = 1' + U2028 + '#set %b% = 2'),
+        'set:a=1@1:1..1:13 | set:b=2@1:14..1:26');
+  Check('dir/u2029-splits-directives-not-lines',
+        Directives('#set %a% = 1' + U2029 + '#set %b% = 2'),
+        'set:a=1@1:1..1:13 | set:b=2@1:14..1:26');
+
+  { Columns are code points: "ЖЖЖ" is 3 characters and 6 UTF-8 bytes, so the line ends at
+    column 15, not 18. A byte column fails this. }
+  Check('dir/cyrillic-value-column', Directives('#set %a% = ЖЖЖ'),
+        'set:a=ЖЖЖ@1:1..1:15');
+
+  { Macro names are lower-cased (that is how directives are keyed); an include target is
+    verbatim, because matching against KnownIncludes is case-insensitive anyway. }
+  Check('dir/name-case', Directives('#set %Name% = 1'#10'#include "Frag"'),
+        'set:name=1@1:1..1:16 | include:Frag=@2:1..2:16');
+
+  { Line-anchoring, exactly as SpExtract and the renderer apply it. }
+  Check('dir/inline-include-is-not-a-directive',
+        Directives('before #include "frag" inline'), '<none>');
+  Check('dir/indented-include', Directives('   #include "f"'),
+        'include:f=@1:1..1:16');
+  Check('dir/unquoted-include-ignored', Directives('#include frag'), '<none>');
+  { An #include inside a #def value is a def -- validate flags it as def.include-in-value,
+    and a host must not expand it. }
+  Check('dir/include-in-def-value', Directives('#def %x% = #include "a"'),
+        'def:x=#include "a"@1:1..1:24');
+  { Malformed directives are body text, not directives (validate flags set.malformed). }
+  Check('dir/malformed-set-is-not-a-directive', Directives('#set broken'), '<none>');
+  Check('dir/empty-input', Directives(''), '<none>');
+
+  { Text is the line the RENDERER consumed: comments already removed, no terminator. A host
+    re-emits these as a prelude instead of re-spelling the grammar. }
+  Check('dir/text-is-the-stripped-line', DirectiveTexts('/# c #/#set %a% = 1'),
+        '#set %a% = 1');
+  Check('dir/text-keeps-both-lines',
+        DirectiveTexts('#set %a% = 1'#10'noise'#10'#def %b% = 2'),
+        '#set %a% = 1 | #def %b% = 2');
+
+  { A RAW reserved sentinel in author markup is the one input where this list and SpRender
+    disagree, in both directions -- SpRender deletes U+E000..U+E005 BEFORE stripping
+    comments, this scan (like SpExtract and SpValidate) reads the source as written. Pinned
+    rather than fixed: measured on @spintax/core, its extract and validate diverge from its
+    render in exactly these two ways, so the divergence is the family's contract for
+    reserved characters in author markup, and three editor-side functions that agree with
+    each other are worth more to a host than one that agrees with the renderer.
+
+    The render half of each pair is the control: without it these would just assert that
+    the scan does nothing surprising, instead of showing what the renderer does instead. }
+  Check('dir/raw-sentinel-hides-a-directive',
+        Directives('#se' + SENT + 't %x% = A'#10'%x%'), '<none>');
+  Check('dir/raw-sentinel-hides-a-directive-render',
+        RenderFirst('#se' + SENT + 't %x% = A'#10'%x%'), #10'A');
+  Check('dir/raw-sentinel-forges-a-comment',
+        Directives('/' + SENT + '# c'#10'#set %x% = A'#10'#/%x%'), 'set:x=A@2:1..2:13');
+  Check('dir/raw-sentinel-forges-a-comment-render',
+        RenderFirst('/' + SENT + '# c'#10'#set %x% = A'#10'#/%x%'), '%x%');
+end;
+
 begin
   {$IFDEF FPC}
   DefaultSystemCodePage := CP_UTF8;
@@ -768,6 +921,7 @@ begin
   TestPostProcess;
   TestNulInInput;
   TestDiagPositions;
+  TestExtractDirectives;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));
   if Failures > 0 then ExitCode := 1;

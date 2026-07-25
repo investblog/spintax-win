@@ -212,13 +212,27 @@ zeroed memory means and inventing a tri-state to mimic a JS default would be wor
     function SpSafetyRestore(const Text: string): string;
     function SpStripSentinels(const Text: string): string;
     function SpExtract(const Src: string): TExtractResult;
+    function SpExtractDirectives(const Src: string): TSpDirectiveList;
     function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
     function NormalizeBaseLang(const Locale: string): string;
     function PluralArity(const BaseLang: string): Integer;
 
 `SpValidate` returns a list of `TSpDiag` (code + severity). A template is invalid
 if any diagnostic has severity `error`; that is the verdict an editor or an
-LLM-repair loop keys off. `TSpContext` carries the runtime variable map, locale, a `PostProcess` flag, and
+LLM-repair loop keys off.
+
+`SpExtract` answers *which* names and targets a template uses — deduplicated, no
+values, no positions, which is what a validator needs. `SpExtractDirectives`
+answers *where*: every `#set` / `#def` / `#include` occurrence in source order,
+with its span in the original text, its value and the line the renderer consumed.
+That is the difference between validating a template and editing one — a host
+substituting an `#include` by name cannot tell a commented-out occurrence from a
+live one, because the target list holds a single entry for both. Both read the
+source as written; `SpRender` alone deletes reserved sentinels first, so raw
+U+E000–U+E005 in author markup makes them disagree — as it does in every engine
+of the family.
+
+`TSpContext` carries the runtime variable map, locale, a `PostProcess` flag, and
 an injected `TSpRng`. The RNG seam ships with `TFirstRng`, `TLastRng`,
 `TSequenceRng`, and a seeded `TMulberry32Rng`.
 

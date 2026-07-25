@@ -125,6 +125,7 @@ function SpNeutralize(const Value: string): string;
 function SpSafetyRestore(const Text: string): string;
 function SpStripSentinels(const Text: string): string;
 function SpExtract(const Src: string): TExtractResult;
+function SpExtractDirectives(const Src: string): TSpDirectiveList;
 function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
 function SpValidate(const Src, Locale: string;
                     KnownIncludes, KnownVariables: TStringList): TSpDiagList;
@@ -175,6 +176,59 @@ reference's `ValidateOptions.knownVariables`: a reference to one is not "undefin
 ever silences a **warning** — an unresolved `%var%` has never made a template invalid and
 must not start to, or a host rendering with runtime variables would see its own templates
 called broken.
+
+`SpExtractDirectives` returns `TSpDirectiveList` (`TList<TSpDirective>`): every `#set` /
+`#def` / `#include` **occurrence** the renderer sees, in source order, duplicates kept, each
+with `Kind`, `Name` (macro names lower-cased, include targets verbatim), `Value`, the
+consumed line as `Text`, and the line's span in the original source under the same position
+contract as `TSpDiag`. It is the editor-side companion to `SpExtract`, which answers *which*
+names and targets a template uses and is deduplicated, unordered, valueless and unlocated —
+everything a validator needs and nothing an editor can substitute, display or re-emit from.
+
+The distinction is not cosmetic. Because the target list is deduplicated, one entry stands
+for a target that appears both inside `/# … #/` and live, so a host expanding `#include` by
+name expands the commented copy too; comments do not nest, so an included fragment carrying
+its own comment then escapes the one it landed in. Reporting occurrences also keeps the
+comment rule and the five line terminators in this unit rather than copied into every host.
+The scan is the renderer's own — `StripComments` first, then the same directive parse and
+the same "line start after `[ \t]`, then the first quoted string" include rule that
+`SpExtract` and `SpValidate` run — so a directive inside a comment, an inline `#include`,
+and an `#include` in a `#def` value (which validate flags as `def.include-in-value`) are
+absent, present and reported-as-a-`def` respectively, exactly as the renderer treats them.
+Pinned by `TestExtractDirectives` in `tests/local_tests.dpr`, whose comment cases were
+confirmed to fail when the scan is pointed at the raw source instead of the stripped text.
+
+Three limits on "the renderer sees", all three shared with `SpExtract` and `SpValidate`, none
+of them specific to this function:
+
+- **`#include` is never resolved by this engine.** `SpRender` emits the line verbatim and the
+  host substitutes it, so for that kind the contract is "the line `SpExtract` and `SpValidate`
+  call an include" — the same scan, run here.
+- **The scan reads the source as written; `SpRender` deletes reserved sentinels
+  (U+E000–U+E005) first.** A raw one inside directive syntax makes the two disagree both ways:
+  `#se<U+E000>t %x% = A` is no directive here and a `#set` to the renderer, and `/<U+E000>#`
+  opens no comment here and one to the renderer. Measured on `@spintax/core`: its `extract` and
+  `validate` diverge from its `render` in exactly the same two ways, so this is the family's
+  contract for reserved characters in author markup, not a gap in this port. Three editor-side
+  functions that agree with each other are worth more to a host than one that agrees with the
+  renderer; sentinels reach a template through `SpNeutralize`, not through author markup.
+- **Directives split on five line terminators, coordinates count three.** `NextLineBreak`
+  ends a directive line on LF, CRLF, CR, U+2028 or U+2029, while `Line`/`Column` follow the
+  editor EOL model of `TSpDiag` (LF, CRLF, CR). Two directives separated by U+2028 are
+  therefore two occurrences on **one** line, the second at the column just past the
+  separator — which is what an editor that does not break on U+2028 will draw.
+
+Cost is one pass over the source for the whole document, not one per directive: the walk that
+turns a stripped offset into line/column resumes from where the previous span left it
+(`CursorLineCol`), which is why it shares its loop with `SourceLineCol` instead of copying it.
+Rescanning from offset 1 each time — the first version of this — measured 628 ms for 400
+directives at the END of a 124 KB document against 32 ms for the same 400 at its start, the
+same document either way; it now costs 7.8 ms wherever they sit, steps 1.0 source characters
+per document character with zero cursor restarts, and stays flat from 50 to 800 directives
+where it used to run 63 → 881 ms. The shape of a benchmark, not its size, is what has to be
+varied. `SpExtract` and `SpValidate` are now the expensive pair on a directive-heavy document
+(`SpExtract` 281 ms against 5 ms at 1600 directives) — a host calling them per keystroke
+should debounce.
 
 ## 6. Trust model
 

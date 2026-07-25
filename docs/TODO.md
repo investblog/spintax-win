@@ -11,12 +11,87 @@ The single list of open work.
 
 ## Open
 
-- [ ] **Release the located diagnostics.** `TSpDiag` gained `Line`/`Column`/`EndLine`/
-      `EndColumn` — a public, additive API change, so the next tag is a **minor bump**
-      (`v0.2.0`), and `spintax-studio` then bumps its engine submodule off `v0.1.0`. Release
-      is tag-driven and only on the user's explicit command.
+- [ ] **Release the editor surface as `v0.2.0`.** Two additive, public API changes sit on
+      `main`: `TSpDiag` gained `Line`/`Column`/`EndLine`/`EndColumn`, and
+      `SpExtractDirectives` reports every `#set`/`#def`/`#include` occurrence with its span,
+      value and consumed line. Additive means a **minor bump** (`v0.2.0`), after which
+      `spintax-studio` bumps its engine submodule off `v0.1.0` — its M0 is written against
+      both. Release is tag-driven and only on the user's explicit command.
+
+- [ ] **`#include` is recognised more loosely here than anywhere else in the family, and it
+      changes verdicts.** The reference, the PHP core and the plugin all anchor the whole
+      line — `/^[ \t]*#include\s+"([^"]+)"\s*$/` — while this port takes `#include` at the
+      line start plus the first quoted string it finds (`SpExtract`, `SpValidate` and
+      `SpExtractDirectives`, all three copies of the same rule). Measured against
+      `@spintax/core` with `knownIncludes = ['ok']`:
+
+      | input | reference | here |
+      |---|---|---|
+      | `#include "frag" junk` | not an include, **valid** | include, **invalid** (`include.unknown-target`) |
+      | `#include"frag"` | not an include, **valid** | include, **invalid** |
+      | `#include ""` | not an include, **valid** | include with an empty target, **invalid** |
+      | `#includes "frag"` | not an include, **valid** | include, **invalid** |
+      | `#include "frag" "ok"` | not an include, **valid** | include, **invalid** |
+      | `#include`⏎`"frag"` | include (its class holds `\n`) | not an include |
+
+      Verdicts are parity-REQUIRED (spec §3), so this is a defect, not a divergence — and the
+      corpus cannot see it: it carries two `#include` cases, both the plain shape. Present
+      since the port was bootstrapped, not introduced by the occurrence API, but that API
+      hands a host a **span to substitute**, so `spintax-studio` will rewrite lines the
+      reference renders as plain text. Fix by parsing the include line once, in one helper,
+      against the reference anchor; the cross-line form is out of reach of a line-based scan
+      and should be documented rather than emulated. Changes verdicts, so: its own commit,
+      with corpus and local coverage, before Studio ships include expansion.
+
+- [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
+      document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
+      tail of a 124 KB document, 84 ms against 7.8 ms. It builds its body by appending line
+      by line and dedupes names with `IndexOf`, both O(n²)-shaped, and `SpValidate` scans the
+      same way. Nothing is wrong with the output, but a host that calls either on every
+      keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **Directive occurrences are reportable** (2026-07-25). `SpExtractDirectives` returns
+      every `#set` / `#def` / `#include` the renderer sees — source order, duplicates kept,
+      each with kind / name / value, the consumed line, and the line's span in the ORIGINAL
+      source under the `TSpDiag` position contract.
+
+      It exists because `SpExtract` deduplicates: one entry stands for a target that is both
+      commented out and live, so a host substituting `#include` **by name** expands the
+      commented copy too — and comments do not nest, so an included fragment carrying its own
+      `/# … #/` then escapes the comment it landed in, leaking text and a stray `#/` into the
+      output. Measured on a Studio prototype before this landed. Reporting occurrences also
+      keeps the comment rule and the five line terminators here instead of copied into every
+      host; `spintax-studio` needs the same list for three things (expanding includes,
+      rendering a selected fragment with the document's macros in scope, showing macro values
+      in its variables panel) and `SpExtract` serves none of them.
+
+      The positions work already built the pieces: `StripComments` fills the stripped→source
+      map, `TryParseDirective` and the include rule are the renderer's own, and
+      `MapStart`/`MapEnd` translate the span. Nothing about parsing or verdicts moved —
+      corpus unchanged at 168/0/4.
+
+      **The first version of this was not cheap, and the benchmark that said so measured the
+      wrong dimension.** `SourceLineCol` rescans the source from offset 1, so two calls per
+      directive cost O(directives × length): 400 directives at the END of a 124 KB document
+      took 628 ms against 32 ms for the same 400 at its start — the same document, so the
+      published "5 ms on a 55 KB document" was true only of the six-directive shape it was
+      taken on. Review caught it. The walk now resumes from where the previous span left it
+      (`CursorLineCol`, one loop shared with `SourceLineCol` so the two line models cannot
+      drift): measured 1.0 source characters stepped per document character with zero
+      restarts, 7.8 ms head **and** tail, and flat from 50 to 800 directives where it used
+      to run 63 → 881 ms. `SpExtract` is now the slower of the two on a directive-heavy
+      document (281 ms against 5 ms at 1600 directives) for reasons of its own — see Open.
+
+      `TestExtractDirectives` runs 25 checks (345 local, up from 320) covering the
+      commented-vs-live case, kept duplicates against `SpExtract`'s dedup, comment-shrunk
+      spans on both sides of a directive, CRLF/CR lines, U+2028/9 (which split a directive
+      but do not advance `Line`), a code-point column on Cyrillic, name casing, the three
+      line-anchoring rules, and both directions of the raw-sentinel divergence, each pinned
+      against the render that disagrees with it. Five were confirmed to fail when the scan
+      is pointed at the raw source instead of the stripped text — the control run this
+      repository's own lesson demands.
 
 - [x] **Validator diagnostics carry source positions** (2026-07-23). `TSpDiag` now has
       1-based `Line`/`Column`/`EndLine`/`EndColumn` on top of `Code`/`Severity`, so

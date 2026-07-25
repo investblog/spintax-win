@@ -83,6 +83,64 @@ type
     Refs, Sets, Defs, Includes: TStringList;
   end;
 
+  { One directive OCCURRENCE, as the renderer sees it. SpExtract answers "which names and
+    targets appear" -- deduplicated, unordered, no values, no positions -- which is all a
+    validator needs and not enough for an editor: a host that wants to SUBSTITUTE an
+    #include, show a macro's value, or render a fragment with the document's #set/#def in
+    scope has to know WHERE each directive is and WHAT it says. Rebuilding that host-side
+    means a second copy of this unit's comment strip and line model, and the first thing it
+    gets wrong is the deduplication: the same target commented out AND live is one entry in
+    SpExtract, so a host substituting by name expands the commented copy too -- and comments
+    do not nest, so an included fragment carrying `#/` escapes the comment it landed in.
+
+      Kind   'set' | 'def' | 'include'.
+      Name   macro name, lower-cased (as directives are keyed), or the include target
+             verbatim -- targets are matched case-insensitively, like KnownIncludes.
+      Value  the right-hand side for set/def, trimmed as the renderer trims it; '' for
+             include.
+      Text   the directive's line WITHOUT its terminator and with comments already removed
+             -- the exact text the renderer consumed, so a host can re-emit it rather than
+             re-spell the grammar.
+      Line/Column/EndLine/EndColumn  the line's span in the ORIGINAL source, same contract
+             as TSpDiag: 1-based, code-point columns, editor EOL, End* exclusive. A comment
+             at the HEAD or TAIL of the line shrinks the span to the part that survived it,
+             so replacing the span leaves that comment where it was. One INSIDE the
+             directive is part of what the renderer consumed, so the span covers it -- and
+             if it swallowed the line's terminator the span crosses into the next source
+             line. Replacing THAT span removes the comment with it.
+
+    Occurrences come in source order, duplicates kept. A directive inside /# ... #/ is not
+    reported, an inline #include is not a directive, and neither is an #include inside a
+    #def value (which validate flags as def.include-in-value) -- all three exactly as the
+    renderer treats them.
+
+    Two limits on "as the renderer sees it", both shared with SpExtract and SpValidate:
+
+    - #include is never RESOLVED here. The renderer emits the line verbatim and the host
+      substitutes it, so for that kind the contract is "the line SpExtract and SpValidate
+      call an include", which is the same scan run here.
+    - the scan reads the source AS WRITTEN, while SpRender deletes reserved sentinels
+      (U+E000..U+E005) before stripping comments. A raw one inside directive syntax
+      therefore makes the two disagree in both directions: `#se<U+E000>t %x% = A` is no
+      directive here and a #set to the renderer; `/<U+E000>#` opens no comment here and one
+      to the renderer, hiding a #set this list still reports. Measured on @spintax/core:
+      its extract and validate diverge from its render in exactly the same two ways, so
+      this is the family's contract for reserved characters in author markup, not a gap in
+      this port -- and a host is better served by three functions that agree with each
+      other than by one that agrees with the renderer. Sentinels enter a template through
+      SpNeutralize; author markup has no business carrying them. }
+  TSpDirective = record
+    Kind: string;
+    Name: string;
+    Value: string;
+    Text: string;
+    Line: Integer;
+    Column: Integer;
+    EndLine: Integer;
+    EndColumn: Integer;
+  end;
+  TSpDirectiveList = TList<TSpDirective>;
+
   { A single validator finding. Severity is 'error' or 'warning'; a template is "invalid"
     iff any diagnostic is 'error'. Code + Severity are the parity contract (the golden
     corpus gates only those). Line/Column/EndLine/EndColumn are BEST-EFFORT source
@@ -110,6 +168,9 @@ function SpNeutralize(const Value: string): string;
 function SpSafetyRestore(const Text: string): string;
 function SpStripSentinels(const Text: string): string;
 function SpExtract(const Src: string): TExtractResult;
+{ Every #set / #def / #include occurrence with its source span, value and text -- the
+  editor-side companion to SpExtract, see TSpDirective. Caller frees the list. }
+function SpExtractDirectives(const Src: string): TSpDirectiveList;
 function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList; overload;
 { KnownVariables: names the HOST will supply at render time. A reference to one of them is
   not "undefined", so the `variable.undefined` warning is suppressed for it — the same role
@@ -2674,29 +2735,64 @@ end;
 
 { Editor coordinates for a 1-based source offset: line by \n / \r\n / \r, column in
   CODE POINTS from the line start (SpCodePointAt steps one code point whatever the string
-  width, so the column matches under FPC and a UTF-16 compiler). offset <= 0 -> 0/0. }
-procedure SourceLineCol(const text: string; offset: Integer; out line, col: Integer);
-var i, n, cpLen: Integer;
+  width, so the column matches under FPC and a UTF-16 compiler). offset <= 0 -> 0/0.
+
+  The walk itself lives in CursorLineCol below, because a scan that reports MANY positions
+  must not start over at offset 1 for each one: this one is O(offset), so N of them over a
+  document cost O(N x length) -- measured at 628 ms for 400 directives sitting at the END of
+  a 124 KB document against 32 ms for the same 400 at its start, the same document either
+  way, and 7.8 ms either way once the walk resumes. One loop with two entry points rather
+  than a resumable copy of it: two line models that can drift apart is exactly the bug this
+  file already paid for once with its five line terminators. }
+type
+  { Where a source walk stopped: a 1-based offset and the coordinates AT that offset. }
+  TSourceCursor = record
+    Off, Line, Col: Integer;
+  end;
+
+procedure InitSourceCursor(out cur: TSourceCursor);
+begin
+  cur.Off := 1; cur.Line := 1; cur.Col := 1;
+end;
+
+{ Coordinates for offset, resumed from cur and leaving cur there, so a forward scan pays for
+  one pass over the source in total. Offsets must arrive NON-DECREASING -- MapStart/MapEnd
+  across a line-by-line scan do exactly that, since neither the line starts nor the surviving
+  characters they map to ever move backwards. A smaller offset restarts the walk instead of
+  answering from a state already past it (never taken by the scans here; the guard is what
+  makes the helper safe to reuse). }
+procedure CursorLineCol(const text: string; var cur: TSourceCursor; offset: Integer;
+  out line, col: Integer);
+var n, cpLen: Integer;
 begin
   if offset <= 0 then begin line := 0; col := 0; Exit; end;
-  line := 1; col := 1; i := 1; n := Length(text);
-  while (i < offset) and (i <= n) do
+  if offset < cur.Off then InitSourceCursor(cur);
+  n := Length(text);
+  while (cur.Off < offset) and (cur.Off <= n) do
   begin
-    if text[i] = #13 then
+    if text[cur.Off] = #13 then
     begin
-      if (i < n) and (text[i + 1] = #10) then Inc(i, 2) else Inc(i);
-      Inc(line); col := 1;
+      if (cur.Off < n) and (text[cur.Off + 1] = #10) then Inc(cur.Off, 2) else Inc(cur.Off);
+      Inc(cur.Line); cur.Col := 1;
     end
-    else if text[i] = #10 then
+    else if text[cur.Off] = #10 then
     begin
-      Inc(i); Inc(line); col := 1;
+      Inc(cur.Off); Inc(cur.Line); cur.Col := 1;
     end
     else
     begin
-      SpCodePointAt(text, i, cpLen);
-      Inc(i, cpLen); Inc(col);
+      SpCodePointAt(text, cur.Off, cpLen);
+      Inc(cur.Off, cpLen); Inc(cur.Col);
     end;
   end;
+  line := cur.Line; col := cur.Col;
+end;
+
+procedure SourceLineCol(const text: string; offset: Integer; out line, col: Integer);
+var cur: TSourceCursor;
+begin
+  InitSourceCursor(cur);
+  CursorLineCol(text, cur, offset, line, col);
 end;
 
 { Map an INCLUSIVE 1-based stripped offset (a span start) to its source offset. off past the
@@ -2741,6 +2837,74 @@ begin
   if endOff > 0 then SourceLineCol(src, MapEnd(src, map, endOff, sl), d.EndLine, d.EndColumn)
   else begin d.EndLine := 0; d.EndColumn := 0; end;
   list.Add(d);
+end;
+
+{ Public. It sits down here, away from SpExtract, because it reports ORIGINAL-source
+  coordinates: that needs the strip map and the two mappers just above. The scan itself is
+  the renderer's own -- TryParseDirective for #set/#def, and for #include the same "line
+  start after [ \t], then the first quoted string" rule SpExtract and SpValidate use -- run
+  over the comment-stripped text, so what is reported is exactly what the renderer consumes.
+  Deliberately NOT deduplicated: telling two occurrences of one target apart is the whole
+  reason a host cannot work from SpExtract's list. }
+function SpExtractDirectives(const Src: string): TSpDirectiveList;
+var map: TList<Integer>;
+    text, line, kind, nm, val: string;
+    n, srcLen, lineStart, e, termLen, p, q, r: Integer;
+    found: Boolean;
+    d: TSpDirective;
+    cur: TSourceCursor;
+begin
+  Result := TSpDirectiveList.Create;
+  map := TList<Integer>.Create;
+  try
+    text := StripComments(Src, map);
+    srcLen := Length(Src);
+    n := Length(text);
+    { One cursor for the whole document: the spans come out in source order, so the walk
+      that turns offsets into line/column never has to go back. }
+    InitSourceCursor(cur);
+    lineStart := 1;
+    while lineStart <= n + 1 do
+    begin
+      e := NextLineBreak(text, lineStart, termLen);
+      line := Copy(text, lineStart, e - lineStart);
+      found := TryParseDirective(line, kind, nm, val);
+      if not found then
+      begin
+        p := 1;
+        while (p <= Length(line)) and (CharInSet(line[p], [' ', #9])) do Inc(p);
+        if Copy(line, p, 8) = '#include' then
+        begin
+          q := Pos('"', line);
+          if q > 0 then
+          begin
+            r := PosEx('"', line, q + 1);
+            if r > q then
+            begin
+              kind := 'include';
+              nm := Copy(line, q + 1, r - q - 1);
+              val := '';
+              found := True;
+            end;
+          end;
+        end;
+      end;
+      if found then
+      begin
+        d.Kind := kind;
+        d.Name := nm;
+        d.Value := val;
+        d.Text := line;
+        CursorLineCol(Src, cur, MapStart(map, lineStart, srcLen), d.Line, d.Column);
+        CursorLineCol(Src, cur, MapEnd(Src, map, e, srcLen), d.EndLine, d.EndColumn);
+        Result.Add(d);
+      end;
+      if e > n then Break;
+      lineStart := e + termLen;
+    end;
+  finally
+    map.Free;
+  end;
 end;
 
 { '[' anywhere, or '{' not followed by '?' — spintax still unresolved when plurals run. }
