@@ -11,13 +11,6 @@ The single list of open work.
 
 ## Open
 
-- [ ] **Release the editor surface as `v0.2.0`.** Two additive, public API changes sit on
-      `main`: `TSpDiag` gained `Line`/`Column`/`EndLine`/`EndColumn`, and
-      `SpExtractDirectives` reports every `#set`/`#def`/`#include` occurrence with its span,
-      value and consumed line. Additive means a **minor bump** (`v0.2.0`), after which
-      `spintax-studio` bumps its engine submodule off `v0.1.0` — its M0 is written against
-      both. Release is tag-driven and only on the user's explicit command.
-
 - [ ] **`#include` is recognised more loosely here than anywhere else in the family, and it
       changes verdicts.** The reference, the PHP core and the plugin all anchor the whole
       line — `/^[ \t]*#include\s+"([^"]+)"\s*$/` — while this port takes `#include` at the
@@ -51,6 +44,14 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **The editor surface is released as `v0.2.0`** (2026-07-25). Two additive, public API
+      changes ride the tag: `TSpDiag` gained `Line`/`Column`/`EndLine`/`EndColumn`, and
+      `SpExtractDirectives` reports every `#set`/`#def`/`#include` occurrence with its span,
+      value and consumed line. Additive, so a minor bump. CI ran the full suite on the tagged
+      commit — build, `-Sew`, golden corpus and both local suites on ubuntu and windows,
+      shellcheck — and the gated `release` job published from it. `spintax-studio` can now
+      bump its engine submodule off `v0.1.0`; its M0 is written against both additions.
 
 - [x] **Directive occurrences are reportable** (2026-07-25). `SpExtractDirectives` returns
       every `#set` / `#def` / `#include` the renderer sees — source order, duplicates kept,
