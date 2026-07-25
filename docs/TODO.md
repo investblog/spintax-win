@@ -25,6 +25,25 @@ The single list of open work.
       state in the README that resolution is the host's, with those semantics spelled out.
       `spintax-studio`'s ADR 0003 is blocked on this answer.
 
+- [ ] **A `#set`/`#def` value is right-trimmed with PHP's `trim` charset, not the
+      reference's.** `TryParseDirective` ends with `PhpRtrim`, which strips space, `\t`, `\n`,
+      `\r`, `\0` and `\x0B`; the reference's `DIRECTIVE_RE` ends `(.*?)[ \t]*\r?$`, which
+      strips only spaces, tabs and one `\r`. Measured 2026-07-25, rendering
+      `#set %x% = A<c>` + LF + `[%x%]`:
+
+      | trailing character | reference | here |
+      |---|---|---|
+      | space / `\t` | stripped | stripped |
+      | `\f` | kept | kept |
+      | `\x0B` (VT) | **kept** | stripped |
+      | `\0` (NUL) | **kept** | stripped |
+
+      A render-output divergence on the deterministic surface, so a defect by §3 — reachable
+      only with a literal NUL or vertical tab at the end of a directive line, which is why
+      neither the corpus nor 86 419 include-shaped inputs found it. Found while checking the
+      directive rule against the reference alongside the `#include` anchor. Fix is one line,
+      but it changes render output, so: its own commit, with its own differential.
+
 - [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
       document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
       tail of a 124 KB document, 84 ms against 7.8 ms. It builds its body by appending line
