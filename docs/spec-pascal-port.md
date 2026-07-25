@@ -190,20 +190,22 @@ for a target that appears both inside `/# … #/` and live, so a host expanding 
 name expands the commented copy too; comments do not nest, so an included fragment carrying
 its own comment then escapes the one it landed in. Reporting occurrences also keeps the
 comment rule and the five line terminators in this unit rather than copied into every host.
-The scan is the renderer's own — `StripComments` first, then the same directive parse and
-the same "line start after `[ \t]`, then the first quoted string" include rule that
-`SpExtract` and `SpValidate` run — so a directive inside a comment, an inline `#include`,
-and an `#include` in a `#def` value (which validate flags as `def.include-in-value`) are
-absent, present and reported-as-a-`def` respectively, exactly as the renderer treats them.
+The scan is the renderer's own — `StripComments` first, then the same directive parse and the
+same include anchor (`MatchIncludeAt`, §5.1) that `SpExtract` and `SpValidate` run — so a
+directive inside a comment, an inline `#include`, and an `#include` in a `#def` value (which
+validate flags as `def.include-in-value`) are absent, present and reported-as-a-`def`
+respectively, exactly as the renderer treats them. An `#include` whose whitespace ran across a
+terminator is one occurrence whose span crosses source lines; everything else spans its line.
 Pinned by `TestExtractDirectives` in `tests/local_tests.dpr`, whose comment cases were
 confirmed to fail when the scan is pointed at the raw source instead of the stripped text.
 
 Three limits on "the renderer sees", all three shared with `SpExtract` and `SpValidate`, none
 of them specific to this function:
 
-- **`#include` is never resolved by this engine.** `SpRender` emits the line verbatim and the
-  host substitutes it, so for that kind the contract is "the line `SpExtract` and `SpValidate`
-  call an include" — the same scan, run here.
+- **`#include` is never resolved by this engine** (§5.1). `SpRender` emits the line verbatim —
+  which is also what the reference does when no resolver is supplied — and the host
+  substitutes it, so for that kind the contract is "the line `SpExtract` and `SpValidate` call
+  an include", the same anchor run here.
 - **The scan reads the source as written; `SpRender` deletes reserved sentinels
   (U+E000–U+E005) first.** A raw one inside directive syntax makes the two disagree both ways:
   `#se<U+E000>t %x% = A` is no directive here and a `#set` to the renderer, and `/<U+E000>#`
@@ -229,6 +231,48 @@ where it used to run 63 → 881 ms. The shape of a benchmark, not its size, is w
 varied. `SpExtract` and `SpValidate` are now the expensive pair on a directive-heavy document
 (`SpExtract` 281 ms against 5 ms at 1600 directives) — a host calling them per keystroke
 should debounce.
+
+### 5.1 The `#include` anchor, and what this engine does NOT do with it
+
+One rule, one implementation (`MatchIncludeAt`), three callers — `SpExtract`, `SpValidate`,
+`SpExtractDirectives`. It is the family's, spelled the same in the reference, the PHP core and
+the plugin:
+
+```
+/^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu
+```
+
+The class is written out rather than left to `\s` on purpose: JavaScript's `\s` is
+Unicode-aware and PHP's, under `/u`, is not, so an NBSP after `#include` is whitespace in one
+and not the other. Writing the ASCII set keeps every engine on the same answer — and this port
+must do the same, NBSP included.
+
+Two consequences a line-by-line reading gets wrong, and this port did until 2026-07-25:
+
+- the class holds `\n` and `\r`, so both gaps may **cross line terminators** — `#include` ⏎
+  `"frag"` is one include everywhere in the family — and the target, being `[^"]+`, may cross
+  them too;
+- everything else on the line disqualifies it. `#include "a" junk`, `#include"a"`,
+  `#include ""`, `#includes "a"` and `#include "a" "b"` are **plain text**, not includes.
+
+That second half is not cosmetic: `include.unknown-target` is an **error**, so a loose anchor
+calls valid templates invalid — a verdict divergence, which §3 lists as REQUIRED parity.
+The corpus cannot see it (two plain `#include` cases), so the gate is
+`TestIncludeAnchor` in `tests/local_tests.dpr` plus the differential recorded in the commit:
+86 419 include-shaped inputs answered by `@spintax/core`, 18 487 include-list and 15 758
+verdict differences before the fix, zero after.
+
+**Resolution is a separate matter, and this engine does not implement it.** The reference
+resolves includes inside render — `resolver ? resolveIncludes(text, ctx) : text` — after the
+parent has been rendered, and Python does the same. With **no resolver supplied it leaves the
+line verbatim, exactly as `SpRender` does**, so the port is at parity for the only case it can
+express; what it lacks is the seam. The family's semantics, if that seam is ever added, are
+worth stating because they are not what splicing text would do: the child is parsed and
+rendered **on its own** and its OUTPUT is substituted (so `{`, `|`, `%` in it are never
+re-parsed by the parent), it inherits the runtime context but **not** the parent's
+`#set`/`#def`, and an unknown target, a cycle or a depth over `DEFAULT_MAX_DEPTH = 20`
+resolves to the empty string, leniently. Cycles are detected by the ref STRING, so two aliases
+of one template are not a cycle and unwind to the depth limit.
 
 ## 6. Trust model
 

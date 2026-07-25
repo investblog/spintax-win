@@ -551,6 +551,86 @@ begin
         RenderFirst('x'#13'#include "frag"'#13'after'), 'x'#13'#include "frag"'#13'after');
 end;
 
+{ include.unknown-target with a host slug list -- the verdict half of the anchor. A line the
+  family does not call an include cannot be an unknown target, and the code is an ERROR, so
+  getting the anchor wrong does not just mis-report a name, it calls a valid template
+  invalid. }
+function IncludeDiags(const tmpl: string): string;
+var d: TSpDiagList; i: Integer; known: TStringList;
+begin
+  Result := '';
+  known := TStringList.Create;
+  known.Add('ok');
+  try
+    d := SpValidate(tmpl, 'en', known);
+    try
+      for i := 0 to d.Count - 1 do
+      begin
+        if i > 0 then Result := Result + ' ';
+        Result := Result + d[i].Code + '/' + d[i].Severity;
+      end;
+    finally d.Free; end;
+  finally known.Free; end;
+end;
+
+{ The exact anchor, which is
+
+      /^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu
+
+  in the reference, the PHP core and the plugin alike. This port used to read it as
+  "#include at a line start, then the first quoted string on the line": looser on five
+  shapes, stricter on one, and since include.unknown-target is an error the loose half moved
+  VERDICTS -- parity-REQUIRED by spec §3, and invisible to a corpus that carries two plain
+  #include cases.
+
+  Every expectation below is the reference's answer, measured 2026-07-25, and the whole rule
+  is measured over 86 419 include-shaped inputs by the differential in the commit that
+  introduced it: 18 487 include-list and 15 758 verdict differences before, zero after.
+
+  The subtle half is that the class holds \n and \r, so the gaps around the target may cross
+  line terminators -- while U+2028/9 end a line for ^ and $ but are NOT whitespace, and an
+  NBSP is not whitespace either (the reference writes the class out rather than trusting
+  JavaScript's Unicode-aware \s, for exactly this parity). }
+procedure TestIncludeAnchor;
+const
+  NBSP = {$IFDEF UNICODE} #$00A0 {$ELSE} #$C2#$A0 {$ENDIF};
+  U2028 = {$IFDEF UNICODE} #$2028 {$ELSE} #$E2#$80#$A8 {$ENDIF};
+begin
+  { Rejected: anything after the closing quote that is not the rule's whitespace, no gap at
+    all, an empty target, a longer keyword, a second quoted string, an unterminated quote. }
+  Check('anchor/trailing-junk',     Includes('#include "frag" junk'), '');
+  Check('anchor/no-gap',            Includes('#include"frag"'), '');
+  Check('anchor/empty-target',      Includes('#include ""'), '');
+  Check('anchor/longer-keyword',    Includes('#includes "frag"'), '');
+  Check('anchor/second-quoted',     Includes('#include "frag" "ok"'), '');
+  Check('anchor/unterminated',      Includes('#include "frag'), '');
+  { NBSP is not in the class, on either side of the target. }
+  Check('anchor/nbsp-gap',          Includes('#include' + NBSP + '"frag"'), '');
+  Check('anchor/nbsp-tail',         Includes('#include "frag"' + NBSP), '');
+
+  { Accepted: every member of the class as a gap, including the terminators -- which is the
+    one shape the old rule was too STRICT to see, because it cannot be read line by line. }
+  Check('anchor/newline-gap',       Includes('#include'#10'"frag"'), 'frag');
+  Check('anchor/crlf-gap',          Includes('#include'#13#10'"frag"'), 'frag');
+  Check('anchor/tab-gap',           Includes('#include'#9'"frag"'), 'frag');
+  Check('anchor/trailing-spaces',   Includes('#include "frag"   '), 'frag');
+  Check('anchor/trailing-formfeed', Includes('#include "frag"'#12), 'frag');
+  Check('anchor/tail-then-newline', Includes('#include "frag" '#10'after'), 'frag');
+  { U+2028 is not whitespace but IS a line end, so $ matches before it. }
+  Check('anchor/u2028-tail',        Includes('#include "frag"' + U2028 + 'x'), 'frag');
+  { The target is [^"]+, so it may hold spaces. }
+  Check('anchor/target-with-space', Includes('#include "my frag"'), 'my frag');
+
+  { The verdict half: the rejected shapes are VALID templates, the accepted ones report an
+    unknown target. This is the parity that was broken. }
+  Check('anchor/verdict-trailing-junk', IncludeDiags('#include "frag" junk'), '');
+  Check('anchor/verdict-longer-keyword', IncludeDiags('#includes "frag"'), '');
+  Check('anchor/verdict-no-gap',        IncludeDiags('#include"frag"'), '');
+  Check('anchor/verdict-newline-gap',   IncludeDiags('#include'#10'"frag"'),
+        'include.unknown-target/error');
+  Check('anchor/verdict-known-target',  IncludeDiags('#include "ok"'), '');
+end;
+
 { Diagnostic codes+severities, space-joined, with a host-declared variable list. }
 function Diags(const tmpl: string; const known: array of string): string;
 var d: TSpDiagList; i: Integer; kv: TStringList;
@@ -899,6 +979,12 @@ begin
         Directives('/' + SENT + '# c'#10'#set %x% = A'#10'#/%x%'), 'set:x=A@2:1..2:13');
   Check('dir/raw-sentinel-forges-a-comment-render',
         RenderFirst('/' + SENT + '# c'#10'#set %x% = A'#10'#/%x%'), '%x%');
+
+  { An #include whose gap swallowed the terminator is ONE occurrence spanning two source
+    lines, and the span is the match rather than the first line -- a host replacing it by
+    span has to remove both halves or it leaves a stray `"frag"` behind. }
+  Check('dir/include-across-lines',
+        Directives('#include'#10'"frag"'), 'include:frag=@1:1..2:7');
 end;
 
 begin
@@ -913,6 +999,7 @@ begin
   TestPermutationConfig;
   TestPluralFallbacks;
   TestIncludes;
+  TestIncludeAnchor;
   TestKnownVariables;
   TestUnicodeTables;
   TestEncoding;

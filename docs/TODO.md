@@ -11,30 +11,19 @@ The single list of open work.
 
 ## Open
 
-- [ ] **`#include` is recognised more loosely here than anywhere else in the family, and it
-      changes verdicts.** The reference, the PHP core and the plugin all anchor the whole
-      line — `/^[ \t]*#include\s+"([^"]+)"\s*$/` — while this port takes `#include` at the
-      line start plus the first quoted string it finds (`SpExtract`, `SpValidate` and
-      `SpExtractDirectives`, all three copies of the same rule). Measured against
-      `@spintax/core` with `knownIncludes = ['ok']`:
-
-      | input | reference | here |
-      |---|---|---|
-      | `#include "frag" junk` | not an include, **valid** | include, **invalid** (`include.unknown-target`) |
-      | `#include"frag"` | not an include, **valid** | include, **invalid** |
-      | `#include ""` | not an include, **valid** | include with an empty target, **invalid** |
-      | `#includes "frag"` | not an include, **valid** | include, **invalid** |
-      | `#include "frag" "ok"` | not an include, **valid** | include, **invalid** |
-      | `#include`⏎`"frag"` | include (its class holds `\n`) | not an include |
-
-      Verdicts are parity-REQUIRED (spec §3), so this is a defect, not a divergence — and the
-      corpus cannot see it: it carries two `#include` cases, both the plain shape. Present
-      since the port was bootstrapped, not introduced by the occurrence API, but that API
-      hands a host a **span to substitute**, so `spintax-studio` will rewrite lines the
-      reference renders as plain text. Fix by parsing the include line once, in one helper,
-      against the reference anchor; the cross-line form is out of reach of a line-based scan
-      and should be documented rather than emulated. Changes verdicts, so: its own commit,
-      with corpus and local coverage, before Studio ships include expansion.
+- [ ] **Decide whether the engine grows an `#include` resolver.** The reference resolves
+      includes inside render (`resolver ? resolveIncludes(text, ctx) : text`, after the parent
+      is rendered) and Python does the same; with no resolver both leave the line verbatim,
+      which is where this port is at parity today (spec §5.1). What it lacks is the seam, so
+      every host writes resolution itself — and the family's semantics are not the obvious
+      ones: the child is parsed and rendered **on its own** and its OUTPUT is spliced (a `{`
+      or `%` in it is never re-parsed by the parent), it inherits the runtime context but
+      **not** the parent's `#set`/`#def`, and an unknown target, a cycle (detected by ref
+      STRING, so aliases are not cycles) or a depth over `DEFAULT_MAX_DEPTH = 20` resolves to
+      the empty string. A host that splices raw text instead produces output no other engine
+      in the family produces. Either add the seam (a public API addition → minor bump) or
+      state in the README that resolution is the host's, with those semantics spelled out.
+      `spintax-studio`'s ADR 0003 is blocked on this answer.
 
 - [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
       document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
@@ -44,6 +33,41 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **`#include` is recognised the way the family recognises it** (2026-07-25). One
+      matcher, `MatchIncludeAt`, called by `SpExtract`, `SpValidate` and
+      `SpExtractDirectives`, holding the reference's anchor
+      `/^[ \t]*#include[ \t\n\r\f\x0B]+"([^"]+)"[ \t\n\r\f\x0B]*$/gmu` — the same one the PHP
+      core and the plugin use. The port had read it as "`#include` at a line start, then the
+      first quoted string on the line": looser on five shapes, stricter on one.
+
+      | input | before | after (= reference) |
+      |---|---|---|
+      | `#include "frag" junk` | include, **invalid** | plain text, **valid** |
+      | `#include"frag"` | include, **invalid** | plain text, **valid** |
+      | `#include ""` | include (empty target), **invalid** | plain text, **valid** |
+      | `#includes "frag"` | include, **invalid** | plain text, **valid** |
+      | `#include "frag" "ok"` | include, **invalid** | plain text, **valid** |
+      | `#include`⏎`"frag"` | plain text | include, **invalid** |
+
+      `include.unknown-target` is an error, so the loose half was calling valid templates
+      invalid — a **verdict** divergence, REQUIRED parity by §3, and invisible to a corpus
+      carrying two plain `#include` cases. Present since the port was bootstrapped.
+
+      The cross-line form is why this is a matcher over the text and not a test on one line:
+      the rule's whitespace class holds `\n` and `\r`, so both gaps around the target may run
+      past a terminator, and `SpExtractDirectives` then reports a span that crosses source
+      lines — which is what a host replacing it has to remove. NBSP is deliberately NOT
+      whitespace here: the reference writes the ASCII class out instead of using `\s`,
+      because JavaScript's `\s` is Unicode-aware and PHP's under `/u` is not.
+
+      Gated by a differential the corpus cannot express: 86 419 include-shaped inputs
+      generated once and answered by `@spintax/core` (both `extract().includes` and the
+      `include.unknown-target` count with a slug list), fed to both engines from that one
+      file. **Control run against the old rule: 18 487 include-list and 15 758 verdict
+      differences. After: zero.** Twenty-one checks in `TestIncludeAnchor` pin the readable
+      cases and one more pins the cross-line span, 367 local checks in both builds, corpus
+      unchanged at 168/0/4.
 
 - [x] **The editor surface is released as `v0.2.0`** (2026-07-25). Two additive, public API
       changes ride the tag: `TSpDiag` gained `Line`/`Column`/`EndLine`/`EndColumn`, and
