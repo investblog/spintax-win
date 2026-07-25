@@ -37,7 +37,11 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
       set difference rather than a verdict one — the corpus gates codes, so it would fail if
       a fixture covered it.
 
-- [ ] **Ask the family whether `#include<NBSP>"x"` is an include.** The reference spells the
+- [ ] **Ask the family whether `#include<NBSP>"x"` is an include** —
+      [spintax-js#55](https://github.com/investblog/spintax-js/issues/55), filed 2026-07-26
+      with the measured JS table and four proposed `extract` fixtures; PHP still unmeasured.
+      Nothing here is blocked on it (this port follows `@spintax/core`, §2), but if PHP wins
+      the answer arrives as fixtures and the corpus turns red here first. The reference spells the
       whitespace class out as ASCII "for PHP parity"; the PHP core and the plugin write `\s`
       under `/u`, and PCRE2 with `/u` also sets `UCP`, which makes `\s` match `\p{Z}` — NBSP
       included. If that is right, PHP accepts a line JS and this port reject, and the
