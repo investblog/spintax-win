@@ -11,19 +11,29 @@ The single list of open work.
 
 ## Open
 
-- [ ] **Decide whether the engine grows an `#include` resolver.** The reference resolves
-      includes inside render (`resolver ? resolveIncludes(text, ctx) : text`, after the parent
-      is rendered) and Python does the same; with no resolver both leave the line verbatim,
-      which is where this port is at parity today (spec §5.1). What it lacks is the seam, so
-      every host writes resolution itself — and the family's semantics are not the obvious
-      ones: the child is parsed and rendered **on its own** and its OUTPUT is spliced (a `{`
-      or `%` in it is never re-parsed by the parent), it inherits the runtime context but
-      **not** the parent's `#set`/`#def`, and an unknown target, a cycle (detected by ref
-      STRING, so aliases are not cycles) or a depth over `DEFAULT_MAX_DEPTH = 20` resolves to
-      the empty string. A host that splices raw text instead produces output no other engine
-      in the family produces. Either add the seam (a public API addition → minor bump) or
-      state in the README that resolution is the host's, with those semantics spelled out.
-      `spintax-studio`'s ADR 0003 is blocked on this answer.
+- [ ] **`#include` targets are matched case-insensitively; the family compares exactly.**
+      `KnownIncludes.IndexOf(ref)` in `SpValidate` and the `Includes` dedup in `SpExtract` go
+      through `TStringList.IndexOf`, which ignores case unless told otherwise. Measured
+      against `@spintax/core` with `knownIncludes = ['ok']`: `#include "OK"` and
+      `#include "Ok"` are **invalid** there (`include.unknown-target`) and valid here. A
+      verdict divergence, §3 REQUIRED, and the 86 419-case include differential could not see
+      it — every target in that corpus matched the slug list in case, so it was incapable of
+      asking. `TSpDirective`'s doc comment states the wrong behaviour as intentional and goes
+      with the fix. Compare exactly with a helper; do NOT set `CaseSensitive` on the caller's
+      list. Patch bump `v0.2.2`, before Studio pins an engine and before the resolver below.
+
+- [ ] **Add the `#include` resolver seam** — see
+      [ADR 0004](decisions/0004-include-resolver-seam.md), accepted 2026-07-25. `TSpContext`
+      gains `IncludeResolver: TSpIncludeResolver` (abstract class, caller-owned, like
+      `TSpRng`; `nil` = today's behaviour) and `MaxIncludeDepth` (`0` = the family's 20).
+      Resolution runs at the end of a document's render, before post-process; the child is
+      parsed and rendered on its own, inherits the runtime context but not the parent's
+      `#set`/`#def`, shares the RNG, and an unknown target, a cycle (by ref string,
+      case-sensitively) or depth ≥ 20 resolves to `''`. Additive → minor bump `v0.3.0`.
+      Gated by a differential against `@spintax/core` with a matching resolver on both sides,
+      plus local tests for cycles, aliases, the depth cap and a child emitting neutralized
+      markup — the corpus schema has no include-resolution field. Unblocks
+      `spintax-studio`'s ADR 0003, which stops expanding includes itself.
 
 - [ ] **A `#set`/`#def` value is right-trimmed with PHP's `trim` charset, not the
       reference's.** `TryParseDirective` ends with `PhpRtrim`, which strips space, `\t`, `\n`,
