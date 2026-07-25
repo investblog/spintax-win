@@ -1617,7 +1617,25 @@ end;
 
 { ─── #def rolling (dependency order) ─────────────────────────────────────── }
 
-procedure DirectReferences(const text: string; target: TStringList);
+{ Ordered-unique add. TStringList.IndexOf is a linear scan, so k distinct names cost O(k^2):
+  6400 distinct %refs% measured 11.4 s in SpExtract, almost all of it here. The LIST keeps
+  order -- the corpus compares these order-normalized, but a host sees it -- and the
+  dictionary keeps membership.
+
+  Keys compare EXACTLY, where IndexOf ignored case. That is the same answer, not a quiet
+  behaviour change: every name reaching here has already been through LowerAscii at its call
+  site, and include targets are exact by contract (v0.2.2). Adding a name with mixed case
+  would now keep both, so keep folding at the call sites. }
+procedure AddUniqueOrdered(list: TStringList; seen: TDictionary<string, Boolean>;
+  const s: string);
+begin
+  if seen.ContainsKey(s) then Exit;
+  seen.Add(s, True);
+  list.Add(s);
+end;
+
+procedure DirectReferences(const text: string; target: TStringList;
+  seen: TDictionary<string, Boolean>); overload;
 var i, j: Integer; nm: string;
 begin
   i := 1;
@@ -1629,8 +1647,50 @@ begin
       while (j <= Length(text)) and IsAsciiWord(text[j]) do begin nm := nm + text[j]; Inc(j); end;
       if (nm <> '') and (j <= Length(text)) and (text[j] = '%') then
       begin
-        if target.IndexOf(LowerAscii(nm)) < 0 then target.Add(LowerAscii(nm));
+        AddUniqueOrdered(target, seen, LowerAscii(nm));
         i := j + 1; Continue;
+      end;
+    end;
+    Inc(i);
+  end;
+end;
+
+{ For the callers that gather a handful of names into a list of their own: the membership
+  set is built from what the list already holds, so repeated calls accumulate exactly as
+  they did through IndexOf. Only the document-wide scans, where k grows with the input,
+  carry a dictionary of their own. }
+procedure DirectReferences(const text: string; target: TStringList); overload;
+var seen: TDictionary<string, Boolean>; i: Integer;
+begin
+  seen := TDictionary<string, Boolean>.Create;
+  try
+    for i := 0 to target.Count - 1 do seen.AddOrSetValue(target[i], True);
+    DirectReferences(text, target, seen);
+  finally
+    seen.Free;
+  end;
+end;
+
+{ The `{?name?` / `{?!name?` half of a reference scan, split out so it can run per line
+  rather than over a rebuilt copy of the document. }
+procedure ConditionalReferences(const text: string; target: TStringList;
+  seen: TDictionary<string, Boolean>);
+var i, j: Integer; nm: string;
+begin
+  i := 1;
+  while i <= Length(text) do
+  begin
+    if (i + 1 <= Length(text)) and (text[i] = '{') and (text[i+1] = '?') then
+    begin
+      j := i + 2;
+      if (j <= Length(text)) and (text[j] = '!') then Inc(j);
+      nm := '';
+      if (j <= Length(text)) and (CharInSet(text[j], ['A'..'Z','a'..'z','_'])) then
+      begin
+        nm := nm + text[j]; Inc(j);
+        while (j <= Length(text)) and IsAsciiWord(text[j]) do begin nm := nm + text[j]; Inc(j); end;
+        if (j <= Length(text)) and (text[j] = '?') then
+          AddUniqueOrdered(target, seen, LowerAscii(nm));
       end;
     end;
     Inc(i);
@@ -2890,24 +2950,11 @@ end;
 
 { ─── extract ─────────────────────────────────────────────────────────────── }
 
-procedure CollectDirectiveNames(const text, directive: string; target: TStringList);
-var lineStart, e, n, termLen: Integer; line, kind, nm, val: string;
-begin
-  n := Length(text); lineStart := 1;
-  while lineStart <= n + 1 do
-  begin
-    e := NextLineBreak(text, lineStart, termLen);
-    line := Copy(text, lineStart, e - lineStart);
-    if TryParseDirective(line, kind, nm, val) and (kind = directive) then
-      if target.IndexOf(nm) < 0 then target.Add(nm);
-    if e > n then Break;
-    lineStart := e + termLen;
-  end;
-end;
-
 function SpExtract(const Src: string): TExtractResult;
-var text, body, line, kind, nm, val, ref: string;
-    i, j, p, q, r, lineStart, e, n, termLen: Integer;
+var text, line, kind, nm, val, ref: string;
+    i, p, q, r, lineStart, e, n, termLen: Integer;
+    seenSets, seenDefs, seenRefs, seenCond, seenIncs: TDictionary<string, Boolean>;
+    condRefs: TStringList;
 begin
   text := StripComments(Src);
   Result.Refs := TStringList.Create;
@@ -2915,58 +2962,89 @@ begin
   Result.Defs := TStringList.Create;
   Result.Includes := TStringList.Create;
 
-  CollectDirectiveNames(text, 'set', Result.Sets);
-  CollectDirectiveNames(text, 'def', Result.Defs);
-
-  // includes: the family's line anchor, see MatchIncludeAt
-  n := Length(text); lineStart := 1;
-  while lineStart <= n + 1 do
-  begin
-    e := NextLineBreak(text, lineStart, termLen);
-    if MatchIncludeAt(text, lineStart, ref, p, q, r) then
+  seenSets := TDictionary<string, Boolean>.Create;
+  seenDefs := TDictionary<string, Boolean>.Create;
+  seenRefs := TDictionary<string, Boolean>.Create;
+  seenCond := TDictionary<string, Boolean>.Create;
+  seenIncs := TDictionary<string, Boolean>.Create;
+  { Conditional refs are collected apart, deduplicated among THEMSELVES, and filtered
+    against the direct refs only at the end. That is what two passes over the whole document
+    produced: every %var% in source order, then the {?name? names that were not already
+    there. Sharing one membership set between the two scans looks equivalent and is not -- a
+    name written `{?x?` early and `%x%` later would be claimed by the conditional scan and
+    move to the tail. Caught by a before/after dump over 4 000 templates. }
+  condRefs := TStringList.Create;
+  try
+    { Includes keep their own scan. It has to resume at the match end (a match may swallow
+      line starts), and the reference removes only the #set/#def LHS before collecting refs
+      -- never an include line -- so the ref scan below must still see every line. }
+    n := Length(text); lineStart := 1;
+    while lineStart <= n + 1 do
     begin
-      if not HasExact(Result.Includes, ref) then Result.Includes.Add(ref);
-      ResumeAfterInclude(text, r, e, termLen);
-    end;
-    if e > n then Break;
-    lineStart := e + termLen;
-  end;
-
-  // body: drop #set/#def LHS, then collect %var% and {?name? refs (lower-cased)
-  body := '';
-  lineStart := 1;
-  while lineStart <= n + 1 do
-  begin
-    e := NextLineBreak(text, lineStart, termLen);
-    line := Copy(text, lineStart, e - lineStart);
-    if TryParseDirective(line, kind, nm, val) then
-      body := body + '=' + val   // keep value, drop LHS (leading '=' harmless for %var% scan)
-    else
-      body := body + line;
-    body := body + #10;
-    if e > n then Break;
-    lineStart := e + termLen;
-  end;
-
-  DirectReferences(body, Result.Refs);
-  // conditional refs {?name? / {?!name?
-  i := 1;
-  while i <= Length(body) do
-  begin
-    if (i + 1 <= Length(body)) and (body[i] = '{') and (body[i+1] = '?') then
-    begin
-      j := i + 2;
-      if (j <= Length(body)) and (body[j] = '!') then Inc(j);
-      nm := '';
-      if (j <= Length(body)) and (CharInSet(body[j], ['A'..'Z','a'..'z','_'])) then
+      e := NextLineBreak(text, lineStart, termLen);
+      if MatchIncludeAt(text, lineStart, ref, p, q, r) then
       begin
-        nm := nm + body[j]; Inc(j);
-        while (j <= Length(body)) and IsAsciiWord(body[j]) do begin nm := nm + body[j]; Inc(j); end;
-        if (j <= Length(body)) and (body[j] = '?') then
-          if Result.Refs.IndexOf(LowerAscii(nm)) < 0 then Result.Refs.Add(LowerAscii(nm));
+        AddUniqueOrdered(Result.Includes, seenIncs, ref);
+        ResumeAfterInclude(text, r, e, termLen);
       end;
+      if e > n then Break;
+      lineStart := e + termLen;
     end;
-    Inc(i);
+
+    { Directive names and references in one pass. The refs used to be scanned over a body
+      rebuilt line by line with `body := body + …`, which copies the accumulator every time
+      -- O(document^2), and a whole extra copy of the text. Scanning each line where it
+      lies is the same answer: neither `%name%` nor `{?name?` can span the #10 that joined
+      those lines (a terminator is not a word character, and `{` and `?` had one between
+      them), and the `=` the old code prefixed to a directive value was inert for both. }
+    lineStart := 1;
+    while lineStart <= n + 1 do
+    begin
+      e := NextLineBreak(text, lineStart, termLen);
+      line := Copy(text, lineStart, e - lineStart);
+      if TryParseDirective(line, kind, nm, val) then
+      begin
+        if kind = 'set' then AddUniqueOrdered(Result.Sets, seenSets, nm)
+        else AddUniqueOrdered(Result.Defs, seenDefs, nm);
+        { the VALUE is body, the LHS is not -- a definition's own name is not a reference }
+        DirectReferences(val, Result.Refs, seenRefs);
+        ConditionalReferences(val, condRefs, seenCond);
+      end
+      else
+      begin
+        DirectReferences(line, Result.Refs, seenRefs);
+        ConditionalReferences(line, condRefs, seenCond);
+      end;
+      if e > n then Break;
+      lineStart := e + termLen;
+    end;
+    for i := 0 to condRefs.Count - 1 do
+      AddUniqueOrdered(Result.Refs, seenRefs, condRefs[i]);
+  finally
+    seenSets.Free; seenDefs.Free; seenRefs.Free; seenCond.Free; seenIncs.Free;
+    condRefs.Free;
+  end;
+end;
+
+{ Kept for the validator, which collects one kind at a time. }
+procedure CollectDirectiveNames(const text, directive: string; target: TStringList);
+var lineStart, e, n, termLen: Integer; line, kind, nm, val: string;
+    seen: TDictionary<string, Boolean>;
+begin
+  seen := TDictionary<string, Boolean>.Create;
+  try
+    n := Length(text); lineStart := 1;
+    while lineStart <= n + 1 do
+    begin
+      e := NextLineBreak(text, lineStart, termLen);
+      line := Copy(text, lineStart, e - lineStart);
+      if TryParseDirective(line, kind, nm, val) and (kind = directive) then
+        AddUniqueOrdered(target, seen, nm);
+      if e > n then Break;
+      lineStart := e + termLen;
+    end;
+  finally
+    seen.Free;
   end;
 end;
 
@@ -3073,6 +3151,24 @@ end;
   endOff = 0 leaves the span empty; endOff > 0 fills End* from it. Every finding goes through
   here -- Code and Severity are the contract, the positions are best-effort on top, and
   because detection still runs on the stripped text nothing about the verdict changes. }
+{ The same call, for a pass that emits diagnostics in SOURCE ORDER: the walk that turns an
+  offset into line/column resumes from the previous one instead of starting over. One
+  diagnostic costs O(offset) otherwise, so a document that raises one per reference costs
+  O(document x diagnostics) -- 6400 undefined variables measured 6.4 s, nearly all of it
+  here. Offsets must be non-decreasing; CursorLineCol restarts the walk if they are not, so
+  a caller that gets it wrong is slow rather than wrong. }
+procedure AddDiagAtOrdered(list: TSpDiagList; const code, sev: string; const src: string;
+  map: TList<Integer>; startOff, endOff: Integer; var cur: TSourceCursor);
+var d: TSpDiag; sl: Integer;
+begin
+  d.Code := code; d.Severity := sev; sl := Length(src);
+  CursorLineCol(src, cur, MapStart(map, startOff, sl), d.Line, d.Column);
+  if endOff > 0 then
+    CursorLineCol(src, cur, MapEnd(src, map, endOff, sl), d.EndLine, d.EndColumn)
+  else begin d.EndLine := 0; d.EndColumn := 0; end;
+  list.Add(d);
+end;
+
 procedure AddDiagAt(list: TSpDiagList; const code, sev: string; const src: string;
   map: TList<Integer>; startOff, endOff: Integer);
 var d: TSpDiag; sl: Integer;
@@ -3292,10 +3388,11 @@ begin
 end;
 
 procedure CheckDirectivesV(const text, src: string; map: TList<Integer>; res: TSpDiagList);
-var lineStart, e, n, i, seenIdx, p, termLen: Integer;
+var lineStart, e, n, i, p, termLen: Integer;
     line, t, kind, nm, val: string;
     isSet, isDef: Boolean;
-    kinds, names, values, seen: TStringList;
+    kinds, names, values: TStringList;
+    seen: TDictionary<string, Boolean>;
     poss: TList<Integer>;
 begin
   // malformed lines
@@ -3320,16 +3417,18 @@ begin
 
   // duplicate names + #include in a #def value
   kinds := TStringList.Create; names := TStringList.Create; values := TStringList.Create;
-  seen := TStringList.Create; poss := TList<Integer>.Create;
+  { membership only -- the index this used to take from TStringList.IndexOf was never read,
+    and the linear scan behind it cost O(names^2) on a directive-heavy document }
+  seen := TDictionary<string, Boolean>.Create;
+  poss := TList<Integer>.Create;
   try
     CollectOccurrences(text, kinds, names, values, poss);
     for i := 0 to names.Count - 1 do
     begin
-      seenIdx := seen.IndexOf(names[i]);
       { duplicate is reported at the LATER occurrence -- poss[i] is that line's '#' }
-      if seenIdx >= 0 then
+      if seen.ContainsKey(names[i]) then
         AddDiagAt(res, 'definition.duplicate-name', 'error', src, map, poss[i], poss[i] + 4)
-      else seen.Add(names[i]);
+      else seen.Add(names[i], True);
       if kinds[i] = 'def' then
       begin
         p := Pos('#include', values[i]);
@@ -3556,10 +3655,12 @@ end;
 
 function SpValidate(const Src, Locale: string;
   KnownIncludes, KnownVariables: TStringList): TSpDiagList;
-var text, body, line, kind, nm, val, ref: string;
+var text, line, kind, nm, val, ref: string;
     lineStart, e, n, p, q, r, i, j, termLen: Integer;
-    kinds, defNames, defValues, seenUndef: TStringList;
-    bmap, smap: TList<Integer>;
+    kinds, defNames, defValues: TStringList;
+    defSet, undefSet: TDictionary<string, Boolean>;
+    smap: TList<Integer>;
+    cur: TSourceCursor;
 begin
   Result := TSpDiagList.Create;
   { smap[k] = source offset of stripped char k+1, so every diagnostic found in the stripped
@@ -3595,86 +3696,105 @@ begin
 
   // undefined-variable warnings: scan body (directive lines dropped), skip defined names
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
-  seenUndef := TStringList.Create; bmap := TList<Integer>.Create;
+  defSet := TDictionary<string, Boolean>.Create;
+  undefSet := TDictionary<string, Boolean>.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues);
-    // A host-declared variable counts as defined for this check, so seeding defNames
-    // suppresses the warning at both reference sites below without duplicating the test.
-    // Names are compared lower-cased, like every other variable name in the engine.
+    for i := 0 to defNames.Count - 1 do defSet.AddOrSetValue(defNames[i], True);
+    // A host-declared variable counts as defined for this check, so seeding it suppresses
+    // the warning at both reference sites below without duplicating the test. Names are
+    // compared lower-cased, like every other variable name in the engine.
     if KnownVariables <> nil then
       for i := 0 to KnownVariables.Count - 1 do
-        if defNames.IndexOf(LowerAscii(KnownVariables[i])) < 0 then
-          defNames.Add(LowerAscii(KnownVariables[i]));
-    // build body = non-directive lines, and bmap[k] = the source offset of body char k+1,
-    // so a warning found in the rebuilt body can be pointed back at the real source. The #10
-    // that stands in for each line break (and for a dropped directive line) maps to the
-    // break position; a %var% never matches there, so that approximation is never surfaced.
-    body := '';
-    n := Length(text); lineStart := 1;
+        defSet.AddOrSetValue(LowerAscii(KnownVariables[i]), True);
+    { No body is rebuilt for this. It used to be assembled line by line with
+      `body := body + line` -- O(document^2), measured 20 s on 6400 references -- alongside a
+      per-character map back to the source. Both existed only to turn a body offset into a
+      source offset, and a line already knows where it starts: the ref at line offset j sits
+      at lineStart + j - 1. A directive line contributes nothing, exactly as before, which is
+      the difference from SpExtract (there the VALUE is body; here the line is dropped whole).
+
+      Still two passes over the lines, not one: the %var% sweep used to run over the whole
+      body before the {?name? sweep, and a name seen by both is reported once, at the FIRST
+      site. Interleaving them per line would move that report to the other syntax and reorder
+      the diagnostics. Two linear passes cost what one does, asymptotically. }
+    n := Length(text);
+    lineStart := 1;
+    InitSourceCursor(cur);
     while lineStart <= n + 1 do
     begin
       e := NextLineBreak(text, lineStart, termLen);
       line := Copy(text, lineStart, e - lineStart);
       if not TryParseDirective(line, kind, nm, val) then
       begin
-        body := body + line;
-        for j := 1 to Length(line) do bmap.Add(lineStart + j - 1);
+        i := 1;
+        while i <= Length(line) do
+        begin
+          if line[i] = '%' then
+          begin
+            j := i + 1; nm := '';
+            while (j <= Length(line)) and IsAsciiWord(line[j]) do
+            begin nm := nm + line[j]; Inc(j); end;
+            if (nm <> '') and (j <= Length(line)) and (line[j] = '%') then
+            begin
+              nm := LowerAscii(nm);
+              if not defSet.ContainsKey(nm) and not undefSet.ContainsKey(nm) then
+              begin
+                undefSet.Add(nm, True);
+                AddDiagAtOrdered(Result, 'variable.undefined', 'warning', Src, smap,
+                                 lineStart + i - 1, lineStart + j - 1 + 1, cur);
+              end;
+              i := j + 1; Continue;
+            end;
+          end;
+          Inc(i);
+        end;
       end;
-      body := body + #10; bmap.Add(e);
       if e > n then Break;
       lineStart := e + termLen;
     end;
-    // %var% refs -- span the %name% token in the source
-    i := 1;
-    while i <= Length(body) do
+    { {?name? / {?!name? refs -- span the conditional head {?..name..? }
+    lineStart := 1;
+    InitSourceCursor(cur);
+    while lineStart <= n + 1 do
     begin
-      if body[i] = '%' then
+      e := NextLineBreak(text, lineStart, termLen);
+      line := Copy(text, lineStart, e - lineStart);
+      if not TryParseDirective(line, kind, nm, val) then
       begin
-        j := i + 1; nm := '';
-        while (j <= Length(body)) and IsAsciiWord(body[j]) do begin nm := nm + body[j]; Inc(j); end;
-        if (nm <> '') and (j <= Length(body)) and (body[j] = '%') then
+        i := 1;
+        while i <= Length(line) do
         begin
-          nm := LowerAscii(nm);
-          if (defNames.IndexOf(nm) < 0) and (seenUndef.IndexOf(nm) < 0) then
+          if (i + 1 <= Length(line)) and (line[i] = '{') and (line[i+1] = '?') then
           begin
-            seenUndef.Add(nm);
-            AddDiagAt(Result, 'variable.undefined', 'warning', Src, smap,
-                      bmap[i - 1], bmap[j - 1] + 1);
-          end;
-          i := j + 1; Continue;
-        end;
-      end;
-      Inc(i);
-    end;
-    // {?name? / {?!name? refs -- span the conditional head {?..name..?
-    i := 1;
-    while i <= Length(body) do
-    begin
-      if (i + 1 <= Length(body)) and (body[i] = '{') and (body[i+1] = '?') then
-      begin
-        j := i + 2;
-        if (j <= Length(body)) and (body[j] = '!') then Inc(j);
-        nm := '';
-        if (j <= Length(body)) and (CharInSet(body[j], ['A'..'Z','a'..'z','_'])) then
-        begin
-          nm := nm + body[j]; Inc(j);
-          while (j <= Length(body)) and IsAsciiWord(body[j]) do begin nm := nm + body[j]; Inc(j); end;
-          if (j <= Length(body)) and (body[j] = '?') then
-          begin
-            nm := LowerAscii(nm);
-            if (defNames.IndexOf(nm) < 0) and (seenUndef.IndexOf(nm) < 0) then
+            j := i + 2;
+            if (j <= Length(line)) and (line[j] = '!') then Inc(j);
+            nm := '';
+            if (j <= Length(line)) and (CharInSet(line[j], ['A'..'Z','a'..'z','_'])) then
             begin
-              seenUndef.Add(nm);
-              AddDiagAt(Result, 'variable.undefined', 'warning', Src, smap,
-                        bmap[i - 1], bmap[j - 1] + 1);
+              nm := nm + line[j]; Inc(j);
+              while (j <= Length(line)) and IsAsciiWord(line[j]) do
+              begin nm := nm + line[j]; Inc(j); end;
+              if (j <= Length(line)) and (line[j] = '?') then
+              begin
+                nm := LowerAscii(nm);
+                if not defSet.ContainsKey(nm) and not undefSet.ContainsKey(nm) then
+                begin
+                  undefSet.Add(nm, True);
+                  AddDiagAtOrdered(Result, 'variable.undefined', 'warning', Src, smap,
+                                   lineStart + i - 1, lineStart + j - 1 + 1, cur);
+                end;
+              end;
             end;
           end;
+          Inc(i);
         end;
       end;
-      Inc(i);
+      if e > n then Break;
+      lineStart := e + termLen;
     end;
   finally
-    kinds.Free; defNames.Free; defValues.Free; seenUndef.Free; bmap.Free;
+    kinds.Free; defNames.Free; defValues.Free; defSet.Free; undefSet.Free;
   end;
   smap.Free;
 end;

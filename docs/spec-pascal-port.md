@@ -228,9 +228,27 @@ directives at the END of a 124 KB document against 32 ms for the same 400 at its
 same document either way; it now costs 7.8 ms wherever they sit, steps 1.0 source characters
 per document character with zero cursor restarts, and stays flat from 50 to 800 directives
 where it used to run 63 → 881 ms. The shape of a benchmark, not its size, is what has to be
-varied. `SpExtract` and `SpValidate` are now the expensive pair on a directive-heavy document
-(`SpExtract` 281 ms against 5 ms at 1600 directives) — a host calling them per keystroke
-should debounce.
+varied.
+
+`SpExtract` and `SpValidate` were the expensive pair for a while — `SpExtract` 281 ms against
+5 ms at 1600 directives — for reasons of their own: a body rebuilt line by line with
+`s := s + line`, ordered-unique lists deduplicated by `TStringList.IndexOf`, and one
+`SourceLineCol` walk from offset 1 per diagnostic. All three are O(document × items). They now
+carry a dictionary for membership, scan each line where it lies instead of rebuilding one, and
+resume the position walk (`AddDiagAtOrdered`). Measured at 6400 items in a document, 4× input
+per step:
+
+| | before | after |
+|---|---|---|
+| `SpExtract`, `#set`-heavy | 25 → 289 → 4704 ms | 0 → 0 → 15 ms |
+| `SpExtract`, `%ref%`-heavy | 53 → 914 → 11 390 ms | 3 → 7 → 15 ms |
+| `SpValidate`, `%ref%`-heavy | 88 → 1328 → 19 282 ms | 0 → 8 → 31 ms |
+| `SpValidate`, `#set`-heavy | 41 → 609 → 10 375 ms | 19 → 320 → **4547 ms** |
+
+The last row is still quadratic and deliberately left alone: what remains is the definition
+graph — taint propagation and cycle detection walk `TStringList.IndexOf` per reference — which
+decides `variable.self-reference` and `definition.circular` verdicts and wants its own
+differential rather than a ride on this one.
 
 ### 5.0 The `#set` / `#def` line, and the CR it takes with it
 

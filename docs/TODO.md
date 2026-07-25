@@ -44,14 +44,55 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
       reference's comment has the reason backwards. Unmeasured: no PHP on this machine. This
       port follows `@spintax/core` either way (§2), so nothing here is blocked on it.
 
-- [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
-      document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
-      tail of a 124 KB document, 84 ms against 7.8 ms. It builds its body by appending line
-      by line and dedupes names with `IndexOf`, both O(n²)-shaped, and `SpValidate` scans the
-      same way. Nothing is wrong with the output, but a host that calls either on every
-      keystroke pays for it — `spintax-studio` has been told to debounce.
+- [ ] **The definition graph is still quadratic.** After the sweep below, one shape remains:
+      `SpValidate` on a `#set`/`#def`-heavy document — 19 → 320 → 4547 ms for 400 → 1600 →
+      6400 definitions. What is left is the taint propagation and the cycle detection, which
+      walk `TStringList.IndexOf` per reference and per definition. They decide
+      `variable.self-reference` and `definition.circular`, so they want their own before/after
+      differential rather than a ride on someone else's — a name→index map and DFS colours is
+      the shape of the fix. Everything else is linear.
 
 ## Done
+
+- [x] **`SpExtract` and `SpValidate` are linear in what a document holds** (2026-07-26,
+      `v0.3.2`). Three O(document × items) terms, each measured before and after at 400 /
+      1600 / 6400 items — 4× input per step:
+
+      | | before | after |
+      |---|---|---|
+      | `SpExtract`, `#set`-heavy | 25 → 289 → 4704 ms | 0 → 0 → 15 ms |
+      | `SpExtract`, `%ref%`-heavy | 53 → 914 → 11 390 ms | 3 → 7 → 15 ms |
+      | `SpExtract`, `#include`-heavy | 3 → 31 → 500 ms | 0 → 0 → 15 ms |
+      | `SpValidate`, `%ref%`-heavy | 88 → 1328 → 19 282 ms | 0 → 8 → 31 ms |
+      | `SpValidate`, `#set`-heavy | 41 → 609 → 10 375 ms | 19 → 320 → 4547 ms (see Open) |
+
+      - **Ordered-unique lists deduplicated by `TStringList.IndexOf`** — a linear scan per
+        name, O(names²). `AddUniqueOrdered` keeps the order in the list and the membership in
+        a dictionary. Keys compare exactly, which is the same answer, because every name
+        reaching it is already `LowerAscii`-folded and include targets are exact by contract.
+      - **A body rebuilt line by line** in both functions, `s := s + line`, which copies the
+        accumulator every time. Neither needed one: `%name%` and `{?name?` cannot span the
+        `#10` that joined the lines, and a line already knows its own source offset, so the
+        scans run where the text lies. `SpValidate` dropped its per-character source map with
+        it.
+      - **One `SourceLineCol` walk from offset 1 per diagnostic** — the same defect the
+        occurrence API had, still in `AddDiagAt`. The undefined-variable passes emit in source
+        order, so they now use `AddDiagAtOrdered`, which resumes the walk. 6400 warnings: 6.4 s
+        → 31 ms.
+
+      Gated by a before/after dump: 4000 generated templates × five modes (extract, validate
+      with and without the host lists, render with and without post-process), **byte-identical**
+      across the change. The control — the same dump from the previous commit, which changed
+      CR handling — differs in 63 lines, so the harness can see a change when there is one.
+      That dump also caught the one thing the refactor did move: sharing a membership set
+      between the `%var%` and `{?name?` scans reordered `extract().refs` when a name appeared
+      in both syntaxes. Fixed to reproduce the two-pass order exactly.
+
+      No timing assertion was added to the suite: the surviving times are 15-30 ms, below what
+      `GetTickCount64` can resolve into a ratio, and a growth-shape gate on a shared CI runner
+      fails on noise rather than on complexity. The measurements live here and in the spec
+      instead.
+
 
 - [x] **Three defects the same-day review found in the day's own work** (2026-07-25,
       `v0.3.2`), each measured against `@spintax/core` over a corpus built to ask the
