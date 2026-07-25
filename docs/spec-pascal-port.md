@@ -232,6 +232,28 @@ varied. `SpExtract` and `SpValidate` are now the expensive pair on a directive-h
 (`SpExtract` 281 ms against 5 ms at 1600 directives) — a host calling them per keystroke
 should debounce.
 
+### 5.0 The `#set` / `#def` line, and the CR it takes with it
+
+```
+/^[ \t]*#(set|def)[ \t]+%(\w+)%[ \t]*=[ \t]*(.*?)[ \t]*\r?$/gmu
+```
+
+The tail is the part with the surprises, and both of them are in `[ \t]*\r?$`:
+
+- the value is right-trimmed of **spaces and tabs only**. This port used PHP's `rtrim`
+  charlist, which also eats `\0` and `\x0B`, so `#set %x% = A` + NUL rendered `A` here and
+  `A\0` in the reference. Form feed was always kept by both;
+- the optional `\r` is **inside the match**, so removing a directive line removes the CR of a
+  CRLF with it and leaves the bare LF. A **lone** CR survives — `$` would then have to hold
+  *after* it, and it does not — and so do U+2028/9. This port used to leave `\r\n` whole, and
+  the local suite pinned that with a comment claiming it had been measured; it had not been,
+  for this shape.
+
+The second one has a knock-on effect: a CRLF-terminated directive line now contributes a bare
+LF, so runs of them reach the blank-run collapse (three or more `\n` become two) exactly as LF
+lines always did. Mixed runs collapse only the part that became bare LFs. All of it measured
+against the reference — 720 cases in the differential, 274 of them different beforehand.
+
 ### 5.1 The `#include` anchor, and what this engine does NOT do with it
 
 One rule, one implementation (`MatchIncludeAt`), three callers — `SpExtract`, `SpValidate`,

@@ -95,7 +95,18 @@ const
 begin
   Check('terminator/LF render',    RenderFirst('#set %x% = A'#10'%x%'), #10'A');
   Check('terminator/CR render',    RenderFirst('#set %x% = A'#13'%x%'), #13'A');
-  Check('terminator/CRLF render',  RenderFirst('#set %x% = A'#13#10'%x%'), #13#10'A');
+  { CRLF is the one terminator a directive line does NOT leave whole: the reference's
+    `[ \t]*\r?$` consumes the CR as part of the match, and $ still holds before the LF, so
+    the removal takes the CR with it. A lone CR (above) is not consumed, because $ would
+    then have to hold AFTER it. Re-measured 2026-07-25; this line used to expect CRLF back,
+    on a "measurement" that was never taken for this shape. }
+  Check('terminator/CRLF render',  RenderFirst('#set %x% = A'#13#10'%x%'), #10'A');
+  Check('terminator/CRLF def render', RenderFirst('#def %x% = A'#13#10'%x%'), #10'A');
+  Check('terminator/CRLF two directives',
+        RenderFirst('#set %x% = A'#13#10'#set %y% = B'#13#10'%x%%y%'), #10#10'AB');
+  { ...and a line that is NOT a directive keeps its CRLF, because nothing matched it. }
+  Check('terminator/CRLF plain line',
+        RenderFirst('plain'#13#10'%x%'), 'plain'#13#10'%x%');
   Check('terminator/U2028 render', RenderFirst('#set %x% = A' + U2028 + '%x%'), U2028 + 'A');
   Check('terminator/U2029 render', RenderFirst('#set %x% = A' + U2029 + '%x%'), U2029 + 'A');
 
@@ -108,6 +119,30 @@ begin
   { A terminator inside a value must still end the directive, not be swallowed by it. }
   Check('terminator/CR ends the directive value',
         RenderFirst('#set %x% = A'#13'tail%x%'), #13'tailA');
+
+  { What the value's right-trim removes, and what it must NOT. The rule is
+    `(.*?)[ \t]*\r?$` -- spaces and tabs only. This port used PHP's rtrim charlist, which
+    also eats \0 and \x0B, so a value ending in either came out short. Measured against the
+    reference 2026-07-25; 720 cases of it in the commit's differential. }
+  Check('trim/space tail',   RenderFirst('#set %x% = A  '#10'[%x%]'), #10'A');
+  Check('trim/tab tail',     RenderFirst('#set %x% = A'#9#10'[%x%]'), #10'A');
+  Check('trim/formfeed kept',RenderFirst('#set %x% = A'#12#10'[%x%]'), #10'A'#12);
+  Check('trim/NUL kept',     RenderFirst('#set %x% = A'#0#10'[%x%]'), #10'A'#0);
+  Check('trim/VT kept',      RenderFirst('#set %x% = A'#11#10'[%x%]'), #10'A'#11);
+  Check('trim/VT kept in def',RenderFirst('#def %x% = A'#11#10'[%x%]'), #10'A'#11);
+  Check('trim/VT-only value', RenderFirst('#set %x% = '#11#10'[%x%]'), #10#11);
+  Check('trim/NUL inside',   RenderFirst('#set %x% = A'#0'B'#10'[%x%]'), #10'A'#0'B');
+
+  { Dropping the CR feeds the blank-run collapse -- three or more bare LFs become two --
+    which a CRLF run used to be invisible to. Three CRLF directive lines now collapse the
+    way three LF ones always did, and a mixed run collapses only the part that became bare
+    LFs. Both measured. }
+  Check('terminator/CRLF directives collapse',
+        RenderFirst('#set %a% = 1'#13#10'#set %b% = 2'#13#10'#set %c% = 3'#13#10'X'),
+        #10#10'X');
+  Check('terminator/mixed directives collapse',
+        RenderFirst('#set %a% = 1'#13#10'#set %b% = 2'#10'#set %c% = 3'#13'#set %d% = 4'#10'X'),
+        #10#10#13#10'X');
 end;
 
 { The reference's render() always builds an rng (Math.random when no seed is given), so

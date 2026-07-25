@@ -835,8 +835,17 @@ begin
   Inc(p);
   while (p <= L) and ((line[p] = ' ') or (line[p] = #9)) do Inc(p);
   value := Copy(line, p, L - p + 1);
-  // rstrip [ \t] and trailing \r
-  value := PhpRtrim(value); // strips \t \n \r \0 \x0B space; fine (single line, no \n)
+  { The reference's tail is `(.*?)[ \t]*\r?$`: from the end, at most ONE CR, then spaces and
+    tabs -- and nothing else. PhpRtrim used to do this, and it also strips \n, \0 and \x0B,
+    which are part of the value there: `#set %x% = A` + NUL rendered "A\0" in the reference
+    and "A" here. Measured. The CR half is unreachable through the scans in this unit (a
+    terminator never survives into `line`), but it is what the rule says, and a caller that
+    hands over a raw line should get the rule. }
+  if (Length(value) > 0) and (value[Length(value)] = #13) then
+    SetLength(value, Length(value) - 1);
+  while (Length(value) > 0)
+        and ((value[Length(value)] = ' ') or (value[Length(value)] = #9)) do
+    SetLength(value, Length(value) - 1);
   name := LowerAscii(nm);
   Result := True;
 end;
@@ -978,6 +987,7 @@ procedure ExtractDirectives(const text: string; setDefs, defDefs: TStrMap; out b
 var
   kind, nm, val, kept, line: string;
   lineStart, n, e, termLen: Integer;
+  isDirective: Boolean;
 begin
   // Mirror the reference regex: only the directive TEXT is removed, the newline
   // that separated its line stays. So a directive line becomes an empty segment;
@@ -989,7 +999,8 @@ begin
   begin
     e := NextLineBreak(text, lineStart, termLen);
     line := Copy(text, lineStart, e - lineStart);
-    if TryParseDirective(line, kind, nm, val) then
+    isDirective := TryParseDirective(line, kind, nm, val);
+    if isDirective then
     begin
       if kind = 'def' then defDefs.AddOrSetValue(nm, val)
       else setDefs.AddOrSetValue(nm, val);
@@ -997,9 +1008,20 @@ begin
     end
     else
       kept := kept + line;
-    // Keep the terminator that was actually there. Emitting #10 for every line would
-    // turn a bare CR into LF; the reference preserves the character it broke on.
-    if termLen > 0 then kept := kept + Copy(text, e, termLen);
+    { Keep the terminator that was actually there. Emitting #10 for every line would turn a
+      bare CR into LF; the reference preserves the character it broke on.
+
+      With ONE exception, which is the same `[ \t]*\r?$` that trims the value: the reference
+      removes the whole MATCH, and a CR is inside it when a CRLF follows -- the optional \r
+      is consumed and $ still holds before the \n. So a directive line ending in CRLF leaves
+      only the LF. A LONE CR is not consumed (then $ would have to hold after it, and it does
+      not), so it stays, and so do U+2028/9. Measured: `#set %x% = A` + CRLF + `%x%` renders
+      "\nA" there, and used to render "\r\nA" here. }
+    if termLen > 0 then
+      if isDirective and (termLen = 2) then
+        kept := kept + #10
+      else
+        kept := kept + Copy(text, e, termLen);
     if e > n then Break;
     lineStart := e + termLen;
   end;

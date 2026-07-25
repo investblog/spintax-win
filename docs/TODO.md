@@ -11,25 +11,6 @@ The single list of open work.
 
 ## Open
 
-- [ ] **A `#set`/`#def` value is right-trimmed with PHP's `trim` charset, not the
-      reference's.** `TryParseDirective` ends with `PhpRtrim`, which strips space, `\t`, `\n`,
-      `\r`, `\0` and `\x0B`; the reference's `DIRECTIVE_RE` ends `(.*?)[ \t]*\r?$`, which
-      strips only spaces, tabs and one `\r`. Measured 2026-07-25, rendering
-      `#set %x% = A<c>` + LF + `[%x%]`:
-
-      | trailing character | reference | here |
-      |---|---|---|
-      | space / `\t` | stripped | stripped |
-      | `\f` | kept | kept |
-      | `\x0B` (VT) | **kept** | stripped |
-      | `\0` (NUL) | **kept** | stripped |
-
-      A render-output divergence on the deterministic surface, so a defect by §3 — reachable
-      only with a literal NUL or vertical tab at the end of a directive line, which is why
-      neither the corpus nor 86 419 include-shaped inputs found it. Found while checking the
-      directive rule against the reference alongside the `#include` anchor. Fix is one line,
-      but it changes render output, so: its own commit, with its own differential.
-
 - [ ] **`SpExtract` is superlinear in directive count.** 1600 directives in an 80 KB
       document: `SpExtract` 281 ms against `SpExtractDirectives` 5 ms; 800 directives at the
       tail of a 124 KB document, 84 ms against 7.8 ms. It builds its body by appending line
@@ -38,6 +19,34 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **A directive line is trimmed the way the reference trims it** (2026-07-25, `v0.3.1`).
+      Both halves of `(.*?)[ \t]*\r?$`, spec §5.0:
+
+      | | reference | before |
+      |---|---|---|
+      | `#set %x% = A` + NUL | value `A\0` | `A` |
+      | `#set %x% = A` + VT | value `A\x0B` | `A` |
+      | `#set %x% = A` + FF | value `A\f` | `A\f` |
+      | `#set %x% = A` + **CRLF** + `%x%` | `\nA` | `\r\nA` |
+      | `#set %x% = A` + **CR** + `%x%` | `\rA` | `\rA` |
+
+      The first three are the value trim: `PhpRtrim`'s charlist also eats `\0` and `\x0B`,
+      which are part of the value in the family. The CRLF row was **not** the reported
+      defect — the differential found it. The optional `\r` sits INSIDE the reference's
+      match, so removing a directive line takes the CR with it and leaves the bare LF; a lone
+      CR survives, because `$` would then have to hold after it. `TestLineTerminators` pinned
+      the old behaviour with a comment claiming it was measured against the reference, and it
+      had not been for that shape — a wrong expectation is as durable as wrong code.
+
+      Knock-on, also measured: a CRLF directive line now contributes a bare LF, so runs of
+      them reach the blank-run collapse exactly as LF lines always did, and a mixed run
+      collapses only the part that became bare LFs.
+
+      Gated by 720 cases against `@spintax/core` — 14 value tails × 3 line endings × 4
+      shapes, plus the tail placed before the `=` and around the name — **control run 274
+      differences, zero after**. Eleven checks added or corrected in `TestLineTerminators`
+      (399 local, up from 386), corpus unchanged at 168/0/4.
 
 - [x] **The `#include` resolver seam** (2026-07-25, `v0.3.0`) —
       [ADR 0004](decisions/0004-include-resolver-seam.md). `TSpContext` gained
