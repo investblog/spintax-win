@@ -72,11 +72,32 @@ type
 
   TStrMap = TDictionary<string, string>;
 
+  { The #include seam, shaped like TSpRng: an abstract class the HOST subclasses, caller-
+    owned, never freed here. The engine owns the SEMANTICS of an include (child render,
+    scope, cycles, depth); the host owns the LOOKUP -- files, a database, a map in memory.
+
+    Resolve returns False for "no such template", which is the reference's `null`: an
+    unknown target resolves to an empty string, never to an error. An exception raised out
+    of Resolve is the host's own bug and propagates unchanged; the engine itself never
+    throws over a template. }
+  TSpIncludeResolver = class
+  public
+    function Resolve(const Ref: string; out Text: string): Boolean; virtual; abstract;
+  end;
+
   TSpContext = record
     Vars: TStrMap;       // runtime context, keys lower-cased (caller owns)
     Locale: string;
     PostProcess: Boolean;
     Rng: TSpRng;         // caller owns
+    { nil -- the default -- leaves every #include line in the output verbatim, which is
+      also what the reference does when no resolver is supplied. Set it and the engine
+      resolves includes the way the family does: see SP_DEFAULT_INCLUDE_DEPTH. }
+    IncludeResolver: TSpIncludeResolver;   // caller owns
+    { How deep #include may nest before a further one resolves to ''. 0 = the family's
+      default of SP_DEFAULT_INCLUDE_DEPTH. Counts the include stack ONLY -- parse nesting
+      and variable expansion have their own limits. }
+    MaxIncludeDepth: Integer;
   end;
 
   TExtractResult = record
@@ -162,6 +183,13 @@ type
     EndColumn: Integer;
   end;
   TSpDiagList = TList<TSpDiag>;
+
+const
+  { The family's DEFAULT_MAX_DEPTH: how many #include levels may nest before a further one
+    resolves to ''. Exceeding it is lenient, never an error -- the reference deliberately
+    has no MaxDepthExceededError, and validate deliberately does not call a circular
+    include invalid: it is a render-time guard, not a verdict. }
+  SP_DEFAULT_INCLUDE_DEPTH = 20;
 
 { Public API }
 function SpRender(const Template: string; const Ctx: TSpContext): string;
@@ -2634,10 +2662,76 @@ end;
 {$IFDEF SPX_R_WAS_ON}{$R+}{$UNDEF SPX_R_WAS_ON}{$ENDIF}
 {$IFDEF SPX_Q_WAS_ON}{$Q+}{$UNDEF SPX_Q_WAS_ON}{$ENDIF}
 
-function SpRender(const Template: string; const Ctx: TSpContext): string;
+{ ─── one document ───────────────────────────────────────────────────────────
+  Everything the reference's renderAst does: directives out, vars built, #def rolled, the
+  tree walked, and then -- because renderAst ends with resolveIncludes -- each #include line
+  in the RESULT replaced by the child, rendered the same way. What it deliberately does NOT
+  do is post-process or restore sentinels: those run ONCE, at the top, over the assembled
+  document, which is the reference's order (pipeline.ts) and the reason a child must never
+  go through the public entry point.
+
+  RuntimeVars is the host's context, inherited by every child unchanged; the parent's
+  #set/#def are NOT, because a child builds its own from its own source. Rng is shared, so
+  the sequence continues across the seam. Stack carries the refs currently being expanded,
+  for the cycle and depth guards. }
+function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer;
+  Stack: TStringList): string; forward;
+
+{ The reference's resolveIncludes, run over RENDERED text: every #include line becomes the
+  child's OUTPUT, so a `{`, `|` or `%` the child produced is never re-parsed by the parent
+  -- it is already output. Cycles are keyed on the ref STRING (this engine has no template
+  identity beyond it), so two aliases of one template are not a cycle and unwind until the
+  depth cap; cycle, cap and unknown target all resolve to '' the same lenient way.
+
+  Scanning continues AFTER a match, like String.replace with /g -- never into what was just
+  inserted, since the child resolved its own includes. Matches can end past their own line
+  (spec §5.1), which is why the walk advances by match end rather than by line. }
+function ResolveIncludes(const text: string; RuntimeVars: TStrMap; const Locale: string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
+var n, pos_, lineStart, termLen, matchEnd, refStart, refEnd: Integer;
+    ref, childSrc, child: string;
+begin
+  Result := '';
+  n := Length(text);
+  pos_ := 1;
+  lineStart := 1;
+  while lineStart <= n do
+  begin
+    if MatchIncludeAt(text, lineStart, ref, refStart, refEnd, matchEnd) then
+    begin
+      if HasExact(Stack, ref) or (Stack.Count >= MaxDepth) then
+        child := ''
+      else if not Resolver.Resolve(ref, childSrc) then
+        child := ''
+      else
+      begin
+        Stack.Add(ref);
+        try
+          child := RenderDocument(childSrc, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+        finally
+          Stack.Delete(Stack.Count - 1);
+        end;
+      end;
+      Result := Result + Copy(text, pos_, lineStart - pos_) + child;
+      pos_ := matchEnd;
+      lineStart := matchEnd;
+    end
+    else
+      lineStart := NextLineBreak(text, lineStart, termLen);
+    { lineStart now sits on a terminator or one past the end -- the match end is a $ by
+      construction, and so is a line break. Step over it to reach the next ^. }
+    termLen := LineBreakLen(text, lineStart);
+    if termLen = 0 then Break;
+    Inc(lineStart, termLen);
+  end;
+  Result := Result + Copy(text, pos_, n - pos_ + 1);
+end;
+
+function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
 var setDefs, defDefs, vars, aliases: TStrMap;
-    ownedRng: TSpRng;
-    body, outp: string;
+    body: string;
     nodes, dn: TNodeList;
     opts: TRenderOpts;
     pair: TPair<string, string>;
@@ -2648,24 +2742,22 @@ begin
   defDefs := TStrMap.Create;
   vars := TStrMap.Create;
   outranked := TStringList.Create;
-  { Owned only when the caller supplied none; the caller's own Rng is never freed here. }
-  if Ctx.Rng = nil then ownedRng := MakeDefaultRng else ownedRng := nil;
   try
     ExtractDirectives(StripComments(SpStripSentinels(Template)), setDefs, defDefs, body);
 
     // buildVars: setDefs raw, then runtime context overlays (lower-cased)
     for pair in setDefs do vars.AddOrSetValue(pair.Key, pair.Value);
-    if Assigned(Ctx.Vars) then
-      for pair in Ctx.Vars do
+    if Assigned(RuntimeVars) then
+      for pair in RuntimeVars do
       begin
         vars.AddOrSetValue(LowerAscii(pair.Key), pair.Value);
         outranked.Add(LowerAscii(pair.Key));
       end;
 
     opts.Vars := vars;
-    opts.Locale := Ctx.Locale;
+    opts.Locale := Locale;
     opts.Depth := 0;
-    if ownedRng <> nil then opts.Rng := ownedRng else opts.Rng := Ctx.Rng;
+    opts.Rng := Rng;
 
     // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
     // outranks it (never rolled). The order must not come from hash enumeration —
@@ -2705,15 +2797,39 @@ begin
 
     nodes := ParseSequence(body);
     try
-      outp := RenderNodes(nodes, opts);
+      Result := RenderNodes(nodes, opts);
     finally
       nodes.Free;
     end;
 
+    if Resolver <> nil then
+      Result := ResolveIncludes(Result, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+  finally
+    setDefs.Free; defDefs.Free; vars.Free; outranked.Free;
+  end;
+end;
+
+function SpRender(const Template: string; const Ctx: TSpContext): string;
+var ownedRng: TSpRng; rng: TSpRng; stack: TStringList; depth: Integer; outp: string;
+begin
+  { Owned only when the caller supplied none; the caller's own Rng is never freed here. }
+  if Ctx.Rng = nil then ownedRng := MakeDefaultRng else ownedRng := nil;
+  stack := TStringList.Create;
+  try
+    if ownedRng <> nil then rng := ownedRng else rng := Ctx.Rng;
+    depth := Ctx.MaxIncludeDepth;
+    if depth <= 0 then depth := SP_DEFAULT_INCLUDE_DEPTH;
+
+    outp := RenderDocument(Template, Ctx.Vars, Ctx.Locale, rng,
+                           Ctx.IncludeResolver, depth, stack);
+
+    { Once, over the whole assembled document -- parent and every child it pulled in. The
+      cosmetic pipeline therefore sees across the seam, and a sentinel a child emitted is
+      restored here rather than inside it. }
     if Ctx.PostProcess then outp := FullPostProcess(outp);
     Result := SpSafetyRestore(outp);
   finally
-    setDefs.Free; defDefs.Free; vars.Free; outranked.Free; ownedRng.Free;
+    stack.Free; ownedRng.Free;
   end;
 end;
 

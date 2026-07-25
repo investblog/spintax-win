@@ -11,19 +11,6 @@ The single list of open work.
 
 ## Open
 
-- [ ] **Add the `#include` resolver seam** — see
-      [ADR 0004](decisions/0004-include-resolver-seam.md), accepted 2026-07-25. `TSpContext`
-      gains `IncludeResolver: TSpIncludeResolver` (abstract class, caller-owned, like
-      `TSpRng`; `nil` = today's behaviour) and `MaxIncludeDepth` (`0` = the family's 20).
-      Resolution runs at the end of a document's render, before post-process; the child is
-      parsed and rendered on its own, inherits the runtime context but not the parent's
-      `#set`/`#def`, shares the RNG, and an unknown target, a cycle (by ref string,
-      case-sensitively) or depth ≥ 20 resolves to `''`. Additive → minor bump `v0.3.0`.
-      Gated by a differential against `@spintax/core` with a matching resolver on both sides,
-      plus local tests for cycles, aliases, the depth cap and a child emitting neutralized
-      markup — the corpus schema has no include-resolution field. Unblocks
-      `spintax-studio`'s ADR 0003, which stops expanding includes itself.
-
 - [ ] **A `#set`/`#def` value is right-trimmed with PHP's `trim` charset, not the
       reference's.** `TryParseDirective` ends with `PhpRtrim`, which strips space, `\t`, `\n`,
       `\r`, `\0` and `\x0B`; the reference's `DIRECTIVE_RE` ends `(.*?)[ \t]*\r?$`, which
@@ -51,6 +38,32 @@ The single list of open work.
       keystroke pays for it — `spintax-studio` has been told to debounce.
 
 ## Done
+
+- [x] **The `#include` resolver seam** (2026-07-25, `v0.3.0`) —
+      [ADR 0004](decisions/0004-include-resolver-seam.md). `TSpContext` gained
+      `IncludeResolver: TSpIncludeResolver` (abstract class, caller-owned, shaped like
+      `TSpRng`) and `MaxIncludeDepth` (`0` = `SP_DEFAULT_INCLUDE_DEPTH` = 20). `nil` leaves
+      the directive verbatim — the pre-`v0.3.0` behaviour, and the reference's with no
+      resolver — so nothing moves for an existing caller.
+
+      `SpRender` split into a public wrapper and `RenderDocument`, which is the reference's
+      `renderAst`: directives, vars, `#def`, the tree walk, then the include pass over the
+      RESULT. Post-process and the safety restore stayed in the wrapper, so they run **once**
+      over the assembled document — the reference's order, and the reason a child never goes
+      through the public entry point.
+
+      The semantics are the family's and not the intuitive ones: the child is parsed and
+      rendered on its own and its OUTPUT substituted, it inherits the runtime context and the
+      RNG but not the parent's `#set`/`#def`, a child's own markup is sentinel-stripped like
+      any author markup (so a neutralized value embedded in a template is removed, not
+      restored), and an unknown target, a cycle (by ref string) or a chain past the cap
+      resolves to `''`. Aliases are not cycles. The cap counts the include stack only.
+
+      Gated by a differential the corpus cannot express — 52 cases against `@spintax/core`
+      with a matching resolver on both sides, **48 of them different with the seam left nil**,
+      zero with it wired — and 14 checks in `TestIncludeResolver` (386 local, up from 372).
+      Corpus unchanged at 168/0/4, and the refactor was confirmed behaviour-neutral before the
+      seam was used at all.
 
 - [x] **`#include` targets are compared exactly** (2026-07-25, `v0.2.2`). `KnownIncludes`
       membership in `SpValidate` and the `Includes` dedup in `SpExtract` went through

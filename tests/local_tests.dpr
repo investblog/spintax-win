@@ -646,6 +646,149 @@ begin
         Includes('#include "путь"'#10'#include "ПУТЬ"'), 'путь,ПУТЬ');
 end;
 
+{ ─── #include resolution ─────────────────────────────────────────────────────
+  The corpus schema has no include-resolution field at all, so every line below is the only
+  gate on it. Expectations are MEASURED against @spintax/core 2026-07-25 with a matching
+  resolver, and the whole surface is measured by the differential recorded in the commit
+  that added the seam: 52 cases, 48 of them different when the seam is left nil. }
+
+type
+  { The host half of the seam. Exact-match lookup, like the family: a slug is an identifier,
+    not a variable name. }
+  TMapResolver = class(TSpIncludeResolver)
+  private
+    FRefs, FTexts: TStringList;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Put(const Ref, Text: string);
+    function Resolve(const Ref: string; out Text: string): Boolean; override;
+  end;
+
+constructor TMapResolver.Create;
+begin
+  inherited Create;
+  FRefs := TStringList.Create;
+  FTexts := TStringList.Create;
+end;
+
+destructor TMapResolver.Destroy;
+begin
+  FRefs.Free; FTexts.Free;
+  inherited Destroy;
+end;
+
+procedure TMapResolver.Put(const Ref, Text: string);
+begin
+  FRefs.Add(Ref); FTexts.Add(Text);
+end;
+
+function TMapResolver.Resolve(const Ref: string; out Text: string): Boolean;
+var i: Integer;
+begin
+  for i := 0 to FRefs.Count - 1 do
+    if FRefs[i] = Ref then begin Text := FTexts[i]; Exit(True); end;
+  Result := False;
+end;
+
+var
+  GResolver: TMapResolver;   { built once by TestIncludeResolver }
+
+{ Render with the shared template set. Depth 0 = the engine's default; Resolve = False
+  leaves the seam nil, which must reproduce the pre-seam behaviour exactly. }
+function RenderInc(const tmpl: string; UseResolver: Boolean; Depth: Integer;
+  PostProcess: Boolean): string;
+var ctx: TSpContext; vars: TStrMap;
+begin
+  ctx := Default(TSpContext);
+  vars := TStrMap.Create;
+  vars.Add('rt', 'RT');
+  ctx.Vars := vars;
+  ctx.Locale := 'en';
+  ctx.PostProcess := PostProcess;
+  ctx.Rng := TFirstRng.Create;
+  if UseResolver then ctx.IncludeResolver := GResolver;
+  ctx.MaxIncludeDepth := Depth;
+  try
+    Result := SpRender(tmpl, ctx);
+  finally
+    ctx.Rng.Free; vars.Free;
+  end;
+end;
+
+function Inc_(const tmpl: string): string;
+begin
+  Result := RenderInc(tmpl, True, 0, False);
+end;
+
+procedure TestIncludeResolver;
+begin
+  GResolver := TMapResolver.Create;
+  try
+    GResolver.Put('plain',       'child text');
+    GResolver.Put('withset',     '#set %c% = CHILD'#10'[%c%]');
+    GResolver.Put('usesparent',  'p is %p%');
+    GResolver.Put('usesruntime', 'rt is %rt%');
+    GResolver.Put('d1', 'L1'#10'#include "d2"');
+    GResolver.Put('d2', 'L2'#10'#include "d3"');
+    GResolver.Put('d3', 'L3'#10'#include "d4"');
+    GResolver.Put('d4', 'L4'#10'#include "d5"');
+    GResolver.Put('d5', 'L5');
+    GResolver.Put('self', 'S'#10'#include "self"'#10'E');
+    GResolver.Put('a', 'A'#10'#include "b"');
+    GResolver.Put('b', 'B'#10'#include "a"');
+    GResolver.Put('dupA', 'D'#10'#include "plain"');
+    GResolver.Put('dupB', 'D'#10'#include "plain"');
+    GResolver.Put('neutral', SpNeutralize('{a|b}'));
+
+    { nil resolver -- the v0.2.2 behaviour, and the reference's with no resolver supplied. }
+    Check('inc/no-resolver-leaves-the-line',
+          RenderInc('#include "plain"', False, 0, False), '#include "plain"');
+
+    Check('inc/basic', Inc_('#include "plain"'), 'child text');
+
+    { A child is a document of its own: the parent's #set is NOT in its scope, and its own
+      #set does not leak back. This is the row a host that splices raw text gets wrong. }
+    Check('inc/child-cannot-see-parent-macro',
+          Inc_('#set %p% = PARENT'#10'#include "usesparent"'#10'[%p%]'),
+          #10'p is %p%'#10'PARENT');
+    Check('inc/parent-cannot-see-child-macro',
+          Inc_('#include "withset"'#10'[%c%]'), #10'CHILD'#10'%c%');
+    { ...but the runtime context IS inherited. }
+    Check('inc/child-sees-runtime-context', Inc_('#include "usesruntime"'), 'rt is RT');
+
+    { Unknown target, a cycle, and running past the depth cap are all lenient: empty string,
+      never an error. Cycles are keyed on the ref STRING. }
+    Check('inc/unknown-target-is-empty', Inc_('#include "nosuch"'), '');
+    Check('inc/self-cycle', Inc_('#include "self"'), 'S'#10#10'E');
+    Check('inc/mutual-cycle', Inc_('#include "a"'), 'A'#10'B'#10);
+    { Two refs to the same TEXT are not a cycle -- the engine has no template identity
+      beyond the ref, so both expand. }
+    Check('inc/aliases-are-not-a-cycle',
+          Inc_('#include "dupA"'#10'#include "dupB"'),
+          'D'#10'child text'#10'D'#10'child text');
+    Check('inc/depth-cap-3', RenderInc('#include "d1"', True, 3, False), 'L1'#10'L2'#10'L3'#10);
+    Check('inc/depth-cap-default', Inc_('#include "d1"'), 'L1'#10'L2'#10'L3'#10'L4'#10'L5');
+
+    { A child is author markup, so the sentinel strip runs on it: a neutralized value
+      embedded in a TEMPLATE is removed, not restored. Neutralized data belongs in the
+      runtime context, which is the trust model (spec §6) -- pinned because the opposite is
+      the intuitive guess. }
+    Check('inc/child-markup-is-sanitised', Inc_('#include "neutral"'), 'a|b');
+
+    { Post-process runs ONCE, over the assembled document, so it sees across the seam:
+      `hello.` capitalises the child's first word. }
+    Check('inc/postprocess-crosses-the-seam',
+          RenderInc('hello.'#10'#include "plain"', True, 0, True), 'Hello.'#10'Child text');
+
+    { The anchor and the resolver agree: what is not an include is not substituted. }
+    Check('inc/not-an-include-is-not-resolved',
+          Inc_('#include "plain" junk'), '#include "plain" junk');
+  finally
+    GResolver.Free;
+  end;
+end;
+
 { Diagnostic codes+severities, space-joined, with a host-declared variable list. }
 function Diags(const tmpl: string; const known: array of string): string;
 var d: TSpDiagList; i: Integer; kv: TStringList;
@@ -1015,6 +1158,7 @@ begin
   TestPluralFallbacks;
   TestIncludes;
   TestIncludeAnchor;
+  TestIncludeResolver;
   TestKnownVariables;
   TestUnicodeTables;
   TestEncoding;

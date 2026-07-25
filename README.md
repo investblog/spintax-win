@@ -214,6 +214,9 @@ zeroed memory means and inventing a tri-state to mimic a JS default would be wor
     function SpExtract(const Src: string): TExtractResult;
     function SpExtractDirectives(const Src: string): TSpDirectiveList;
     function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
+    TSpIncludeResolver = class                      // TSpContext.IncludeResolver
+      function Resolve(const Ref: string; out Text: string): Boolean; virtual; abstract;
+    end;
     function NormalizeBaseLang(const Locale: string): string;
     function PluralArity(const BaseLang: string): Integer;
 
@@ -232,9 +235,20 @@ source as written; `SpRender` alone deletes reserved sentinels first, so raw
 U+E000–U+E005 in author markup makes them disagree — as it does in every engine
 of the family.
 
-`TSpContext` carries the runtime variable map, locale, a `PostProcess` flag, and
-an injected `TSpRng`. The RNG seam ships with `TFirstRng`, `TLastRng`,
-`TSequenceRng`, and a seeded `TMulberry32Rng`.
+`TSpContext` carries the runtime variable map, locale, a `PostProcess` flag, an
+injected `TSpRng`, and an optional `TSpIncludeResolver`. The RNG seam ships with
+`TFirstRng`, `TLastRng`, `TSequenceRng`, and a seeded `TMulberry32Rng`.
+
+`#include` is resolved at render time **only if you supply a resolver** — subclass
+`TSpIncludeResolver` and return `False` for a target you do not have. Left `nil`,
+the directive stays in the output verbatim, which is what the reference does with
+no resolver either. The semantics are the family's, and they are not what splicing
+the child's source into the document would give: the child is parsed and rendered
+**on its own** and its *output* substituted, it inherits the runtime context but
+**not** the parent's `#set`/`#def`, and an unknown target, a cycle, or a chain
+deeper than `MaxIncludeDepth` (`0` → `SP_DEFAULT_INCLUDE_DEPTH` = 20) resolves to
+an empty string rather than an error. The cosmetic post-process and the sentinel
+restore run once, over the assembled document.
 
 ## License
 

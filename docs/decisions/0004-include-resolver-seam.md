@@ -7,7 +7,7 @@ project: spintax-win
 
 # 0004 — The engine grows an `#include` resolver seam
 
-**Date:** 2026-07-25
+**Date:** 2026-07-25 — **implemented the same day, released as `v0.3.0`.**
 
 ## Context
 

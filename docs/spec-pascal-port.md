@@ -202,10 +202,10 @@ confirmed to fail when the scan is pointed at the raw source instead of the stri
 Three limits on "the renderer sees", all three shared with `SpExtract` and `SpValidate`, none
 of them specific to this function:
 
-- **`#include` is never resolved by this engine** (§5.1). `SpRender` emits the line verbatim —
-  which is also what the reference does when no resolver is supplied — and the host
-  substitutes it, so for that kind the contract is "the line `SpExtract` and `SpValidate` call
-  an include", the same anchor run here.
+- **`#include` is resolved at RENDER time, not by this scan** (§5.2). What the list reports is
+  "the line `SpExtract` and `SpValidate` call an include" — the same anchor the resolver runs
+  on, so the three agree, but the occurrence list is an editing tool and never expands
+  anything itself.
 - **The scan reads the source as written; `SpRender` deletes reserved sentinels
   (U+E000–U+E005) first.** A raw one inside directive syntax makes the two disagree both ways:
   `#se<U+E000>t %x% = A` is no directive here and a `#set` to the renderer, and `/<U+E000>#`
@@ -262,17 +262,41 @@ The corpus cannot see it (two plain `#include` cases), so the gate is
 86 419 include-shaped inputs answered by `@spintax/core`, 18 487 include-list and 15 758
 verdict differences before the fix, zero after.
 
-**Resolution is a separate matter, and this engine does not implement it.** The reference
-resolves includes inside render — `resolver ? resolveIncludes(text, ctx) : text` — after the
-parent has been rendered, and Python does the same. With **no resolver supplied it leaves the
-line verbatim, exactly as `SpRender` does**, so the port is at parity for the only case it can
-express; what it lacks is the seam. The family's semantics, if that seam is ever added, are
-worth stating because they are not what splicing text would do: the child is parsed and
-rendered **on its own** and its OUTPUT is substituted (so `{`, `|`, `%` in it are never
-re-parsed by the parent), it inherits the runtime context but **not** the parent's
-`#set`/`#def`, and an unknown target, a cycle or a depth over `DEFAULT_MAX_DEPTH = 20`
-resolves to the empty string, leniently. Cycles are detected by the ref STRING, so two aliases
-of one template are not a cycle and unwind to the depth limit.
+### 5.2 Resolution: `TSpContext.IncludeResolver`
+
+Since `v0.3.0` the engine resolves includes, the way the family does ([ADR
+0004](decisions/0004-include-resolver-seam.md)). `TSpContext.IncludeResolver` is a
+`TSpIncludeResolver` the host subclasses — an abstract class, caller-owned, shaped like the
+`TSpRng` seam. The engine owns the semantics; the host owns the lookup. `nil` (the default)
+leaves every `#include` line in the output verbatim, which is also what the reference does
+with no resolver, so the pre-`v0.3.0` behaviour is unchanged for every existing caller.
+
+The semantics are not what splicing raw text into the document would give — this is the part
+a host gets wrong, and the reason the seam exists at all:
+
+- the child is parsed and rendered **on its own**, and its **output** is substituted, so a
+  `{`, `|` or `%` the child produced is never re-parsed by the parent;
+- the child inherits the **runtime context** and the RNG instance, but **not** the parent's
+  `#set`/`#def` — it builds its own from its own source (the plugin's `for_child_render`);
+- a child is author markup, so the reserved-sentinel strip runs on it: a neutralized value
+  embedded in a template is **removed**, not restored. Neutralized data belongs in the
+  runtime context (§6);
+- an unknown target, a cycle, or a stack already `MaxIncludeDepth` deep resolves to the
+  **empty string**, leniently — there is deliberately no error for it, and `validate`
+  deliberately does not call a circular include invalid;
+- cycles are keyed on the ref **string**, so two aliases of one template are not a cycle and
+  unwind until the depth cap;
+- `MaxIncludeDepth` counts the include stack **only** — parse nesting and variable expansion
+  have their own limits. `0` selects `SP_DEFAULT_INCLUDE_DEPTH = 20`.
+
+Resolution runs at the end of a document's render and **before** the cosmetic pipeline, which
+is the reference's order: the post-process and the mandatory safety restore each run **once**,
+over the assembled document, so the cosmetic passes see across the seam and a sentinel a child
+emitted is restored at the top. A child therefore never goes through `SpRender` itself.
+
+The corpus has no field for any of this. The gate is a differential against `@spintax/core`
+with a matching resolver on both sides — 52 cases, **48 of which differ when the seam is left
+nil**, zero when it is not — plus `TestIncludeResolver` in `tests/local_tests.dpr`.
 
 ## 6. Trust model
 
