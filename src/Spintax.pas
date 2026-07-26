@@ -1153,9 +1153,66 @@ begin
   Result.CondElse := ParseSequence(elseRaw);
 end;
 
-{ Permutation config parse (faithful-enough: key form or single-separator form). }
+{ Permutation config parse (faithful-enough: key form or single-separator form,
+  with the family's HTML-start-tag guard in front). }
 procedure ParsePermConfig(const raw: string; node: TNode; out content: string);
 var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote: Boolean;
+  { HTML_TAG_RE ^([a-zA-Z][a-zA-Z0-9-]*)(?:\s+[^>]*)?\/?$ plus the closing-tag probe:
+    a leading <li ...>...</li> or <br/> is markup, not config. }
+  function LooksLikeHtmlStartTag: Boolean;
+  var t, nameLow, remLow: string; k, j, n: Integer;
+  begin
+    Result := False;
+    t := PhpTrim(configStr);
+    if (t = '') or not CharInSet(t[1], ['A'..'Z', 'a'..'z']) then Exit;
+    n := 1;
+    while (n < Length(t)) and CharInSet(t[n + 1], ['A'..'Z', 'a'..'z', '0'..'9', '-']) do Inc(n);
+    if n < Length(t) then
+    begin
+      // after the tag name: a lone trailing '/', or whitespace then attrs without '>'
+      if (t[n + 1] = '/') and (n + 1 = Length(t)) then
+        { bare self-closing tag }
+      else if CharInSet(t[n + 1], [' ', #9, #10, #13]) then
+      begin
+        for j := n + 2 to Length(t) do
+          if t[j] = '>' then Exit;
+      end
+      else
+        Exit;
+    end;
+    if t[Length(t)] = '/' then Exit(True); // self-closing
+    // start tag counts as HTML only when remaining holds </name\s*>
+    nameLow := LowerAscii(Copy(t, 1, n));
+    remLow := LowerAscii(remaining);
+    k := 1;
+    repeat
+      k := PosEx('</' + nameLow, remLow, k);
+      if k = 0 then Exit;
+      j := k + 2 + Length(nameLow);
+      while (j <= Length(remLow)) and CharInSet(remLow[j], [' ', #9, #10, #13]) do Inc(j);
+      if (j <= Length(remLow)) and (remLow[j] = '>') then Exit(True);
+      Inc(k);
+    until False;
+  end;
+  { CONFIG_KEY_RE \b(?:minsize|maxsize|sep|lastsep)\s*= -- a bare Pos() also fires on
+    "separator" or "xminsize", which the family keeps as a single separator. }
+  function HasConfigKey: Boolean;
+  const KEYS: array[0..3] of string = ('minsize', 'maxsize', 'sep', 'lastsep');
+  var k, j, e: Integer;
+  begin
+    Result := False;
+    for k := 1 to Length(low) do
+    begin
+      if (k > 1) and CharInSet(low[k - 1], ['a'..'z', '0'..'9', '_']) then Continue;
+      for j := 0 to High(KEYS) do
+        if Copy(low, k, Length(KEYS[j])) = KEYS[j] then
+        begin
+          e := k + Length(KEYS[j]);
+          while (e <= Length(low)) and CharInSet(low[e], [' ', #9, #10, #13]) do Inc(e);
+          if (e <= Length(low)) and (low[e] = '=') then Exit(True);
+        end;
+    end;
+  end;
   function FindInt(const key: string): Integer;
   var k, j: Integer; num: string;
   begin
@@ -1209,10 +1266,10 @@ begin
   if endPos = 0 then Exit;
   configStr := Copy(trimmed, 2, endPos - 2);
   remaining := Copy(trimmed, endPos + 1, MaxInt);
+  if LooksLikeHtmlStartTag then Exit; // a leading HTML tag stays in the content
   low := LowerAscii(configStr);
   // key form?
-  if (Pos('minsize', low) > 0) or (Pos('maxsize', low) > 0)
-     or (Pos('sep', low) > 0) or (Pos('lastsep', low) > 0) then
+  if HasConfigKey then
   begin
     node.PermMin := FindInt('minsize');
     node.PermMax := FindInt('maxsize');
