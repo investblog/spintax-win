@@ -69,6 +69,18 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
 
 ## Done
 
+- [x] **The permutation config is gated on the family's two tests** (2026-07-26, `v0.3.3`).
+      `ParsePermConfig` chose key form on a bare `Pos()` substring hit, so `[<separator>a|b]`
+      dropped the separator word and `[<xminsize=2>a|b]` ran a `minsize=2` config the
+      template never asked for (`FindInt` found the key inside the word); and the
+      `looksLikeHtmlStartTag` guard was missing entirely, so a leading `<li …>…</li>` was
+      eaten as config. Both branches now match the reference: the HTML guard first, then
+      `\b(?:minsize|maxsize|sep|lastsep)\s*=`. Found by the cross-engine differential, pinned
+      by three fixtures at `spintax-js@73af3ff` — the shared corpus is now **204 cases,
+      200/0/4 here**. Review follow-up in the same tag: the ported `\s` sets include VT and
+      FF (JS `\s` matches both, and they are ASCII); the looser pre-existing extractors are
+      recorded in Open above.
+
 - [x] **`SpExtract` and `SpValidate` are linear in what a document holds** (2026-07-26,
       `v0.3.2`). Three O(document × items) terms, each measured before and after at 400 /
       1600 / 6400 items — 4× input per step:
