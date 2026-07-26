@@ -48,6 +48,17 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
       reference's comment has the reason backwards. Unmeasured: no PHP on this machine. This
       port follows `@spintax/core` either way (§2), so nothing here is blocked on it.
 
+- [ ] **The permutation-config extractors are looser than the reference's regexes.**
+      Pre-existing, unchanged by the `v0.3.2` branch-gate fix, reachable only once a real
+      key has already selected key form. `FindInt` treats `=` as optional where
+      `MINSIZE_RE`/`MAXSIZE_RE` require it — `[<sep="-" minsize 5>…]` parses minsize=5 here,
+      null in the reference (measured by the 2026-07-26 review agent against the actual JS).
+      And `FindInt`/`FindStr` skip only `[' ',#9]` around `=` where the reference's `\s*`
+      also takes LF/VT/FF/CR; same 4-char-vs-`\s` gap in the per-element `looksHtml` check
+      in `ParsePermutation` (`PER_ELEM_HTML_RE`). The new `LooksLikeHtmlStartTag` /
+      `HasConfigKey` use the full ASCII `\s` set already; align these older sites with a
+      before/after differential over VT/FF/CR-bearing configs.
+
 - [ ] **The definition graph is still quadratic.** After the sweep below, one shape remains:
       `SpValidate` on a `#set`/`#def`-heavy document — 19 → 320 → 4547 ms for 400 → 1600 →
       6400 definitions. What is left is the taint propagation and the cycle detection, which

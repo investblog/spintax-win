@@ -1170,9 +1170,10 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
     if n < Length(t) then
     begin
       // after the tag name: a lone trailing '/', or whitespace then attrs without '>'
+      // (whitespace = JS \s restricted to ASCII, so VT and FF included)
       if (t[n + 1] = '/') and (n + 1 = Length(t)) then
         { bare self-closing tag }
-      else if CharInSet(t[n + 1], [' ', #9, #10, #13]) then
+      else if CharInSet(t[n + 1], [' ', #9, #10, #11, #12, #13]) then
       begin
         for j := n + 2 to Length(t) do
           if t[j] = '>' then Exit;
@@ -1189,7 +1190,7 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
       k := PosEx('</' + nameLow, remLow, k);
       if k = 0 then Exit;
       j := k + 2 + Length(nameLow);
-      while (j <= Length(remLow)) and CharInSet(remLow[j], [' ', #9, #10, #13]) do Inc(j);
+      while (j <= Length(remLow)) and CharInSet(remLow[j], [' ', #9, #10, #11, #12, #13]) do Inc(j);
       if (j <= Length(remLow)) and (remLow[j] = '>') then Exit(True);
       Inc(k);
     until False;
@@ -1208,7 +1209,7 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
         if Copy(low, k, Length(KEYS[j])) = KEYS[j] then
         begin
           e := k + Length(KEYS[j]);
-          while (e <= Length(low)) and CharInSet(low[e], [' ', #9, #10, #13]) do Inc(e);
+          while (e <= Length(low)) and CharInSet(low[e], [' ', #9, #10, #11, #12, #13]) do Inc(e);
           if (e <= Length(low)) and (low[e] = '=') then Exit(True);
         end;
     end;
