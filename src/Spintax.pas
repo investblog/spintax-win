@@ -901,7 +901,7 @@ end;
   comment is wrong (spintax-js#... editor coordinates). Detection is byte-identical either
   way: the returned string is the same, only a parallel map is filled. Pass map = nil to skip. }
 function StripComments(const text: string; map: TList<Integer>): string; overload;
-var buf: TStrBuf; i, n: Integer; hasComment: Boolean;
+var buf: TStrBuf; i, j, n: Integer; hasComment: Boolean;
 begin
   n := Length(text);
   { No `/#` anywhere means nothing is stripped, and the caller that wants no position
@@ -921,17 +921,29 @@ begin
   begin
     if (i + 1 <= n) and (text[i] = '/') and (text[i+1] = '#') then
     begin
-      // find closing #/
-      Inc(i, 2);
-      while (i + 1 <= n) and not ((text[i] = '#') and (text[i+1] = '/')) do Inc(i);
-      if (i + 1 <= n) then Inc(i, 2) else i := n + 1;
-    end
-    else
-    begin
-      if map <> nil then map.Add(i);
-      buf.AppendChar(text[i]);
-      Inc(i);
+      { A comment needs its CLOSING `#/`. The reference strips with
+        /\/#[\s\S]*?#\//g, and an opener with no closer is simply not a match, so the
+        text stays -- where this port used to drop from the `/#` to the end of the
+        document. That was not a cosmetic difference: it took whole templates out of the
+        render and hid their diagnostics, so `/#` + LF + `{a` was `bracket.unclosed` in
+        the reference and clean here. It also ate any ordinary URL carrying a fragment,
+        `http://example.com/#top` being the everyday shape.
+
+        So: look for the closer BEFORE consuming anything, and when there is none, fall
+        through and treat the `/` as the ordinary character it is. Scanning then resumes
+        inside the failed opener, exactly as a regex engine retries at the next position,
+        which is what lets a later well-formed comment still match. }
+      j := i + 2;
+      while (j + 1 <= n) and not ((text[j] = '#') and (text[j+1] = '/')) do Inc(j);
+      if j + 1 <= n then
+      begin
+        i := j + 2;
+        Continue;
+      end;
     end;
+    if map <> nil then map.Add(i);
+    buf.AppendChar(text[i]);
+    Inc(i);
   end;
   Result := buf.Finish;
 end;

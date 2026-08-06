@@ -1107,6 +1107,42 @@ end;
   host that substitutes #include by NAME cannot tell a commented-out occurrence from a live
   one and expands both -- and since comments do not nest, an included fragment carrying its
   own `/# ... #/` then escapes the comment it landed in. }
+{ An UNTERMINATED `/#`. The reference strips with /\/#[\s\S]*?#\//g, so an opener with no
+  closer is not a match and the text stays. This port used to drop from the `/#` to the end
+  of the document, which was not cosmetic: it removed whole templates from the render and
+  took their diagnostics with them, and it ate any ordinary URL carrying a fragment.
+
+  Every expectation below was measured against @spintax/core on 2026-08-06, and the same
+  run was checked by a 3000-input differential over a `/#`-heavy pool: zero differences in
+  render and validate, against 1120 differences with the fix reverted. }
+procedure TestUnterminatedComment;
+begin
+  { the opener with no closer survives, wherever it sits }
+  Check('comment/unterminated-tail', RenderFirst('price /# note'), 'price /# note');
+  Check('comment/unterminated-midword', RenderFirst('a/#b c'), 'a/#b c');
+  Check('comment/unterminated-alone', RenderFirst('x /# y'), 'x /# y');
+  { the everyday shape this cost in practice }
+  Check('comment/fragment-url', RenderFirst('see http://example.com/#top now'),
+        'see http://example.com/#top now');
+  { a lone closer was never a comment and is unchanged }
+  Check('comment/lone-closer', RenderFirst('a #/ b'), 'a #/ b');
+
+  { a TERMINATED comment is still stripped, and still non-greedy to the FIRST closer }
+  Check('comment/terminated-still-stripped', RenderFirst('a /#b#/ c'), 'a  c');
+  Check('comment/first-opener-wins', RenderFirst('a /#b /#c#/ d'), 'a  d');
+  { and scanning resumes after the failed opener, so a later good comment still matches }
+  Check('comment/good-then-unterminated', RenderFirst('a /# b #/ c /# d'), 'a  c /# d');
+
+  { the verdict this moved: the swallowed text took its diagnostics with it }
+  Check('comment/unterminated-keeps-diagnostics', Verdict('/#' + #10 + '{a'), 'invalid');
+  { and the position map still reports SOURCE coordinates across the surviving opener --
+    line 2, not line 1, which is what an editor draws on }
+  Check('comment/unterminated-locates-them',
+        DiagPos('/#' + #10 + '{a', 'en', 'bracket.unclosed', []), 'error @2:1..2:2');
+  { and a terminated one still hides what it contains }
+  Check('comment/terminated-still-hides-them', Verdict('/#' + #10 + '{a#/'), 'valid');
+end;
+
 procedure TestExtractDirectives;
 const
   U2028 = {$IFDEF UNICODE} #$2028 {$ELSE} #$E2#$80#$A8 {$ENDIF};
@@ -1266,6 +1302,7 @@ begin
   TestPostProcess;
   TestNulInInput;
   TestDiagPositions;
+  TestUnterminatedComment;
   TestExtractDirectives;
 
   Writeln(Format('local tests: %d checks, %d failed', [Checks, Failures]));

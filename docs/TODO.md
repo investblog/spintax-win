@@ -11,16 +11,9 @@ The single list of open work.
 
 ## Open
 
-Three pre-existing divergences, all measured by the review sweep of 2026-07-25, none of them
-from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
-
-- [ ] **An unterminated `/#` swallows the rest of the document; the reference leaves it as
-      text.** `StripComments` (`src/Spintax.pas`) drops from `/#` to end of input when no
-      `#/` follows; the reference's `/\/#[\s\S]*?#\//g` simply does not match, so the text
-      stays. `price /# note` renders `price ` here and `price /# note` there. Verdicts move
-      with it: `/#` + LF + `#include "nope"` is **invalid** in the reference
-      (`include.unknown-target`) and valid here; `/#` + LF + `{a` is `bracket.unclosed` there
-      and clean here. 114 of 202 differences in a 3 000-case fuzz.
+Two pre-existing divergences, measured by the review sweep of 2026-07-25, neither from this
+year's diffs (§3 REQUIRED). The third, the unterminated `/#`, was fixed on 2026-08-06 —
+see Done:
 
 - [ ] **`PhpLtrim` in the malformed-directive check.** `src/Spintax.pas` uses PHP's charlist
       (` \t\n\r\0\x0B`) where the reference uses `/^[ \t]+/` (`validator.ts:112`), and splits
@@ -116,6 +109,25 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **An unterminated `/#` no longer swallows the rest of the document** (2026-08-06).
+      `StripComments` dropped from `/#` to end of input when no `#/` followed; the
+      reference's `/\/#[\s\S]*?#\//g` simply does not match there, so the text stays. Not a
+      cosmetic difference — it removed whole templates from the render and took their
+      diagnostics with them (`/#` + LF + `{a` was `bracket.unclosed` in the reference and
+      clean here), and it ate any ordinary URL carrying a fragment, `http://example.com/#top`
+      being the everyday shape. That last one is why it moved up the list: it is the same
+      engine behaviour the GSA front end had to work around, and it bit a real host.
+
+      The fix looks for the closer before consuming anything and otherwise treats the `/`
+      as the ordinary character it is, so scanning resumes inside the failed opener exactly
+      as a regex engine retries at the next position — which is what lets a later
+      well-formed comment still match.
+
+      Ten local assertions, each measured against `@spintax/core`, plus a 3000-input
+      differential over a `/#`-heavy pool comparing render AND validate: **0 differences**,
+      against **1120** with the fix reverted. The corpus does not cover this shape either
+      way, which is why it survived so long.
 
 - [x] **A GSA SER dialect front end** (2026-08-06), `src/Spintax.Gsa.pas` +
       `tests/gsa_tests.dpr`, 94 checks in both an optimised and a `-Co -Cr` build.
