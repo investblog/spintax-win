@@ -317,10 +317,35 @@ per step:
 | `SpValidate`, `%ref%`-heavy | 88 → 1328 → 19 282 ms | 0 → 8 → 31 ms |
 | `SpValidate`, `#set`-heavy | 41 → 609 → 10 375 ms | 19 → 320 → **4547 ms** |
 
-The last row is still quadratic and deliberately left alone: what remains is the definition
-graph — taint propagation and cycle detection walk `TStringList.IndexOf` per reference — which
-decides `variable.self-reference` and `definition.circular` verdicts and wants its own
-differential rather than a ride on this one.
+The last row was still quadratic then, and it got its own differential on 2026-08-06. What
+remained was the definition graph — the `#set` taint propagation and the cycle walk behind
+`variable.self-reference` and `variable.circular-reference`. Three things were wrong with it,
+and only the first was the one the row above suggested:
+
+- every lookup was a linear `TStringList.IndexOf` — the name being resolved, the path
+  membership test, whether a reference is a definition — and each visit re-parsed the
+  value's references from scratch;
+- the cycle walk restarts at every definition and never remembered what it had cleared, so
+  a chain of macros was re-walked from each of its links;
+- the taint propagation was a fixpoint sweep, and on a chain each pass taints exactly one
+  more name, so it ran once per definition over every definition.
+
+Now: the graph is indexed once, the path is a set, a start that finishes without reporting
+marks everything it touched as reaching no cycle, and the taint propagates along reverse
+edges from a worklist. Chained `#set`s, which is the shape an editor meets:
+
+| chained definitions | before | after |
+|---|---|---|
+| 100 | 396 ms | 3 ms |
+| 200 | 2 853 ms | — |
+| 400 | 23 959 ms | 6 ms |
+| 1 600 | (hours) | 30 ms |
+| 6 400 | (hours) | 114 ms |
+
+Flat definitions were already linear and stay so (6 400 in 85 ms). Verdicts are unchanged,
+asserted by a 4 000-document differential over cycle- and chain-heavy generated input
+against the previous build: **0 differences**, where three control mutations of the new code
+produce 1 944, 817 and 799.
 
 ### 5.0 The `#set` / `#def` line, and the CR it takes with it
 

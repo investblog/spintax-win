@@ -52,14 +52,6 @@ see Done:
       `HasConfigKey` use the full ASCII `\s` set already; align these older sites with a
       before/after differential over VT/FF/CR-bearing configs.
 
-- [ ] **The definition graph is still quadratic.** After the sweep below, one shape remains:
-      `SpValidate` on a `#set`/`#def`-heavy document — 19 → 320 → 4547 ms for 400 → 1600 →
-      6400 definitions. What is left is the taint propagation and the cycle detection, which
-      walk `TStringList.IndexOf` per reference and per definition. They decide
-      `variable.self-reference` and `definition.circular`, so they want their own before/after
-      differential rather than a ride on someone else's — a name→index map and DFS colours is
-      the shape of the fix. Everything else is linear.
-
 - [ ] **Expose a parsed template. The per-construct cost is now profiled, and it is the
       node tree — built and torn down on every render.** Phase timing (2026-08-06,
       `SpRender` split into parse / render / free):
@@ -109,6 +101,22 @@ see Done:
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **The definition graph is linear** (2026-08-06). `SpValidate` on chained `#set`s —
+      the shape an editor meets, each macro referencing the next — took **23 959 ms at 400
+      definitions**; it takes **6 ms**, and 6 400 take 114 ms where the old build would have
+      needed hours. Flat definitions were already linear and stay so.
+
+      Three causes, and only the first was the one the backlog had guessed: every lookup was
+      a linear `TStringList.IndexOf` and every visit re-parsed the value's references; the
+      cycle walk restarted at each definition without remembering what it had already
+      cleared; and the taint propagation was a fixpoint sweep, which on a chain taints one
+      more name per pass and so runs once per definition over every definition.
+
+      Verdicts unchanged, asserted by a 4 000-document differential over cycle- and
+      chain-heavy input against the previous build: **0 differences**, where three control
+      mutations of the new code give 1 944, 817 and 799. Six local assertions pin the shapes
+      the differential exists to protect.
 
 - [x] **An unterminated `/#` no longer swallows the rest of the document** (2026-08-06).
       `StripComments` dropped from `/#` to end of input when no `#/` followed; the

@@ -3539,35 +3539,89 @@ begin
   FindPluralBlocks(text, counts, forms, nil);
 end;
 
-{ Set-macro names whose value is unresolved-at-plural-time, propagated through %refs%. }
-procedure BuildMacroTaint(kinds, names, values: TStringList; tainted: TStringList);
-var i, k: Integer; grew: Boolean; refs: TStringList;
+{ FPC will not parse a nested generic in an expression, so the reverse-edge buckets get a
+  name of their own. }
+type
+  TIntList = TList<Integer>;
+  TIntBucketList = TObjectList<TIntList>;
+
+{ Set-macro names whose value is unresolved-at-plural-time, propagated through %refs%.
+
+  `tainted` is a membership set and nothing else -- its ORDER is never read, here or by its
+  caller -- so it is a dictionary. It used to be a TStringList walked with IndexOf, once per
+  name per propagation round, and the round re-parsed every value's references from scratch.
+  Names are lower-cased by TryParseDirective and DirectReferences alike, so a plain
+  case-sensitive dictionary is exactly the lookup the case-folding IndexOf was doing. }
+procedure BuildMacroTaint(kinds, names, values: TStringList;
+  tainted: TDictionary<string, Boolean>);
+var i, k, b, head: Integer; cur: string;
+    allRefs: TObjectList<TStringList>; refs, queue: TStringList;
+    revIdx: TDictionary<string, Integer>;
+    buckets: TIntBucketList;
+    pair: TPair<string, Boolean>;
 begin
   // seed: #set macros with a bracket/enum in the value
   for i := 0 to names.Count - 1 do
     if (kinds[i] = 'set') and UnresolvedAtPluralTime(values[i]) then
-      if tainted.IndexOf(names[i]) < 0 then tainted.Add(names[i]);
-  // propagate: a #set whose value references a tainted name becomes tainted
-  grew := True;
-  while grew do
-  begin
-    grew := False;
+      tainted.AddOrSetValue(names[i], True);
+
+  { the references of each value, parsed ONCE -- the propagation below may sweep the list
+    many times, and re-parsing there was the larger half of the cost }
+  allRefs := TObjectList<TStringList>.Create(True);
+  try
     for i := 0 to names.Count - 1 do
     begin
-      if kinds[i] <> 'set' then Continue;
-      if tainted.IndexOf(names[i]) >= 0 then Continue;
       refs := TStringList.Create;
-      try
-        DirectReferences(values[i], refs);
-        for k := 0 to refs.Count - 1 do
-          if tainted.IndexOf(refs[k]) >= 0 then
-          begin
-            tainted.Add(names[i]); grew := True; Break;
-          end;
-      finally
-        refs.Free;
-      end;
+      allRefs.Add(refs);
+      if kinds[i] = 'set' then DirectReferences(values[i], refs);
     end;
+
+    { Propagate along REVERSE edges from the seeds: a #set whose value references a
+      tainted name becomes tainted, and taints its own referrers in turn.
+
+      This used to be a fixpoint sweep -- re-scan every definition until a pass added
+      nothing. On a chain of macros each pass taints exactly one more name, so the sweep
+      ran once per definition over every definition: 6400 chained `#set`s spent tens of
+      seconds here. A worklist over the reverse graph does the same work once per edge. }
+    revIdx := TDictionary<string, Integer>.Create;
+    buckets := TIntBucketList.Create(True);
+    queue := TStringList.Create;
+    try
+      for i := 0 to names.Count - 1 do
+      begin
+        if kinds[i] <> 'set' then Continue;
+        refs := allRefs[i];
+        for k := 0 to refs.Count - 1 do
+        begin
+          if not revIdx.TryGetValue(refs[k], b) then
+          begin
+            b := buckets.Count;
+            buckets.Add(TList<Integer>.Create);
+            revIdx.Add(refs[k], b);
+          end;
+          buckets[b].Add(i);
+        end;
+      end;
+
+      for pair in tainted do queue.Add(pair.Key);
+      head := 0;
+      while head < queue.Count do
+      begin
+        cur := queue[head]; Inc(head);
+        if not revIdx.TryGetValue(cur, b) then Continue;
+        for k := 0 to buckets[b].Count - 1 do
+        begin
+          i := buckets[b][k];
+          if tainted.ContainsKey(names[i]) then Continue;
+          tainted.AddOrSetValue(names[i], True);
+          queue.Add(names[i]);
+        end;
+      end;
+    finally
+      revIdx.Free; buckets.Free; queue.Free;
+    end;
+  finally
+    allRefs.Free;
   end;
 end;
 
@@ -3741,7 +3795,8 @@ end;
 
 procedure CheckPluralsV(const text, src, locale: string; map: TList<Integer>; res: TSpDiagList);
 var base: string; arity, i, k, cnt, m: Integer;
-    counts, forms, tainted, kinds, names, values, refs: TStringList;
+    counts, forms, kinds, names, values, refs: TStringList;
+    tainted: TDictionary<string, Boolean>;
     starts: TList<Integer>;
     hasBracket: Boolean;
 begin
@@ -3750,7 +3805,7 @@ begin
   if base <> '' then arity := PluralArity(base) else arity := 0;
 
   kinds := TStringList.Create; names := TStringList.Create; values := TStringList.Create;
-  tainted := TStringList.Create;
+  tainted := TDictionary<string, Boolean>.Create;
   counts := TStringList.Create; forms := TStringList.Create;
   starts := TList<Integer>.Create;
   try
@@ -3766,7 +3821,7 @@ begin
       try
         DirectReferences(counts[i], refs);
         for k := 0 to refs.Count - 1 do
-          if tainted.IndexOf(refs[k]) >= 0 then
+          if tainted.ContainsKey(refs[k]) then
           begin
             AddDiagAt(res, 'plural.count-macro', 'error', src, map, starts[i], starts[i] + 8); Break;
           end;
@@ -3796,48 +3851,84 @@ begin
   end;
 end;
 
-procedure DetectCycleV(const current: string; defNames, defValues: TStringList;
-  visited: TStringList; res: TSpDiagList; var reported: Boolean;
+{ Walks the definition graph from `current`, reporting once if it reaches a cycle.
+
+  Three lookups used to be linear scans of a TStringList -- the name being resolved, the
+  path membership test, and the "is this ref a definition" test -- and the value's
+  references were re-parsed at every visit. On a chain of definitions the walk revisits
+  the tail of the chain from every start, so those linear scans made the whole check
+  cubic: 400 chained `#set`s took 29 s. The graph is now indexed once by the caller and
+  the path is a set, which leaves the same traversal doing the same work per edge.
+
+  `nameIdx` and `visited` are keyed on the name as stored. Every name here is already
+  lower-cased -- TryParseDirective folds a directive's name, DirectReferences folds a
+  reference -- so a case-sensitive dictionary is exactly what the case-folding IndexOf
+  was matching. The `ref = current` guard stays a case-sensitive compare, as it was. }
+procedure DetectCycleV(const current: string; nameIdx: TDictionary<string, Integer>;
+  defRefs: TObjectList<TStringList>; visited: TDictionary<string, Boolean>;
+  clean: TDictionary<string, Boolean>; explored: TStringList;
+  res: TSpDiagList; var reported: Boolean;
   const src: string; map: TList<Integer>; anchor: Integer);
 var idx, k: Integer; refs: TStringList; ref: string;
 begin
   if reported then Exit;
-  idx := defNames.IndexOf(current);
-  if idx < 0 then Exit;
-  refs := TStringList.Create;
-  try
-    DirectReferences(defValues[idx], refs);
-    for k := 0 to refs.Count - 1 do
+  { A name already proved to reach no cycle can be skipped outright. The walk prunes
+    nowhere else -- a name on the current path is REPORTED, not skipped -- so when a start
+    finishes without reporting, every name it touched was explored exhaustively and none of
+    them reaches a cycle. That is what fills `clean`, and it is what turns the ordinary
+    no-cycle document from one full walk per definition into one walk in total. }
+  if clean.ContainsKey(current) then Exit;
+  if not nameIdx.TryGetValue(current, idx) then Exit;
+  explored.Add(current);
+  refs := defRefs[idx];
+  for k := 0 to refs.Count - 1 do
+  begin
+    ref := refs[k];
+    if ref = current then Continue;
+    if visited.ContainsKey(ref) then
     begin
-      ref := refs[k];
-      if ref = current then Continue;
-      if visited.IndexOf(ref) >= 0 then
-      begin
-        AddDiagAt(res, 'variable.circular-reference', 'error', src, map, anchor, anchor + 4);
-        reported := True; Exit;
-      end;
-      if defNames.IndexOf(ref) >= 0 then
-      begin
-        visited.Add(ref);
-        DetectCycleV(ref, defNames, defValues, visited, res, reported, src, map, anchor);
-        visited.Delete(visited.Count - 1);
-        if reported then Exit;
-      end;
+      AddDiagAt(res, 'variable.circular-reference', 'error', src, map, anchor, anchor + 4);
+      reported := True; Exit;
     end;
-  finally
-    refs.Free;
+    if nameIdx.ContainsKey(ref) then
+    begin
+      visited.AddOrSetValue(ref, True);
+      DetectCycleV(ref, nameIdx, defRefs, visited, clean, explored, res, reported,
+                   src, map, anchor);
+      visited.Remove(ref);
+      if reported then Exit;
+    end;
   end;
 end;
 
 procedure CheckVariableRefsV(const text, src: string; map: TList<Integer>;
   KnownIncludes: TStringList; res: TSpDiagList);
-var kinds, defNames, defValues, visited: TStringList; i: Integer; reported: Boolean;
+var kinds, defNames, defValues: TStringList; i: Integer; reported: Boolean;
     poss: TList<Integer>;
+    nameIdx: TDictionary<string, Integer>;
+    visited, clean: TDictionary<string, Boolean>;
+    defRefs: TObjectList<TStringList>;
+    refs, explored: TStringList;
+    j: Integer;
 begin
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
   poss := TList<Integer>.Create;
+  nameIdx := TDictionary<string, Integer>.Create;
+  defRefs := TObjectList<TStringList>.Create(True);
+  clean := TDictionary<string, Boolean>.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues, poss);
+
+    { Index the graph once. A name may be defined twice; the walk used to resolve it with
+      IndexOf, which answers with the FIRST occurrence, so only the first is recorded. }
+    for i := 0 to defNames.Count - 1 do
+    begin
+      if not nameIdx.ContainsKey(defNames[i]) then nameIdx.Add(defNames[i], i);
+      refs := TStringList.Create;
+      defRefs.Add(refs);
+      DirectReferences(defValues[i], refs);
+    end;
+
     // self-reference -- at the offending #set/#def line
     for i := 0 to defNames.Count - 1 do
       if Pos('%' + defNames[i] + '%', LowerAscii(defValues[i])) > 0 then
@@ -3846,18 +3937,23 @@ begin
     for i := 0 to defNames.Count - 1 do
     begin
       reported := False;
-      visited := TStringList.Create;
+      visited := TDictionary<string, Boolean>.Create;
+      explored := TStringList.Create;
       try
-        visited.Add(defNames[i]);
-        DetectCycleV(defNames[i], defNames, defValues, visited, res, reported,
-                     src, map, poss[i]);
+        visited.AddOrSetValue(defNames[i], True);
+        DetectCycleV(defNames[i], nameIdx, defRefs, visited, clean, explored,
+                     res, reported, src, map, poss[i]);
+        { only a start that ran to completion proves anything about what it touched }
+        if not reported then
+          for j := 0 to explored.Count - 1 do clean.AddOrSetValue(explored[j], True);
       finally
-        visited.Free;
+        visited.Free; explored.Free;
       end;
     end;
     // (undefined-variable warnings are emitted in SpValidate against the body scan)
   finally
     kinds.Free; defNames.Free; defValues.Free; poss.Free;
+    nameIdx.Free; defRefs.Free; clean.Free;
   end;
 end;
 

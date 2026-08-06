@@ -1115,6 +1115,39 @@ end;
   Every expectation below was measured against @spintax/core on 2026-08-06, and the same
   run was checked by a 3000-input differential over a `/#`-heavy pool: zero differences in
   render and validate, against 1120 differences with the fix reverted. }
+{ The definition graph: self-reference, circular reference, and the plural count-macro
+  taint. The walk and the taint propagation were rewritten on 2026-08-06 for speed -- an
+  indexed graph, a set for the path, a memo for names proved to reach no cycle, and a
+  worklist over reverse edges instead of a fixpoint sweep. Diagnostics must be identical,
+  which a 4000-document differential against the previous build asserts (0 differences,
+  against 1944 / 817 / 799 for three control mutations). These few pin the shapes that
+  differential exists to protect, so a later change trips a named test first. }
+procedure TestDefinitionGraph;
+begin
+  { a name that reaches no cycle is memoised -- a clean start must not silence a later
+    definition that does sit on one }
+  Check('graph/clean-then-cyclic',
+        Verdict('#set %clean% = plain' + #10 +
+                '#set %a% = %b%' + #10 + '#set %b% = %a%'), 'invalid');
+  { and the cyclic pair is still reported per definition, not once }
+  Check('graph/cycle-reported-at-each-definition',
+        DiagPos('#set %a% = %b%' + #10 + '#set %b% = %a%', 'en',
+                'variable.circular-reference', []), 'error @1:1..1:5');
+  { a direct self-loop is a self-reference, never a cycle }
+  Check('graph/self-reference-not-circular',
+        DiagPos('#set %a% = %a%', 'en', 'variable.self-reference', []), 'error @1:1..1:5');
+  Check('graph/self-reference-alone-is-not-circular',
+        DiagPos('#set %a% = %a%', 'en', 'variable.circular-reference', []), 'not-found');
+  { taint reaches back along a chain of references, however long the chain }
+  Check('graph/taint-propagates-down-a-chain',
+        Verdict('#set %a% = %b%' + #10 + '#set %b% = %c%' + #10 +
+                '#set %c% = {x|y}' + #10 + '{plural %a%: one|two}'), 'invalid');
+  { and stops where the chain does }
+  Check('graph/taint-stops-at-a-plain-value',
+        Verdict('#set %a% = %b%' + #10 + '#set %b% = plain' + #10 +
+                '{plural %a%: one|two}'), 'valid');
+end;
+
 procedure TestUnterminatedComment;
 begin
   { the opener with no closer survives, wherever it sits }
@@ -1302,6 +1335,7 @@ begin
   TestPostProcess;
   TestNulInInput;
   TestDiagPositions;
+  TestDefinitionGraph;
   TestUnterminatedComment;
   TestExtractDirectives;
 
