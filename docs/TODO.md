@@ -64,8 +64,10 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
       **And the `PhpLtrim` divergence turned out to be the family's, not this port's.** The
       same bare `ltrim()` charlist was live in BOTH PHP engines -- a NUL producing a false
-      `set.malformed` (`spintax-php@c41f3db`, `plugin@9b193bc`) -- and `spintax-py` was
-      scanning a normalised copy with an anchored match (`spintax-py@620fad4`). A measurement
+      `set.malformed` (`spintax-php@c41f3db`, `plugin@9b193bc`) -- and `spintax-py` had the
+      other half of this port's own bug: an ANCHORED match over a copy with the terminators
+      normalised, where the reference runs an `/m` SEARCH over the exact text
+      (`spintax-py@620fad4`). A measurement
       taken here to close a Pascal backlog item found real bugs in three sibling engines.
       Worth remembering the next time a divergence looks like "just this port being wrong":
       the reference is the contract, but a shared ANCESTOR's habit -- PHP's trim charlist --
