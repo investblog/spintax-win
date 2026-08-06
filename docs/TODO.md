@@ -87,6 +87,11 @@ see Done:
       higher because the sentinel strip, comment strip and directive extraction are cached
       too. With the cosmetic stage on the gain is small, because that stage is per render.
 
+      The handle cannot be invalid: the constructor takes the template, so a bare
+      `TSpTemplate.Create` does not compile, and a nil handle raises `ESpintax` instead of
+      rendering an empty string in silence. Both states were reachable in the first cut and
+      review found them.
+
       The tree is REUSED, so equivalence is asserted rather than argued: a 1500-template
       differential through both paths under one seed, cosmetic stage on and off, plus a
       second render of the same compiled template — 0 differences and 0 changes from reuse,
@@ -95,20 +100,38 @@ see Done:
       depends on the host's variables.
 
 - [x] **The definition graph is linear** (2026-08-06). `SpValidate` on chained `#set`s —
-      the shape an editor meets, each macro referencing the next — took **23 959 ms at 400
-      definitions**; it takes **6 ms**, and 6 400 take 114 ms where the old build would have
-      needed hours. Flat definitions were already linear and stay so.
+      the shape an editor meets — took **23 959 ms at 400 definitions** and takes **8 ms**.
+      Every shape is linear now:
 
-      Three causes, and only the first was the one the backlog had guessed: every lookup was
+      | shape | before | after |
+      |---|---|---|
+      | 400 chained definitions | 23 959 ms | 8 ms |
+      | one cycle of 400 | 338 ms | 7 ms |
+      | one cycle of 6 400 | (hours) | 113 ms |
+      | converging DAG, 20 levels (914 bytes) | 89 ms | <1 ms |
+      | converging DAG, 2 000 levels | (does not finish) | 71 ms |
+
+      **Four** causes, and the first round of work found only three of them. Every lookup was
       a linear `TStringList.IndexOf` and every visit re-parsed the value's references; the
-      cycle walk restarted at each definition without remembering what it had already
-      cleared; and the taint propagation was a fixpoint sweep, which on a chain taints one
-      more name per pass and so runs once per definition over every definition.
+      taint propagation was a fixpoint sweep, which on a chain taints one name per pass and
+      so runs once per definition over every definition; the cycle walk restarted at every
+      definition. The first fix for that last one — remember what a completed start had
+      cleared — helped the shape it was measured on and nothing else: a converging graph
+      still re-explored shared subgraphs **exponentially**, and a document that is one big
+      cycle was still walked once per definition. Review caught it, and the benchmark had
+      not, because the benchmark was a chain with no cycle in it — the one shape the memo
+      fixes.
 
-      Verdicts unchanged, asserted by a 4 000-document differential over cycle- and
-      chain-heavy input against the previous build: **0 differences**, where three control
-      mutations of the new code give 1 944, 817 and 799. Six local assertions pin the shapes
-      the differential exists to protect.
+      Now the reachability is computed once for the whole graph with an iterative
+      colour walk. And the fourth cause was not in the graph at all: with every definition
+      reporting, `AddDiagAt` re-walked the document from offset 1 per diagnostic, which is
+      the resuming-cursor defect this file already records for `SpExtract`. Both loops take
+      `AddDiagAtOrdered` now.
+
+      Verdicts unchanged, asserted by three differentials against the pre-rewrite build —
+      12 000 documents in all, carrying 17, 1 944 and 2 856 circular-reference diagnostics:
+      **0 differences**. Six control mutations across the two rounds give 1 944, 817, 799,
+      860, 820 and 2 856.
 
 - [x] **An unterminated `/#` no longer swallows the rest of the document** (2026-08-06).
       `StripComments` dropped from `/#` to end of input when no `#/` followed; the

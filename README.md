@@ -233,7 +233,7 @@ zeroed memory means and inventing a tri-state to mimic a JS default would be wor
 ## Public API
 
     function SpRender(const Template: string; const Ctx: TSpContext): string;
-    function SpCompile(const Template: string): TSpTemplate;
+    function SpCompile(const Template: string): TSpTemplate;   // = TSpTemplate.Create
     function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
     function SpNeutralize(const Value: string): string;
     function SpSafetyRestore(const Text: string): string;
@@ -259,6 +259,10 @@ finally
   tmpl.Free;                       { the caller owns it }
 end;
 ```
+
+`TSpTemplate.Create(source)` is the same thing spelled as a constructor. There is no
+argument-less form — a handle that has not been given a template cannot exist — and passing
+`nil` to `SpRenderCompiled` raises `ESpintax` rather than rendering nothing.
 
 A compiled template renders exactly what `SpRender` renders from the same source; every
 choice is still made per render, `#def` still resolves once per render and `#set` is still

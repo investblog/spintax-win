@@ -207,10 +207,20 @@ const
   you like, free when done; every choice is still made per render, and a compiled template
   produces exactly what SpRender produces from the same source. }
 type
+  { Raised only on programmer error -- a handle that was never produced by SpCompile --
+    never on template content. That is the reference's rule for its own error type: a
+    template, however malformed, is a diagnostic and not an exception. }
+  ESpintax = class(Exception);
+
   TSpTemplate = class
   private
     FImpl: TObject;
   public
+    { Takes the template, and hides TObject's argument-less constructor deliberately: a
+      bare `TSpTemplate.Create` would leave the state nil, and a render through that handle
+      returned an empty string with no complaint. Now it does not compile. SpCompile is the
+      same thing spelled as a function. }
+    constructor Create(const Template: string); reintroduce;
     destructor Destroy; override;
   end;
 
@@ -3239,6 +3249,12 @@ begin
   Result := RenderTop(nil, Template, Ctx);
 end;
 
+constructor TSpTemplate.Create(const Template: string);
+begin
+  inherited Create;
+  FImpl := TTemplateImpl.Create(Template);
+end;
+
 destructor TSpTemplate.Destroy;
 begin
   FImpl.Free;
@@ -3247,12 +3263,13 @@ end;
 
 function SpCompile(const Template: string): TSpTemplate;
 begin
-  Result := TSpTemplate.Create;
-  Result.FImpl := TTemplateImpl.Create(Template);
+  Result := TSpTemplate.Create(Template);
 end;
 
 function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
 begin
+  if (Tmpl = nil) or (Tmpl.FImpl = nil) then
+    raise ESpintax.Create('SpRenderCompiled: template handle is nil (use SpCompile)');
   Result := RenderTop(TTemplateImpl(Tmpl.FImpl), '', Ctx);
 end;
 
@@ -3946,76 +3963,123 @@ begin
   end;
 end;
 
-{ Walks the definition graph from `current`, reporting once if it reaches a cycle.
+{ Which definitions reach a cycle, computed ONCE for the whole graph.
 
-  Three lookups used to be linear scans of a TStringList -- the name being resolved, the
-  path membership test, and the "is this ref a definition" test -- and the value's
-  references were re-parsed at every visit. On a chain of definitions the walk revisits
-  the tail of the chain from every start, so those linear scans made the whole check
-  cubic: 400 chained `#set`s took 29 s. The graph is now indexed once by the caller and
-  the path is a set, which leaves the same traversal doing the same work per edge.
+  The walk this replaces started afresh at every definition and remembered nothing across
+  starts, so a converging graph re-explored its shared subgraphs -- exponentially, measured:
+  a 914-byte document of 20 converging levels took 89 ms, and every four more levels cost
+  six times as much. A single cycle of N definitions was walked N times.
 
-  `nameIdx` and `visited` are keyed on the name as stored. Every name here is already
-  lower-cased -- TryParseDirective folds a directive's name, DirectReferences folds a
-  reference -- so a case-sensitive dictionary is exactly what the case-folding IndexOf
-  was matching. The `ref = current` guard stays a case-sensitive compare, as it was. }
-procedure DetectCycleV(const current: string; nameIdx: TDictionary<string, Integer>;
-  defRefs: TObjectList<TStringList>; visited: TDictionary<string, Boolean>;
-  clean: TDictionary<string, Boolean>; explored: TStringList;
-  res: TSpDiagList; var reported: Boolean;
-  const src: string; map: TList<Integer>; anchor: Integer);
-var idx, k: Integer; refs: TStringList; ref: string;
+  The predicate is unchanged, and it is narrower than "is in a cycle": a definition is
+  reported when it can REACH a cycle of length two or more. A direct self-loop is excluded
+  -- that is `variable.self-reference`, reported separately -- which is why an edge from a
+  name to itself is dropped when the graph is built.
+
+  Standard colours: an edge to a grey node is a back edge and means the source reaches a
+  cycle; an edge to a finished node inherits its answer; the answer propagates back along
+  the path as the walk unwinds. Iterative, because a chain of definitions is as deep as it
+  is long and 6400 of them is an ordinary generated document. }
+procedure MarkCyclic(defNames: TStringList; defRefs: TObjectList<TStringList>;
+  nameIdx: TDictionary<string, Integer>; reaches: TDictionary<string, Boolean>);
+var
+  nodeOf: TDictionary<string, Integer>;
+  nodeName: TStringList;
+  adj: TIntBucketList;
+  colour, iter, stack: TList<Integer>;
+  hits: array of Boolean;
+  i, k, di, u, v, top: Integer;
+  refs: TStringList;
 begin
-  if reported then Exit;
-  { A name already proved to reach no cycle can be skipped outright. The walk prunes
-    nowhere else -- a name on the current path is REPORTED, not skipped -- so when a start
-    finishes without reporting, every name it touched was explored exhaustively and none of
-    them reaches a cycle. That is what fills `clean`, and it is what turns the ordinary
-    no-cycle document from one full walk per definition into one walk in total. }
-  if clean.ContainsKey(current) then Exit;
-  if not nameIdx.TryGetValue(current, idx) then Exit;
-  explored.Add(current);
-  refs := defRefs[idx];
-  for k := 0 to refs.Count - 1 do
-  begin
-    ref := refs[k];
-    if ref = current then Continue;
-    if visited.ContainsKey(ref) then
+  nodeOf := TDictionary<string, Integer>.Create;
+  nodeName := TStringList.Create;
+  adj := TIntBucketList.Create(True);
+  colour := TList<Integer>.Create;
+  iter := TList<Integer>.Create;
+  stack := TList<Integer>.Create;
+  try
+    { one node per distinct definition name }
+    for i := 0 to defNames.Count - 1 do
+      if not nodeOf.ContainsKey(defNames[i]) then
+      begin
+        nodeOf.Add(defNames[i], nodeName.Count);
+        nodeName.Add(defNames[i]);
+        adj.Add(TIntList.Create);
+        colour.Add(0);
+        iter.Add(0);
+      end;
+    SetLength(hits, nodeName.Count);
+
+    { edges: a definition's references, minus a self-loop, minus anything undefined }
+    for u := 0 to nodeName.Count - 1 do
     begin
-      AddDiagAt(res, 'variable.circular-reference', 'error', src, map, anchor, anchor + 4);
-      reported := True; Exit;
+      if not nameIdx.TryGetValue(nodeName[u], di) then Continue;
+      refs := defRefs[di];
+      for k := 0 to refs.Count - 1 do
+        if (refs[k] <> nodeName[u]) and nodeOf.TryGetValue(refs[k], v) then
+          adj[u].Add(v);
     end;
-    if nameIdx.ContainsKey(ref) then
+
+    for i := 0 to nodeName.Count - 1 do
     begin
-      visited.AddOrSetValue(ref, True);
-      DetectCycleV(ref, nameIdx, defRefs, visited, clean, explored, res, reported,
-                   src, map, anchor);
-      visited.Remove(ref);
-      if reported then Exit;
+      if colour[i] <> 0 then Continue;
+      stack.Clear;
+      stack.Add(i); colour[i] := 1; iter[i] := 0;
+      while stack.Count > 0 do
+      begin
+        top := stack.Count - 1;
+        u := stack[top];
+        if iter[u] < adj[u].Count then
+        begin
+          v := adj[u][iter[u]];
+          iter[u] := iter[u] + 1;
+          if colour[v] = 1 then hits[u] := True             { back edge: a cycle }
+          else if colour[v] = 2 then hits[u] := hits[u] or hits[v]
+          else
+          begin
+            colour[v] := 1; iter[v] := 0;
+            stack.Add(v);
+          end;
+        end
+        else
+        begin
+          colour[u] := 2;
+          stack.Delete(top);
+          if stack.Count > 0 then
+          begin
+            v := stack[stack.Count - 1];
+            hits[v] := hits[v] or hits[u];
+          end;
+        end;
+      end;
     end;
+
+    for i := 0 to nodeName.Count - 1 do
+      if hits[i] then reaches.AddOrSetValue(nodeName[i], True);
+  finally
+    nodeOf.Free; nodeName.Free; adj.Free; colour.Free; iter.Free; stack.Free;
   end;
 end;
 
 procedure CheckVariableRefsV(const text, src: string; map: TList<Integer>;
   KnownIncludes: TStringList; res: TSpDiagList);
-var kinds, defNames, defValues: TStringList; i: Integer; reported: Boolean;
+var kinds, defNames, defValues: TStringList; i: Integer;
     poss: TList<Integer>;
     nameIdx: TDictionary<string, Integer>;
-    visited, clean: TDictionary<string, Boolean>;
+    reaches: TDictionary<string, Boolean>;
     defRefs: TObjectList<TStringList>;
-    refs, explored: TStringList;
-    j: Integer;
+    refs: TStringList;
+    curSelf, curCirc: TSourceCursor;
 begin
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
   poss := TList<Integer>.Create;
   nameIdx := TDictionary<string, Integer>.Create;
   defRefs := TObjectList<TStringList>.Create(True);
-  clean := TDictionary<string, Boolean>.Create;
+  reaches := TDictionary<string, Boolean>.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues, poss);
 
-    { Index the graph once. A name may be defined twice; the walk used to resolve it with
-      IndexOf, which answers with the FIRST occurrence, so only the first is recorded. }
+    { Index the graph once. A name may be defined twice; the walk this replaces resolved it
+      with IndexOf, which answers with the FIRST occurrence, so only the first is recorded. }
     for i := 0 to defNames.Count - 1 do
     begin
       if not nameIdx.ContainsKey(defNames[i]) then nameIdx.Add(defNames[i], i);
@@ -4024,31 +4088,28 @@ begin
       DirectReferences(defValues[i], refs);
     end;
 
+    { Both loops walk the definitions in source order, so both take the resuming cursor.
+      With AddDiagAt each diagnostic re-walks the document from offset 1, and a document
+      where every definition reports -- one cycle through all of them -- then costs
+      O(document x diagnostics): 6400 of them measured 6.6 s, nearly all of it here and
+      none of it in the graph. }
+    InitSourceCursor(curSelf);
+    InitSourceCursor(curCirc);
     // self-reference -- at the offending #set/#def line
     for i := 0 to defNames.Count - 1 do
       if Pos('%' + defNames[i] + '%', LowerAscii(defValues[i])) > 0 then
-        AddDiagAt(res, 'variable.self-reference', 'error', src, map, poss[i], poss[i] + 4);
-    // circular -- anchored at the definition that starts the detected cycle
+        AddDiagAtOrdered(res, 'variable.self-reference', 'error', src, map,
+                         poss[i], poss[i] + 4, curSelf);
+    // circular -- anchored at every definition that can reach a cycle
+    MarkCyclic(defNames, defRefs, nameIdx, reaches);
     for i := 0 to defNames.Count - 1 do
-    begin
-      reported := False;
-      visited := TDictionary<string, Boolean>.Create;
-      explored := TStringList.Create;
-      try
-        visited.AddOrSetValue(defNames[i], True);
-        DetectCycleV(defNames[i], nameIdx, defRefs, visited, clean, explored,
-                     res, reported, src, map, poss[i]);
-        { only a start that ran to completion proves anything about what it touched }
-        if not reported then
-          for j := 0 to explored.Count - 1 do clean.AddOrSetValue(explored[j], True);
-      finally
-        visited.Free; explored.Free;
-      end;
-    end;
+      if reaches.ContainsKey(defNames[i]) then
+        AddDiagAtOrdered(res, 'variable.circular-reference', 'error', src, map,
+                         poss[i], poss[i] + 4, curCirc);
     // (undefined-variable warnings are emitted in SpValidate against the body scan)
   finally
     kinds.Free; defNames.Free; defValues.Free; poss.Free;
-    nameIdx.Free; defRefs.Free; clean.Free;
+    nameIdx.Free; defRefs.Free; reaches.Free;
   end;
 end;
 

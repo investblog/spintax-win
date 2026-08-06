@@ -1130,8 +1130,26 @@ end;
   a 1500-template differential comparing both paths under the same seed with post-process
   on and off: 0 differences, and 0 for a second render of the same compiled template.
   Two control mutations of the new code give 385/109 and 4446/4225. }
+{ A resolver whose content the test changes between renders, to prove a compiled parent
+  does NOT freeze what its #include lines pull in. }
+type
+  TMutableResolver = class(TSpIncludeResolver)
+  public
+    Body: string;
+    Hits: Integer;
+    function Resolve(const Ref: string; out Text: string): Boolean; override;
+  end;
+
+function TMutableResolver.Resolve(const Ref: string; out Text: string): Boolean;
+begin
+  Inc(Hits);
+  Result := Ref = 'child';
+  if Result then Text := Body else Text := '';
+end;
+
 procedure TestCompiledTemplate;
 var t: TSpTemplate; ctx: TSpContext; a, b: string; outs: TStringList; i: Integer;
+    res: TMutableResolver; t2: TSpTemplate;
 begin
   { the same seed through both paths must give the same bytes }
   t := SpCompile('{a|b} {c|d} {e|f}');
@@ -1201,6 +1219,55 @@ begin
     Check('compiled/comment-stripped-once', SpRenderCompiled(t, ctx), 'a  b');
   finally
     t.Free;
+  end;
+
+  { the handle cannot be invalid: a bare TSpTemplate.Create does not compile (the
+    constructor takes the template), and a nil handle is a programmer error, not an
+    empty render -- it used to return '' with no complaint }
+  Inc(Checks);
+  try
+    SpRenderCompiled(nil, ctx);
+    Inc(Failures); WriteLn('FAIL compiled/nil-handle-must-raise');
+  except
+    on E: ESpintax do ;
+  end;
+
+  { #include children are resolved at RENDER time, so a compiled parent must see the
+    resolver's CURRENT answer, not the one it had when the parent was compiled }
+  { the include anchors at a line start, like every other consumer of MatchIncludeAt }
+  res := TMutableResolver.Create;
+  t := SpCompile('before' + #10 + '#include "child"' + #10 + 'after');
+  try
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    ctx.IncludeResolver := res;
+    res.Body := 'ONE';
+    Check('compiled/include-resolved-at-render', Trim(SpRenderCompiled(t, ctx)),
+          'before' + #10 + 'ONE' + #10 + 'after');
+    res.Body := 'TWO';
+    Check('compiled/include-not-frozen', Trim(SpRenderCompiled(t, ctx)),
+          'before' + #10 + 'TWO' + #10 + 'after');
+    { the child is a template too -- its own spin still runs, per render }
+    res.Body := '{p|q}';
+    outs := TStringList.Create;
+    try
+      outs.Sorted := True; outs.Duplicates := dupIgnore;
+      for i := 1 to 300 do outs.Add(Trim(SpRenderCompiled(t, ctx)));
+      Check('compiled/child-still-spins', outs.Text,
+            'before' + #10 + 'p' + #10 + 'after' + sLineBreak +
+            'before' + #10 + 'q' + #10 + 'after' + sLineBreak);
+    finally
+      outs.Free;
+    end;
+    { an unknown target is still the family's lenient empty string }
+    t2 := SpCompile('x' + #10 + '#include "nope"' + #10 + 'y');
+    try
+      Check('compiled/unknown-include-is-empty', Trim(SpRenderCompiled(t2, ctx)),
+            'x' + #10 + #10 + 'y');
+    finally
+      t2.Free;
+    end;
+  finally
+    t.Free; res.Free;
   end;
 end;
 

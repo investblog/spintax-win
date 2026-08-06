@@ -87,6 +87,22 @@ equivalence, reuse, `#def` re-rolling, a runtime variable outranking a definitio
 template still serving the next caller, `#set` still being a macro, and the comment strip
 happening once.
 
+## The handle cannot be invalid
+
+The first cut declared `TSpTemplate` with an implicit `TObject.Create`, so
+`TSpTemplate.Create` was legal, left the state nil, and rendered an empty string in
+silence; a nil handle gave an access violation. Both were reachable from ordinary code and
+review found them.
+
+The constructor now takes the template — `TSpTemplate.Create(source)`, which is `SpCompile`
+spelled as a constructor — so the argument-less form does not compile. A nil handle raises
+`ESpintax`, a new public error type whose whole contract is that it is raised on programmer
+error and never on template content, which is the rule the reference states for its own.
+
+FPC will not accept a private constructor under `-Sew` ("Constructor should be public"), so
+hiding it was not an option; requiring the argument achieves the same thing and reads
+better.
+
 ## Consequences
 
 - Additive. Existing hosts are untouched; `SpRender` has the same signature and behaviour.
