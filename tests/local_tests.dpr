@@ -984,6 +984,22 @@ end;
   severities are asserted too, to prove locating a finding never changed its verdict. }
 { How MANY diagnostics carry a code. DiagPos answers WHERE the first one is and stops,
   which cannot express "one per definition" -- a mutation reporting once passed it. }
+{ Every diagnostic code in order, comma-joined -- the multiset AND the order the corpus
+  and the family compare. }
+function DiagCodes(const tmpl, locale: string): string;
+var d: TSpDiagList; i: Integer;
+begin
+  Result := '';
+  d := SpValidate(tmpl, locale, nil, nil);
+  try
+    for i := 0 to d.Count - 1 do
+    begin
+      if Result <> '' then Result := Result + ',';
+      Result := Result + d[i].Code;
+    end;
+  finally d.Free; end;
+end;
+
 function DiagCount(const tmpl, locale, code: string): Integer;
 var d: TSpDiagList; i: Integer;
 begin
@@ -1163,6 +1179,126 @@ begin
   if Result then Text := Body else Text := '';
 end;
 
+{ Three divergences the family is about to pin as fixtures, closed on 2026-08-07. Every
+  expectation was measured against @spintax/core the same day, and each fix carries a
+  differential with a control run that proves the harness can fail. }
+
+{ 1. The malformed-directive shape test. `checkDirectives` splits on LF ALONE and left-trims
+     SPACES AND TABS ALONE, where this port split on five terminators and used PHP's trim
+     charlist. Both turned valid templates invalid -- a §3 verdict divergence.
+
+     And the test itself is `DIRECTIVE_RE.test(trimmed)` with the regex `/gmu`, so under `m`
+     the anchors still break on CR and the paragraph separators INSIDE the line: a
+     well-formed directive after a CR satisfies the test and nothing is reported. }
+procedure TestDirectiveShape;
+const U2028 = {$IFDEF UNICODE} #$2028 {$ELSE} #$E2#$80#$A8 {$ENDIF};
+begin
+  { VT is not [ \t], so the line never starts with `#set ` and is no directive at all --
+    which leaves `%x%` standing in text, hence the warning and nothing else }
+  Check('dirshape/VT-is-not-blank', DiagCodes(#11'#set %x% = A', 'en'),
+        'variable.undefined');
+  Check('dirshape/NUL-is-not-blank', DiagCodes(#0'#set broken', 'en'), '');
+  { the split is LF only: a CR or U+2028 does not start a new line for this scan }
+  Check('dirshape/CR-does-not-split', DiagCodes('x'#13'#set broken', 'en'), '');
+  Check('dirshape/U2028-does-not-split', DiagCodes('x' + U2028 + '#set broken', 'en'), '');
+  { but a CRLF does, because the LF is there -- the CR merely stays on the line before }
+  Check('dirshape/CRLF-splits', DiagCodes('x'#13#10'#set broken', 'en'), 'set.malformed');
+  Check('dirshape/LF-splits', DiagCodes('x'#10'#set broken', 'en'), 'set.malformed');
+  { the regex is multiline, so a good directive after a CR satisfies the test for the
+    whole line and the malformed part before it is not reported }
+  Check('dirshape/good-after-CR-satisfies-it',
+        DiagCodes('#set broken'#13'#set %x% = A', 'en'), '');
+  { the ordinary cases still report }
+  Check('dirshape/plain-broken', DiagCodes('#set broken', 'en'), 'set.malformed');
+  Check('dirshape/tab-indent-broken', DiagCodes(#9'#def broken', 'en'), 'def.malformed');
+  Check('dirshape/empty-value-is-legal', DiagCodes('#set %x% =', 'en'), '');
+end;
+
+{ 2. Definitions are DEDUPLICATED BY NAME, last one winning, for the self-reference test,
+     the cycle walk and the plural taint alike -- the reference builds a Map and overwrites.
+     This port used every occurrence and resolved a name to the FIRST, which diverged in
+     both directions: it invented diagnostics the reference does not give AND missed ones it
+     does. The count matters too: the reference does not deduplicate REFERENCES and returns
+     from only the current frame, so one value naming another twice reports twice. }
+procedure TestDefinitionDedup;
+begin
+  { the shape the backlog reported: only the duplicate survives }
+  Check('dedup/reported-shape',
+        DiagCodes('#def %x% = #set %x% = '#10'#set %x% = A', 'en'),
+        'definition.duplicate-name');
+  { the surviving value decides, in both directions }
+  Check('dedup/selfref-then-plain', DiagCodes('#set %x% = %x%'#10'#set %x% = B', 'en'),
+        'definition.duplicate-name');
+  Check('dedup/plain-then-selfref', DiagCodes('#set %x% = B'#10'#set %x% = %x%', 'en'),
+        'definition.duplicate-name,variable.self-reference');
+  Check('dedup/cycle-broken-by-last-def',
+        DiagCodes('#set %a% = %b%'#10'#set %a% = plain'#10'#set %b% = %a%', 'en'),
+        'definition.duplicate-name');
+  Check('dedup/cycle-made-by-last-def',
+        DiagCodes('#set %a% = plain'#10'#set %a% = %b%'#10'#set %b% = %a%', 'en'),
+        'definition.duplicate-name,variable.circular-reference,variable.circular-reference');
+  { a value naming the same variable twice drives the walk twice, so the count is three
+    and not two -- references are not deduplicated and the return leaves one frame }
+  Check('dedup/repeated-reference-counts-twice',
+        DiagCodes('#set %a% = %b% %b%'#10'#set %b% = %a%', 'en'),
+        'variable.circular-reference,variable.circular-reference,variable.circular-reference');
+  { the plural taint reads the same map: a middle definition holding an enumeration does
+    not taint a name whose surviving value is a literal }
+  Check('dedup/taint-uses-the-surviving-value',
+        DiagCodes('#def %n% = plain'#10'#set %n% = {a|b}'#10'#set %n% = plain'#10 +
+                  '{plural %n%:one|two}', 'en'),
+        'definition.duplicate-name,definition.duplicate-name');
+  Check('dedup/taint-still-fires',
+        DiagCodes('#set %n% = {a|b}'#10'{plural %n%:one|two}', 'en'), 'plural.count-macro');
+end;
+
+{ 3. The permutation config extractors. MINSIZE_RE / MAXSIZE_RE / SEP_RE require the `=`,
+     take the full ASCII `\s` around it, and are regexes -- so a candidate that fails is
+     retried at the next position rather than ending the search. This port made the `=`
+     optional, took only space and tab, and gave up after the first candidate.
+
+     Reachable only once a real key has selected key form, which is why the v0.3.3 gate did
+     not cover it. }
+procedure TestPermConfigExtractors;
+begin
+  { a key word with no `=` is not a config -- it used to parse as maxsize=2 and render a
+    random subset; now all three elements come out, joined by the sep that IS configured }
+  Check('permcfg/key-without-equals-is-not-config',
+        RenderFirst('[<sep="-" maxsize 2>a|b|c]'), 'b-c-a');
+  { the whitespace around `=` is the ASCII \s set, VT, FF, CR and LF included }
+  Check('permcfg/LF-around-equals', RenderFirst('[<minsize'#10'=2>a|b|c]'), 'b c');
+  Check('permcfg/VT-around-equals', RenderFirst('[<sep'#11'="-">a|b]'), 'b-a');
+  { a failed candidate does not end the search, exactly as a regex retries }
+  Check('permcfg/second-candidate-wins', RenderFirst('[<sep=x sep="-">a|b]'), 'b-a');
+  { and the closing quote is required, so an unterminated one is no config at all and the
+    whole `<...>` stays content }
+  Check('permcfg/unterminated-quote-is-content',
+        RenderFirst('[<sep="X>a|b]'), 'b <sep="X>a');
+  { the forms that already worked still do }
+  Check('permcfg/plain-minsize', RenderFirst('[<minsize=2>a|b|c]'), 'b c');
+  Check('permcfg/plain-sep', RenderFirst('[<sep=", ">a|b]'), 'b, a');
+
+  { The GATE has a word boundary and the EXTRACTORS do not -- CONFIG_KEY_RE is
+    /\b(?:minsize|maxsize|sep|lastsep)\s*=/i, MINSIZE_RE is /minsize\s*=\s*(\d+)/i with no
+    \b at all. So a real key opens the door and a glued-on one then walks through it. It
+    reads like an oversight in the reference and it is the contract: measured against
+    @spintax/core on 2026-08-07 over 200 seeds, `[<sep="-" xmaxsize=1>a|b|c]` yields exactly
+    the three single elements there -- one element, no separator -- and
+    `[<minsize=2 xsep="-">a|b|c]` joins with "-" under every one of them. Both hold here.
+
+    The minsize is what makes the second case an assertion rather than a coincidence: with
+    maxsize the run can pick ONE element, and a single element prints the same whether the
+    separator was read or not. }
+  Check('permcfg/glued-key-is-still-a-value', RenderFirst('[<sep="-" xmaxsize=1>a|b|c]'), 'b');
+  Check('permcfg/glued-sep-is-still-a-value', RenderFirst('[<minsize=2 xsep="-">a|b|c]'), 'b-c');
+  { but the gate's boundary is real: with no unglued key anywhere, the whole string is the
+    single-separator form and `xmaxsize=1` is the separator itself }
+  Check('permcfg/glued-key-alone-is-a-separator',
+        RenderFirst('[<xmaxsize=1>a|b]'), 'bxmaxsize=1a');
+  { `sep` inside `lastsep` is not `sep` -- the reference's negative lookbehind }
+  Check('permcfg/lastsep-is-not-sep', RenderFirst('[<lastsep=" and ">a|b]'), 'b and a');
+end;
+
 procedure TestCompiledTemplate;
 var t: TSpTemplate; ctx: TSpContext; a, b: string; outs: TStringList; i: Integer;
     res: TMutableResolver; t2: TSpTemplate;
@@ -1287,6 +1423,8 @@ begin
   end;
 end;
 
+procedure TestGraphStress; forward;
+
 procedure TestDefinitionGraph;
 begin
   { a name that reaches no cycle is memoised -- a clean start must not silence a later
@@ -1320,6 +1458,37 @@ begin
   Check('graph/taint-stops-at-a-plain-value',
         Verdict('#set %a% = %b%' + #10 + '#set %b% = plain' + #10 +
                 '{plural %a%: one|two}'), 'valid');
+  TestGraphStress;
+end;
+
+{ The two shapes the walk is worst on, both built here rather than described, because the
+  first version of the faithful walk was recursive over strings and neither shape was in
+  the suite: a cycle of 6 400 took 99 SECONDS and 6 400 stack frames.
+
+  Both counts are the reference's, measured on 2026-08-07: a cycle of N gives N, and the
+  converging DAG of 8 levels gives 512 -- @spintax/core answers 512, 8 192, 131 072 and
+  2 097 152 at 8, 12, 16 and 20 levels, from a document that never exceeds 507 bytes. The
+  diagnostics ARE exponential in that shape, in the reference too; the walk cannot be
+  cheaper than its own output. What must stay bounded is everything else, which is why the
+  sizes here are large enough to time out or overflow a walk that regresses. }
+procedure TestGraphStress;
+const CYCLE_N = 2000; DAG_LEVELS = 8;
+var i: Integer; doc: string;
+begin
+  doc := '';
+  for i := 1 to CYCLE_N do
+    doc := doc + Format('#set %%v%d%% = %%v%d%%'#10, [i, (i mod CYCLE_N) + 1]);
+  Check('graph/long-cycle-reports-one-per-definition',
+        IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')), IntToStr(CYCLE_N));
+
+  { every node reaches the cycle, so `reaches` prunes nothing and the walk explores every
+    path -- the shape that is exponential, and the one an unmeasured "linear" claim missed }
+  doc := '#set %c1% = %c2%'#10'#set %c2% = %c1%'#10;
+  for i := DAG_LEVELS downto 1 do
+    if i = DAG_LEVELS then doc := doc + Format('#set %%d%d%% = %%c1%% %%c2%%'#10, [i])
+    else doc := doc + Format('#set %%d%d%% = %%d%d%% %%d%d%%'#10, [i, i + 1, i + 1]);
+  Check('graph/converging-dag-counts-every-path',
+        IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')), '512');
 end;
 
 procedure TestUnterminatedComment;
@@ -1509,6 +1678,9 @@ begin
   TestPostProcess;
   TestNulInInput;
   TestDiagPositions;
+  TestDirectiveShape;
+  TestDefinitionDedup;
+  TestPermConfigExtractors;
   TestCompiledTemplate;
   TestDefinitionGraph;
   TestUnterminatedComment;

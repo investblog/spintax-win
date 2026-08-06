@@ -1411,42 +1411,89 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
         end;
     end;
   end;
+  { True for what JS `\s` matches within ASCII. The deliberate narrowing to ASCII is the
+    family's convention (the reference spells the class out "for PHP parity"); VT and FF
+    are IN it, and leaving them out is simply a wrong port. }
+  function IsCfgWs(c: Char): Boolean;
+  begin
+    Result := CharInSet(c, [' ', #9, #10, #11, #12, #13]);
+  end;
+
+  { MINSIZE_RE / MAXSIZE_RE = /(min|max)size\s*=\s*(\d+)/i -- three things this used to
+    get wrong, all measured against @spintax/core on 2026-08-06:
+
+      the `=` was OPTIONAL here. `[<sep="-" maxsize 2>a|b|c]` parsed maxsize=2 and rendered
+      a random SUBSET; the reference finds no match, leaves maxsize null and renders all
+      three. A key word standing in prose silently became a config.
+
+      the whitespace around `=` was [' ', #9]. `[<minsize` LF `=2>a|b|c]` was no config at
+      all here and is one to the reference; same for VT, FF and CR, and same after the `=`.
+
+      a failed candidate ENDED the search. A regex retries at the next position, so
+      `[<minsize foo minsize=1>…]` matches the second one; this stopped at the first and
+      reported nothing. }
   function FindInt(const key: string): Integer;
-  var k, j: Integer; num: string;
+  var k, j: Integer; num, low2: string;
   begin
     Result := -1;
-    k := Pos(key, LowerAscii(configStr));
-    if k = 0 then Exit;
-    j := k + Length(key);
-    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
-    if (j <= Length(configStr)) and (configStr[j] = '=') then Inc(j);
-    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
-    num := '';
-    while (j <= Length(configStr)) and (CharInSet(configStr[j], ['0'..'9'])) do begin num := num + configStr[j]; Inc(j); end;
-    if num <> '' then Result := StrToInt(num);
-  end;
-  function FindStr(const key: string; out val: string): Boolean;
-  var k, j: Integer; low2: string;
-  begin
-    Result := False; val := '';
     low2 := LowerAscii(configStr);
-    // find key not preceded by 'last' when key='sep'
     k := 1;
     while True do
     begin
       k := PosEx(key, low2, k);
       if k = 0 then Exit;
-      if (key = 'sep') and (k >= 5) and (Copy(low2, k - 4, 4) = 'last') then begin Inc(k); Continue; end;
-      Break;
+      j := k + Length(key);
+      while (j <= Length(configStr)) and IsCfgWs(configStr[j]) do Inc(j);
+      if (j <= Length(configStr)) and (configStr[j] = '=') then
+      begin
+        Inc(j);
+        while (j <= Length(configStr)) and IsCfgWs(configStr[j]) do Inc(j);
+        num := '';
+        while (j <= Length(configStr)) and CharInSet(configStr[j], ['0'..'9']) do
+        begin num := num + configStr[j]; Inc(j); end;
+        if num <> '' then Exit(StrToInt(num));
+      end;
+      Inc(k);
     end;
-    j := k + Length(key);
-    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
-    if (j <= Length(configStr)) and (configStr[j] = '=') then Inc(j) else Exit;
-    while (j <= Length(configStr)) and (CharInSet(configStr[j], [' ', #9])) do Inc(j);
-    if (j > Length(configStr)) or (configStr[j] <> '"') then Exit;
-    Inc(j);
-    while (j <= Length(configStr)) and (configStr[j] <> '"') do begin val := val + configStr[j]; Inc(j); end;
-    Result := True;
+  end;
+  { SEP_RE = /(?<!last)sep\s*=\s*"([^"]*)"/i, LASTSEP_RE the same without the lookbehind.
+    Same three corrections as FindInt, plus one of its own: `([^"]*)"` needs the CLOSING
+    quote, so an unterminated `sep="X` is not a match and the separator stays the default. }
+  function FindStr(const key: string; out val: string): Boolean;
+  var k, j, q: Integer; low2: string;
+  begin
+    Result := False; val := '';
+    low2 := LowerAscii(configStr);
+    k := 1;
+    while True do
+    begin
+      k := PosEx(key, low2, k);
+      if k = 0 then Exit;
+      { the reference's negative lookbehind: a `sep` that is the tail of `lastsep` is not
+        this key }
+      if (key = 'sep') and (k >= 5) and (Copy(low2, k - 4, 4) = 'last') then
+      begin
+        Inc(k); Continue;
+      end;
+      j := k + Length(key);
+      while (j <= Length(configStr)) and IsCfgWs(configStr[j]) do Inc(j);
+      if (j <= Length(configStr)) and (configStr[j] = '=') then
+      begin
+        Inc(j);
+        while (j <= Length(configStr)) and IsCfgWs(configStr[j]) do Inc(j);
+        if (j <= Length(configStr)) and (configStr[j] = '"') then
+        begin
+          q := j + 1;
+          while (q <= Length(configStr)) and (configStr[q] <> '"') do Inc(q);
+          if q <= Length(configStr) then
+          begin
+            val := Copy(configStr, j + 1, q - j - 1);
+            Exit(True);
+          end;
+        end;
+      end;
+      Inc(k);
+    end;
   end;
 begin
   node.PermMin := -1; node.PermMax := -1; node.PermSep := ' ';
@@ -1526,7 +1573,10 @@ begin
             begin
               q := 2;
               while (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], ['A'..'Z','a'..'z','0'..'9'])) do Inc(q);
-              if (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], [' ',#9,#10,#13])) then looksHtml := True;
+              { PER_ELEM_HTML_RE = /^[a-zA-Z][a-zA-Z0-9]*\s/ -- the ASCII \s set, VT and FF
+                included; this had the same four-character gap the config keys had }
+              if (q <= Length(innerTrim)) and
+                 (CharInSet(innerTrim[q], [' ', #9, #10, #11, #12, #13])) then looksHtml := True;
             end;
             if not looksHtml then
             begin
@@ -1934,6 +1984,30 @@ end;
   set is built from what the list already holds, so repeated calls accumulate exactly as
   they did through IndexOf. Only the document-wide scans, where k grows with the input,
   carry a dictionary of their own. }
+{ Every %name% in order, WITH multiplicity -- DirectReferences deduplicates, and the
+  reference's cycle walk iterates `value.matchAll(/%(\w+)%/gu)`, which does not. A value
+  naming the same variable twice therefore drives that walk twice, and the count of
+  diagnostics depends on it. }
+procedure RawReferences(const text: string; target: TStringList);
+var i, j: Integer; nm: string;
+begin
+  i := 1;
+  while i <= Length(text) do
+  begin
+    if text[i] = '%' then
+    begin
+      j := i + 1; nm := '';
+      while (j <= Length(text)) and IsAsciiWord(text[j]) do begin nm := nm + text[j]; Inc(j); end;
+      if (nm <> '') and (j <= Length(text)) and (text[j] = '%') then
+      begin
+        target.Add(LowerAscii(nm));
+        i := j + 1; Continue;
+      end;
+    end;
+    Inc(i);
+  end;
+end;
+
 procedure DirectReferences(const text: string; target: TStringList); overload;
 var seen: TDictionary<string, Boolean>; i: Integer;
 begin
@@ -3667,25 +3741,42 @@ type
 procedure BuildMacroTaint(kinds, names, values: TStringList;
   tainted: TDictionary<string, Boolean>);
 var i, k, b, head: Integer; cur: string;
-    allRefs: TObjectList<TStringList>; refs, queue: TStringList;
+    allRefs: TObjectList<TStringList>; refs, queue, setNames: TStringList;
+    setVal: TStrMap;
     revIdx: TDictionary<string, Integer>;
     buckets: TIntBucketList;
     pair: TPair<string, Boolean>;
 begin
-  // seed: #set macros with a bracket/enum in the value
-  for i := 0 to names.Count - 1 do
-    if (kinds[i] = 'set') and UnresolvedAtPluralTime(values[i]) then
-      tainted.AddOrSetValue(names[i], True);
+  { The reference taints over `extractDirectives(text).setDefs`, which is a MAP: one entry
+    per name, the LAST `#set` winning, and a `#def` of the same name not removing it. This
+    port walked every occurrence, so a name whose middle definition held an enumeration
+    stayed tainted even where the surviving value is a literal. Measured against
+    @spintax/core: a `#def` with a literal, then a `#set` with an enumeration, then a `#set`
+    with a literal reports plural.count-macro here and nothing there. }
+  setNames := TStringList.Create;
+  setVal := TStrMap.Create;
+  try
+    for i := 0 to names.Count - 1 do
+      if kinds[i] = 'set' then
+      begin
+        if not setVal.ContainsKey(names[i]) then setNames.Add(names[i]);
+        setVal.AddOrSetValue(names[i], values[i]);
+      end;
+
+    // seed: #set macros with a bracket/enum in the surviving value
+    for i := 0 to setNames.Count - 1 do
+      if UnresolvedAtPluralTime(setVal[setNames[i]]) then
+        tainted.AddOrSetValue(setNames[i], True);
 
   { the references of each value, parsed ONCE -- the propagation below may sweep the list
     many times, and re-parsing there was the larger half of the cost }
   allRefs := TObjectList<TStringList>.Create(True);
   try
-    for i := 0 to names.Count - 1 do
+    for i := 0 to setNames.Count - 1 do
     begin
       refs := TStringList.Create;
       allRefs.Add(refs);
-      if kinds[i] = 'set' then DirectReferences(values[i], refs);
+      DirectReferences(setVal[setNames[i]], refs);
     end;
 
     { Propagate along REVERSE edges from the seeds: a #set whose value references a
@@ -3699,9 +3790,8 @@ begin
     buckets := TIntBucketList.Create(True);
     queue := TStringList.Create;
     try
-      for i := 0 to names.Count - 1 do
+      for i := 0 to setNames.Count - 1 do
       begin
-        if kinds[i] <> 'set' then Continue;
         refs := allRefs[i];
         for k := 0 to refs.Count - 1 do
         begin
@@ -3724,9 +3814,9 @@ begin
         for k := 0 to buckets[b].Count - 1 do
         begin
           i := buckets[b][k];
-          if tainted.ContainsKey(names[i]) then Continue;
-          tainted.AddOrSetValue(names[i], True);
-          queue.Add(names[i]);
+          if tainted.ContainsKey(setNames[i]) then Continue;
+          tainted.AddOrSetValue(setNames[i], True);
+          queue.Add(setNames[i]);
         end;
       end;
     finally
@@ -3734,6 +3824,9 @@ begin
     end;
   finally
     allRefs.Free;
+  end;
+  finally
+    setNames.Free; setVal.Free;
   end;
 end;
 
@@ -3767,7 +3860,8 @@ begin
 end;
 
 procedure CheckDirectivesV(const text, src: string; map: TList<Integer>; res: TSpDiagList);
-var lineStart, e, n, i, p, termLen: Integer;
+var lineStart, e, n, i, p, segStart, segEnd, segLen: Integer;
+    ok: Boolean;
     curDup, curInc: TSourceCursor;
     line, t, kind, nm, val: string;
     isSet, isDef: Boolean;
@@ -3775,24 +3869,64 @@ var lineStart, e, n, i, p, termLen: Integer;
     seen: TDictionary<string, Boolean>;
     poss: TList<Integer>;
 begin
-  // malformed lines
+  { MALFORMED LINES. This scan is deliberately NOT the one the parser and the occurrence
+    walk use, and the difference is the reference's, not an oversight here.
+
+    `checkDirectives` splits on **LF alone** (`text.split('
+')`) and left-trims **spaces
+    and tabs alone** (`/^[ 	]+/`), where everything else in the family splits on five
+    terminators and this port used PHP's trim charlist. Both differences turned valid
+    templates invalid, which is a §3 verdict divergence:
+
+      <VT>#set %x% = A      the VT is not [ 	], so the line never starts with `#set ` and
+                            is not a directive at all -- the reference reports only
+                            `variable.undefined` for the `%x%` left standing in text
+      <NUL>#set broken      likewise: NUL is in PHP's charlist and not in the reference's
+      x<CR>#set broken      one line to the reference, so nothing starts with `#set `
+      x<U+2028>#set broken  likewise
+
+    all four measured against @spintax/core on 2026-08-06. A CRLF still splits, because the
+    LF is there; the CR just stays on the previous line. }
   n := Length(text); lineStart := 1;
   while lineStart <= n + 1 do
   begin
-    e := NextLineBreak(text, lineStart, termLen);
+    e := lineStart;
+    while (e <= n) and (text[e] <> #10) do Inc(e);
     line := Copy(text, lineStart, e - lineStart);
-    t := PhpLtrim(line);
+    t := line;
+    i := 1;
+    while (i <= Length(t)) and ((t[i] = ' ') or (t[i] = #9)) do Inc(i);
+    t := Copy(t, i, MaxInt);
     isSet := SpStartsWith(t, '#set ') or SpStartsWith(t, '#set'#9);
     isDef := SpStartsWith(t, '#def ') or SpStartsWith(t, '#def'#9);
-    if (isSet or isDef) and (not TryParseDirective(line, kind, nm, val)) then
+    { DIRECTIVE_RE is /gmu, and the reference TESTS it against the trimmed line. Under `m`
+      the anchors break on CR and the paragraph separators too, so a well-formed directive
+      sitting after a CR inside this LF-delimited line satisfies the test and nothing is
+      reported. Only the LF split is the reference's `split('\n')`; the anchors inside are
+      the regex's own, and they are the family's five terminators minus the one already
+      used to make the line. }
+    ok := False;
+    segStart := 1;
+    while segStart <= Length(t) + 1 do
     begin
-      { point at the '#' (first non-space on the line); span = the 4-char keyword }
+      segEnd := NextLineBreak(t, segStart, segLen);
+      if TryParseDirective(Copy(t, segStart, segEnd - segStart), kind, nm, val) then
+      begin
+        ok := True;
+        Break;
+      end;
+      if segEnd > Length(t) then Break;
+      segStart := segEnd + segLen;
+    end;
+    if (isSet or isDef) and (not ok) then
+    begin
+      { point at the '#' (first non-blank on the line); span = the 4-char keyword }
       p := lineStart + (Length(line) - Length(t));
       if isDef then AddDiagAt(res, 'def.malformed', 'error', src, map, p, p + 4)
       else AddDiagAt(res, 'set.malformed', 'error', src, map, p, p + 4);
     end;
     if e > n then Break;
-    lineStart := e + termLen;
+    lineStart := e + 1;
   end;
 
   // duplicate names + #include in a #def value
@@ -3974,63 +4108,57 @@ begin
   end;
 end;
 
-{ Which definitions reach a cycle, computed ONCE for the whole graph.
+{ Which names reach a cycle, computed ONCE for the whole graph.
 
   The walk this replaces started afresh at every definition and remembered nothing across
   starts, so a converging graph re-explored its shared subgraphs -- exponentially, measured:
   a 914-byte document of 20 converging levels took 89 ms, and every four more levels cost
   six times as much. A single cycle of N definitions was walked N times.
 
-  The predicate is unchanged, and it is narrower than "is in a cycle": a definition is
-  reported when it can REACH a cycle of length two or more. A direct self-loop is excluded
-  -- that is `variable.self-reference`, reported separately -- which is why an edge from a
-  name to itself is dropped when the graph is built.
+  The predicate is narrower than "is in a cycle": a name is reported when it can REACH a
+  cycle of length two or more. A direct self-loop is excluded -- that is
+  `variable.self-reference`, reported separately -- which is why an edge from a name to
+  itself is dropped when the graph is built.
 
   Standard colours: an edge to a grey node is a back edge and means the source reaches a
   cycle; an edge to a finished node inherits its answer; the answer propagates back along
   the path as the walk unwinds. Iterative, because a chain of definitions is as deep as it
   is long and 6400 of them is an ordinary generated document. }
-procedure MarkCyclic(defNames: TStringList; defRefs: TObjectList<TStringList>;
-  nameIdx: TDictionary<string, Integer>; reaches: TDictionary<string, Boolean>);
+procedure MarkCyclic(names: TStringList; refsOf: TObjectList<TStringList>;
+  reaches: TDictionary<string, Boolean>);
 var
   nodeOf: TDictionary<string, Integer>;
-  nodeName: TStringList;
   adj: TIntBucketList;
   colour, iter, stack: TList<Integer>;
   hits: array of Boolean;
-  i, k, di, u, v, top: Integer;
+  i, k, u, v, top: Integer;
   refs: TStringList;
 begin
   nodeOf := TDictionary<string, Integer>.Create;
-  nodeName := TStringList.Create;
   adj := TIntBucketList.Create(True);
   colour := TList<Integer>.Create;
   iter := TList<Integer>.Create;
   stack := TList<Integer>.Create;
   try
-    { one node per distinct definition name }
-    for i := 0 to defNames.Count - 1 do
-      if not nodeOf.ContainsKey(defNames[i]) then
-      begin
-        nodeOf.Add(defNames[i], nodeName.Count);
-        nodeName.Add(defNames[i]);
-        adj.Add(TIntList.Create);
-        colour.Add(0);
-        iter.Add(0);
-      end;
-    SetLength(hits, nodeName.Count);
-
-    { edges: a definition's references, minus a self-loop, minus anything undefined }
-    for u := 0 to nodeName.Count - 1 do
+    for i := 0 to names.Count - 1 do
     begin
-      if not nameIdx.TryGetValue(nodeName[u], di) then Continue;
-      refs := defRefs[di];
+      nodeOf.Add(names[i], i);
+      adj.Add(TIntList.Create);
+      colour.Add(0);
+      iter.Add(0);
+    end;
+    SetLength(hits, names.Count);
+
+    { edges: the name's references, minus a self-loop, minus anything undefined }
+    for u := 0 to names.Count - 1 do
+    begin
+      refs := refsOf[u];
       for k := 0 to refs.Count - 1 do
-        if (refs[k] <> nodeName[u]) and nodeOf.TryGetValue(refs[k], v) then
+        if (refs[k] <> names[u]) and nodeOf.TryGetValue(refs[k], v) then
           adj[u].Add(v);
     end;
 
-    for i := 0 to nodeName.Count - 1 do
+    for i := 0 to names.Count - 1 do
     begin
       if colour[i] <> 0 then Continue;
       stack.Clear;
@@ -4043,7 +4171,7 @@ begin
         begin
           v := adj[u][iter[u]];
           iter[u] := iter[u] + 1;
-          if colour[v] = 1 then hits[u] := True             { back edge: a cycle }
+          if colour[v] = 1 then hits[u] := True
           else if colour[v] = 2 then hits[u] := hits[u] or hits[v]
           else
           begin
@@ -4064,63 +4192,194 @@ begin
       end;
     end;
 
-    for i := 0 to nodeName.Count - 1 do
-      if hits[i] then reaches.AddOrSetValue(nodeName[i], True);
+    for i := 0 to names.Count - 1 do
+      if hits[i] then reaches.AddOrSetValue(names[i], True);
   finally
-    nodeOf.Free; nodeName.Free; adj.Free; colour.Free; iter.Free; stack.Free;
+    nodeOf.Free; adj.Free; colour.Free; iter.Free; stack.Free;
+  end;
+end;
+
+{ The reference's cycle walk, reproduced exactly, because its OUTPUT COUNT is part of the
+  contract the corpus gates and is not simply "one per name that reaches a cycle".
+
+  Its shape, in prose: for each reference in the current name's value, in order -- skip a
+  reference to the name itself, which is variable.self-reference; if the reference is
+  already on the path, emit one diagnostic and RETURN; otherwise, if it names a definition,
+  recurse with it appended to the path.
+
+  Two details drive the count. References are NOT deduplicated -- the reference iterates the
+  raw matches -- so a value naming the same variable twice walks it twice. And the return
+  leaves only the CURRENT frame, so an outer frame keeps iterating after an inner one has
+  reported; one start can therefore emit several diagnostics, all anchored at the START
+  definition.
+
+  It carries no memo, so the cost is the walk's: one start per definition that can reach a
+  cycle, each descending until it meets its own path. For a document that is one cycle of N
+  that is N diagnostics of N steps each -- quadratic, and quadratic is what the contract
+  costs, since every one of those diagnostics is output. The two things that must NOT be
+  paid on top of it are hashing and stack frames, so the walk below is over integer node
+  indices with an explicit stack: no dictionary lookup per step, and depth bounded by the
+  node count rather than by the machine stack. Written recursively over strings first, it
+  took 99 SECONDS on a cycle of 6 400 (see the table in the spec).
+
+  The one safe prune is `reaches`: a name that can reach no cycle at all can push nothing
+  from any path, so the descent stops there. That keeps an ordinary document linear and
+  leaves the counting untouched.
+
+  `refIdx[i]` is node i's raw references in order, each mapped to a node index or -1 for a
+  name that is not a definition -- which cannot be on the path and cannot be descended, so
+  it is skipped exactly as the reference's two failed lookups skip it. }
+procedure DetectCyclesRef(refIdx: TIntBucketList; names: TStringList;
+  const reach: array of Boolean; posOf: TDictionary<string, Integer>;
+  res: TSpDiagList; const src: string; map: TList<Integer>; var cur: TSourceCursor);
+var n, start, top, node, r, anchor: Integer;
+    onPath: array of Boolean;
+    stkNode, stkPos: array of Integer;
+    refs: TIntList;
+begin
+  n := names.Count;
+  SetLength(onPath, n);
+  { the path holds distinct nodes, so it can never be deeper than the node count }
+  SetLength(stkNode, n + 1);
+  SetLength(stkPos, n + 1);
+  for start := 0 to n - 1 do
+  begin
+    if not reach[start] then Continue;
+    anchor := posOf[names[start]];
+    top := 0;
+    stkNode[0] := start; stkPos[0] := 0;
+    onPath[start] := True;
+    while top >= 0 do
+    begin
+      node := stkNode[top];
+      refs := refIdx[node];
+      if stkPos[top] >= refs.Count then
+      begin
+        onPath[node] := False;                { frame exhausted: pop, unmarking the path }
+        Dec(top);
+        Continue;
+      end;
+      r := refs[stkPos[top]];
+      Inc(stkPos[top]);
+      if (r < 0) or (r = node) then Continue; { undefined name / a self-loop, which is
+                                                variable.self-reference instead }
+      if onPath[r] then
+      begin
+        AddDiagAtOrdered(res, 'variable.circular-reference', 'error', src, map,
+                         anchor, anchor + 4, cur);
+        onPath[node] := False;                { the reference returns from THIS frame only,
+                                                so the frame below it keeps iterating }
+        Dec(top);
+        Continue;
+      end;
+      if reach[r] then
+      begin
+        onPath[r] := True;
+        Inc(top);
+        stkNode[top] := r; stkPos[top] := 0;
+      end;
+    end;
   end;
 end;
 
 procedure CheckVariableRefsV(const text, src: string; map: TList<Integer>;
   KnownIncludes: TStringList; res: TSpDiagList);
-var kinds, defNames, defValues: TStringList; i: Integer;
+var kinds, defNames, defValues, names: TStringList; i, k, at: Integer;
     poss: TList<Integer>;
-    nameIdx: TDictionary<string, Integer>;
+    valueOf: TStrMap;
+    posOf: TDictionary<string, Integer>;
     reaches: TDictionary<string, Boolean>;
-    defRefs: TObjectList<TStringList>;
+    nameIdx: TDictionary<string, Integer>;
+    refsOf, rawRefs: TObjectList<TStringList>;
+    refIdx: TIntBucketList;
+    ints: TIntList;
+    reachArr: array of Boolean;
     refs: TStringList;
     curSelf, curCirc: TSourceCursor;
 begin
   kinds := TStringList.Create; defNames := TStringList.Create; defValues := TStringList.Create;
   poss := TList<Integer>.Create;
-  nameIdx := TDictionary<string, Integer>.Create;
-  defRefs := TObjectList<TStringList>.Create(True);
+  names := TStringList.Create;
+  valueOf := TStrMap.Create;
+  posOf := TDictionary<string, Integer>.Create;
+  refsOf := TObjectList<TStringList>.Create(True);
   reaches := TDictionary<string, Boolean>.Create;
   try
     CollectOccurrences(text, kinds, defNames, defValues, poss);
 
-    { Index the graph once. A name may be defined twice; the walk this replaces resolved it
-      with IndexOf, which answers with the FIRST occurrence, so only the first is recorded. }
+    { DEDUPLICATE BY NAME, LAST DEFINITION WINS. The reference builds a Map and sets each
+      name in document order, so a repeated name keeps only its LAST value -- and both the
+      self-reference test and the cycle walk run over that map, one entry per NAME rather
+      than one per occurrence.
+
+      This port used every occurrence and resolved a name to the FIRST of them, which
+      diverged in both directions. Measured against @spintax/core on 2026-08-06:
+
+        selfref then plain      we reported self-reference; the reference does not, because
+                                the surviving value is the plain one
+        cycle then plain        we reported the cycle three times; the reference reports
+                                none, because the surviving value breaks it
+        plain then cycle        we reported NOTHING; the reference reports the cycle twice,
+                                because the surviving value makes it
+
+      A JS Map keeps a key's FIRST insertion position when a later set overwrites it, so
+      the iteration order below is first-seen order while the value and the anchor are the
+      last one's. }
     for i := 0 to defNames.Count - 1 do
     begin
-      if not nameIdx.ContainsKey(defNames[i]) then nameIdx.Add(defNames[i], i);
+      if not valueOf.ContainsKey(defNames[i]) then names.Add(defNames[i]);
+      valueOf.AddOrSetValue(defNames[i], defValues[i]);
+      posOf.AddOrSetValue(defNames[i], poss[i]);
+    end;
+    for i := 0 to names.Count - 1 do
+    begin
       refs := TStringList.Create;
-      defRefs.Add(refs);
-      DirectReferences(defValues[i], refs);
+      refsOf.Add(refs);
+      DirectReferences(valueOf[names[i]], refs);
     end;
 
-    { Both loops walk the definitions in source order, so both take the resuming cursor.
-      With AddDiagAt each diagnostic re-walks the document from offset 1, and a document
-      where every definition reports -- one cycle through all of them -- then costs
-      O(document x diagnostics): 6400 of them measured 6.6 s, nearly all of it here and
-      none of it in the graph. }
+    { Both loops report in first-seen order while anchoring at the LAST definition, so the
+      offsets need not ascend; CursorLineCol restarts when they do not, which costs a walk
+      and never an answer. }
     InitSourceCursor(curSelf);
     InitSourceCursor(curCirc);
-    // self-reference -- at the offending #set/#def line
-    for i := 0 to defNames.Count - 1 do
-      if Pos('%' + defNames[i] + '%', LowerAscii(defValues[i])) > 0 then
+    // self-reference -- at the surviving #set/#def line
+    for i := 0 to names.Count - 1 do
+      if Pos('%' + names[i] + '%', LowerAscii(valueOf[names[i]])) > 0 then
+      begin
+        at := posOf[names[i]];
         AddDiagAtOrdered(res, 'variable.self-reference', 'error', src, map,
-                         poss[i], poss[i] + 4, curSelf);
-    // circular -- anchored at every definition that can reach a cycle
-    MarkCyclic(defNames, defRefs, nameIdx, reaches);
-    for i := 0 to defNames.Count - 1 do
-      if reaches.ContainsKey(defNames[i]) then
-        AddDiagAtOrdered(res, 'variable.circular-reference', 'error', src, map,
-                         poss[i], poss[i] + 4, curCirc);
+                         at, at + 4, curSelf);
+      end;
+    { circular -- the reference's own walk, pruned by the global reachability set and run
+      over node indices (see DetectCyclesRef for why the strings had to go) }
+    MarkCyclic(names, refsOf, reaches);
+    nameIdx := TDictionary<string, Integer>.Create;
+    rawRefs := TObjectList<TStringList>.Create(True);
+    refIdx := TIntBucketList.Create(True);
+    try
+      for i := 0 to names.Count - 1 do nameIdx.Add(names[i], i);
+      SetLength(reachArr, names.Count);
+      for i := 0 to names.Count - 1 do
+        reachArr[i] := reaches.ContainsKey(names[i]);
+      for i := 0 to names.Count - 1 do
+      begin
+        refs := TStringList.Create;
+        rawRefs.Add(refs);
+        RawReferences(valueOf[names[i]], refs);
+        ints := TIntList.Create;
+        refIdx.Add(ints);
+        for k := 0 to refs.Count - 1 do
+          if nameIdx.TryGetValue(refs[k], at) then ints.Add(at) else ints.Add(-1);
+      end;
+      DetectCyclesRef(refIdx, names, reachArr, posOf, res, src, map, curCirc);
+    finally
+      nameIdx.Free; rawRefs.Free; refIdx.Free;
+    end;
     // (undefined-variable warnings are emitted in SpValidate against the body scan)
   finally
     kinds.Free; defNames.Free; defValues.Free; poss.Free;
-    nameIdx.Free; defRefs.Free; reaches.Free;
+    names.Free; valueOf.Free; posOf.Free; refsOf.Free; reaches.Free;
   end;
 end;
 

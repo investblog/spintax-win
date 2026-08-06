@@ -67,20 +67,22 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(204 cases total):
+(234 cases total, 2026-08-07 — the corpus grew that day with the cases the family pinned
+from this port's divergences):
 
 | fixture file | cases | passing |
 |---|---|---|
-| render-semantics | 65 | 65 |
-| validate | 46 | 46 |
-| render-rng-selection | 10 | 10 |
-| neutralize | 8 | 8 |
+| render-semantics | 72 | 72 |
+| validate | 54 | 54 |
+| render-postprocess | 43 | 43 |
 | render-deterministic | 16 | 16 |
+| comments | 13 | 13 |
 | extract | 12 | 12 |
+| neutralize | 10 | 10 |
+| render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
-| **render-postprocess** | **43** | **43** |
 
-**`PASS=200 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=230 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -369,10 +371,17 @@ loops take the resuming cursor.
 | converging DAG, 2 000 levels | (does not finish) | 71 ms |
 | 6 400 flat definitions | 64 ms | 85 ms |
 
-The predicate is unchanged and narrower than "is in a cycle": a definition is reported when
-it can REACH a cycle of length two or more, a direct self-loop being `self-reference`
-instead. Verdicts are asserted, not argued — three differentials against the pre-rewrite
-build, 12 000 documents carrying 17, 1 944 and 2 856 circular-reference diagnostics, **0
+Those figures are **historical**, and the rows about cycles no longer describe this engine:
+they measure a walk that emitted one diagnostic per name, which is not what the reference
+emits. §5.3 replaced the emission rule the next day and the cost moved with it — see the
+table there. What survived unchanged is everything the table's other rows measure: the
+indexed graph, the worklist taint, the resuming cursors, and the reachability set, which is
+now the walk's prune rather than the walk itself.
+
+The DESCENT predicate is still narrower than "is in a cycle": a name is walked when it can
+REACH a cycle of length two or more, a direct self-loop being `self-reference` instead.
+Verdicts were asserted, not argued — three differentials against the pre-rewrite build,
+12 000 documents carrying 17, 1 944 and 2 856 circular-reference diagnostics, **0
 differences**, against six control mutations giving 1 944, 817, 799, 860, 820 and 2 856.
 
 **The lesson worth keeping is the benchmark's, not the algorithm's.** The first round
@@ -419,6 +428,35 @@ Knock-on: a CR-shedding directive line contributes a bare terminator, so runs of
 the blank-run collapse (three or more `\n` become two) exactly as LF lines always did, and a
 mixed run collapses only the part that became bare LFs.
 
+**And the malformed-directive check is a different rule from this one.** `validate` reports
+`set.malformed` / `def.malformed` from a scan that is not the regex above:
+
+```js
+for (const line of text.split('\n')) {
+  const trimmed = line.replace(/^[ \t]+/, '')
+  if ((trimmed.startsWith('#set ') || trimmed.startsWith('#def ')) && !DIRECTIVE_RE.test(trimmed))
+    ...
+}
+```
+
+Three things in four lines, and this port had two of them wrong until 2026-08-07 (both
+reported valid templates as invalid — the §3 verdict divergence, not a message difference):
+
+- the split is `'\n'` — **LF alone**, not the family's five terminators. A CR or a U+2028
+  does not begin a line here, so `x<CR>#set broken` is one line beginning with `x`, is not a
+  directive at all, and nothing is reported. This port split on all five;
+- the left trim is `[ \t]` — **space and tab alone**. This port used PHP's `ltrim` charlist,
+  which also eats NUL, VT, LF and CR, so `<VT>#set %x% = A` was trimmed into a directive
+  shape it does not have;
+- and `DIRECTIVE_RE` is `/gmu`, so `.test()` **searches** the trimmed line rather than
+  matching it whole, and under `/m` its anchors break on the CR and paragraph separators that
+  the split left inside. A malformed prefix followed by a CR and a well-formed directive
+  satisfies the test, and nothing is reported.
+
+The last one is not a hazard this port invented — it is what the reference does — but it is
+the reason the scan cannot be written as "parse the line". `TryParseDirective` is tried on
+each CR/U+2028/U+2029-delimited segment of the LF line, and one success clears the line.
+
 This one took three attempts, and the first two are the point. The port left `\r\n` whole,
 and the local suite pinned that with a comment claiming a measurement that was never taken
 for the shape. Corrected in `v0.3.1` — as "CRLF only", written down here and in four other
@@ -441,7 +479,11 @@ writes the class out:
 The class is written out rather than left to `\s` on purpose: JavaScript's `\s` is
 Unicode-aware and PHP's, under `/u`, is not, so an NBSP after `#include` is whitespace in one
 and not the other. Writing the ASCII set keeps every engine on the same answer — and this port
-must do the same, NBSP included.
+must do the same, NBSP included. Put to the family as
+[spintax-js#55](https://github.com/investblog/spintax-js/issues/55) and **settled on
+2026-07-25 in favour of the ASCII class**, now pinned by corpus fixtures this port passes:
+`#include<NBSP>"x"` is not an include, a space or a tab makes one, measured identical in both
+engines.
 
 Two consequences a line-by-line reading gets wrong, and this port did until 2026-07-25:
 
@@ -508,6 +550,122 @@ The corpus has no field for any of this. The gate is a differential against `@sp
 with a matching resolver on both sides — 52 cases, **48 of which differ when the seam is left
 nil**, zero when it is not — plus `TestIncludeResolver` in `tests/local_tests.dpr`.
 
+### 5.3 Definitions are a map, and the cycle count is the walk's
+
+`extractDirectives` returns `setDefs`/`defDefs` as **Maps**, so a name defined twice keeps
+the **last** value, and everything downstream reads that map: the self-reference test, the
+cycle walk, and the plural taint. This port kept every occurrence and resolved a name to the
+**first**, which diverged in both directions at once — inventing diagnostics the reference
+does not give and missing ones it does:
+
+| template (one directive per line) | reference | this port, before 2026-08-07 |
+|---|---|---|
+| `#set %x% = %x%` / `#set %x% = B` | — | `variable.self-reference` |
+| `#set %a% = plain` / `#set %a% = %b%` / `#set %b% = %a%` | two `circular-reference` | — |
+| `#def %n% = plain` / `#set %n% = {a|b}` / `#set %n% = plain` / `{plural %n%:…}` | — | `plural.count-macro` |
+
+The **count** is a separate contract, and a harder one, because it is a property of the walk
+rather than of the graph:
+
+```js
+function detectCycle(current, defs, visited, rootPos, out) {
+  for (const m of defs.get(current).matchAll(/%(\w+)%/gu)) {
+    const ref = m[1].toLowerCase()
+    if (ref === current) continue
+    if (visited.includes(ref)) { out.push(diagAt(rootPos)); return }
+    if (defs.has(ref)) detectCycle(ref, defs, [...visited, ref], rootPos, out)
+  }
+}
+```
+
+References are **not** deduplicated, so `#set %a% = %b% %b%` walks `%b%` twice; and the
+`return` leaves only the current frame, so an outer frame keeps iterating after an inner one
+reported. That template plus `#set %b% = %a%` gives **three** `variable.circular-reference`
+diagnostics, all anchored at `%a%`'s definition. This port gave one, and the corpus compares
+the multiset of codes.
+
+So the walk is now the reference's own, with one prune that cannot change the output: the
+global reachability set of §5's rewrite, used only to refuse to descend into a name that
+reaches no cycle at all. A name that cannot reach a cycle can push nothing from any path.
+
+Measured against `@spintax/core`: 4 000 generated definition graphs carrying duplicates,
+self-loops and multi-references, **0 differences**, against controls of 985 (first-wins),
+108 (taint over every occurrence) and 29 (one diagnostic per name).
+
+**What the faithful walk costs, and why it is not free.** The prune bounds an ordinary
+document and bounds nothing on a document built out of cycles, because there the answer
+itself is large. Two shapes, both now in `tests/local_tests.dpr` because the first version
+of this walk shipped without either:
+
+| shape | recursive, over strings | iterative, over node indices | `@spintax/core` |
+|---|---|---|---|
+| one cycle of 400 | 378 ms | 14 ms | 505 ms |
+| one cycle of 1 600 | 7 114 ms | 98 ms | — |
+| one cycle of 6 400 | **99 419 ms** | 1 052 ms | — |
+| one cycle of 25 600 | (did not finish) | 22 295 ms | — |
+| converging DAG, 8 levels → 512 diags | — | 1 ms | 13 ms |
+| converging DAG, 20 levels → 2 097 152 diags | — | 8 153 ms | 11 456 ms |
+
+Two different things are in that table.
+
+The **quadratic** part is the contract. A cycle of N produces N diagnostics and each is
+found by a walk of N steps, so N² is what the answer costs; the reference pays it too. What
+must not be paid on top of it is a dictionary lookup per step and a stack frame per level —
+the first version was recursive over string names, which is the 99-second row, and 6 400
+frames deep besides. Node indices, an explicit stack and a boolean path array make the same
+walk 94× cheaper and bound the depth by the node count instead of by the machine stack.
+
+The **exponential** part is not ours to fix. On a converging graph where every node reaches
+the cycle, every distinct path ends in a push, so the DIAGNOSTICS are exponential in the
+document: 507 bytes of `#set` lines produce 2 097 152 `variable.circular-reference` errors.
+`@spintax/core` produces exactly the same count on the same input — 512, 8 192, 131 072 and
+2 097 152 at 8, 12, 16 and 20 levels, verified 2026-08-07 — which is the strongest evidence
+the walk is a faithful port, and also a family-wide property worth knowing before feeding a
+validator an untrusted document. A walk cannot be cheaper than the output it must produce;
+the only honest fix would be a family decision to cap or deduplicate the diagnostics.
+
+### 5.4 What makes a permutation `<config>`
+
+`[<sep=", " maxsize=2>a|b|c]` — the leading `<…>` element is lifted out as configuration
+rather than rendered. Two independent tests decide it, and `v0.3.3` fixed the outer one:
+a leading `<li …>` stays content (the HTML-start-tag guard), and a real key must be present
+(`\b(?:minsize|maxsize|sep|lastsep)\s*=`). What `v0.3.3` did not touch is the extractors
+that then read the values — three more regexes:
+
+```js
+const MINSIZE_RE = /minsize\s*=\s*(\d+)/i;
+const MAXSIZE_RE = /maxsize\s*=\s*(\d+)/i;
+const SEP_RE     = /(?<!last)sep\s*=\s*"([^"]*)"/i;   // the lookbehind excludes `lastsep`
+const LASTSEP_RE = /lastsep\s*=\s*"([^"]*)"/i;
+```
+
+**The gate has the word boundary and the extractors do not.** `CONFIG_KEY_RE` is
+`/\b(?:minsize|maxsize|sep|lastsep)\s*=/i`; none of the four above carries a `\b` at all. So
+one unglued key opens the door and a glued-on one then walks through it: in
+`[<sep="-" xmaxsize=1>a|b|c]` the `sep=` satisfies the gate and `xmaxsize=1` is then read as
+`maxsize`, giving one element. Measured over 200 seeds in both engines on 2026-08-07 — the
+reference yields exactly the three single elements, and so does this port. Remove the real
+key and the boundary matters again: `[<xmaxsize=1>a|b]` has no config at all and renders
+`Axmaxsize=1b`, the whole string being the single-separator form.
+
+Being regexes, they have three further properties a hand-written scan does not get for free,
+and this port was missing all three until 2026-08-07:
+
+- **the `=` is required.** With it optional, `[<sep="-" maxsize 2>a|b|c]` parsed as
+  `maxsize=2` and rendered a random two of the three where the reference renders all three —
+  a render divergence, reachable because the outer gate had already been satisfied by the
+  real `sep=`;
+- **`\s` is the full ASCII set**, VT and FF included, not `[ \t]` — the same narrowing the
+  `v0.3.3` review found in the gate, one layer down;
+- **a failed candidate is retried at the next position.** `[<sep=x sep="-">a|b]` finds the
+  unquoted `sep=x`, fails, and goes on to the quoted one; this port stopped at the first.
+  The quotes are likewise required to close, so `[<sep="X>a|b]` configures nothing.
+
+3 000 generated permutation documents against the reference, canonicalised for RNG (§3
+makes selection order a non-goal): **0 differences**, against controls of 94 (`=` optional)
+and 814 (narrow whitespace). The glued-key forms are pinned by `TestPermConfigExtractors`
+instead — a generator that varies a config string rarely spells `xmaxsize=`.
+
 ## 6. Trust model
 
 `SpNeutralize` is a utility the **host** applies to data-derived (T2) input. The engine
@@ -563,6 +721,18 @@ over from the sibling ports:
   lenient fallbacks, and the parsed-AST input path have no fixture field. Every real bug in
   the sibling ports lived on those surfaces. They need local tests measured against the
   reference — never asserted from the port's own behavior.
+- **The harness is part of the measurement.** FPC's `fpjson` does not decode a JSON
+  code-point escape faithfully: it DROPS a `\u0000` on every accessor and turns every escape
+  above ASCII into a question mark, because the scanner converts through the system codepage
+  (measured on FPC 3.2.2, 2026-08-07). The corpus's first NUL-bearing fixture arrived at the
+  engine as `#set broken`, and the engine's correct answer was reported as a failure.
+  `SpxJson` now decodes those escapes itself before fpjson sees them; a NUL travels as
+  U+0001, the only kind of character fpjson delivers intact, and a file carrying one of its
+  own is refused rather than rewritten. The second half was latent — the fixtures spell
+  non-ASCII as raw UTF-8 today — and would have compared a future escaped fixture against a
+  row of question marks. **Before believing a green run, check that the input reached the
+  engine**: the probe that found this printed the template's bytes, and the fix was only
+  trusted once a mutated engine made the same fixture fail.
 
 ## 9. Open questions
 

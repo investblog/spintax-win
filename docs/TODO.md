@@ -11,47 +11,9 @@ The single list of open work.
 
 ## Open
 
-Two pre-existing divergences, measured by the review sweep of 2026-07-25, neither from this
-year's diffs (§3 REQUIRED). The third, the unterminated `/#`, was fixed on 2026-08-06 —
-see Done:
-
-- [ ] **`PhpLtrim` in the malformed-directive check.** `src/Spintax.pas` uses PHP's charlist
-      (` \t\n\r\0\x0B`) where the reference uses `/^[ \t]+/` (`validator.ts:112`), and splits
-      on five terminators where the reference splits on `\n` only (`validator.ts:110`). So
-      `<VT>#set %x% = A`, `<NUL>#set broken`, `x<CR>#set broken` and `x<U+2028>#set broken`
-      all report `set.malformed/error` here and nothing in the reference — a valid template
-      called invalid. Same charlist family as the `TryParseDirective` defect fixed in
-      `v0.3.1`, whose commit noted `PhpRtrim` stays for the permutation scan and did not
-      audit `PhpLtrim`'s other user.
-
-- [ ] **An extra `variable.self-reference`.** `#def %x% = #set %x% = ` + LF + `#set %x% = A`
-      → the reference reports `definition.duplicate-name/error`, this port adds
-      `variable.self-reference/error`. The verdict is invalid either way, so this is a code
-      set difference rather than a verdict one — the corpus gates codes, so it would fail if
-      a fixture covered it.
-
-- [ ] **Ask the family whether `#include<NBSP>"x"` is an include** —
-      [spintax-js#55](https://github.com/investblog/spintax-js/issues/55), filed 2026-07-26
-      with the measured JS table and four proposed `extract` fixtures; PHP still unmeasured.
-      Nothing here is blocked on it (this port follows `@spintax/core`, §2), but if PHP wins
-      the answer arrives as fixtures and the corpus turns red here first. The reference spells the
-      whitespace class out as ASCII "for PHP parity"; the PHP core and the plugin write `\s`
-      under `/u`, and PCRE2 with `/u` also sets `UCP`, which makes `\s` match `\p{Z}` — NBSP
-      included. If that is right, PHP accepts a line JS and this port reject, and the
-      reference's comment has the reason backwards. Unmeasured: no PHP on this machine. This
-      port follows `@spintax/core` either way (§2), so nothing here is blocked on it.
-
-- [ ] **The permutation-config extractors are looser than the reference's regexes.**
-      Pre-existing, unchanged by the `v0.3.2` branch-gate fix, reachable only once a real
-      key has already selected key form. `FindInt` treats `=` as optional where
-      `MINSIZE_RE`/`MAXSIZE_RE` require it — `[<sep="-" minsize 5>…]` parses minsize=5 here,
-      null in the reference (measured by the 2026-07-26 review agent against the actual JS).
-      And `FindInt`/`FindStr` skip only `[' ',#9]` around `=` where the reference's `\s*`
-      also takes LF/VT/FF/CR; same 4-char-vs-`\s` gap in the per-element `looksHtml` check
-      in `ParsePermutation` (`PER_ELEM_HTML_RE`). The new `LooksLikeHtmlStartTag` /
-      `HasConfigKey` use the full ASCII `\s` set already; align these older sites with a
-      before/after differential over VT/FF/CR-bearing configs.
-
+All three of the 2026-07-25 divergence sweep are closed — the unterminated `/#` on
+2026-08-06, `PhpLtrim` and the extra `variable.self-reference` on 2026-08-07. What is left
+open is questions for the family and one known ordering difference.
 
 - [ ] **Ask the family whether a neutralized span should be exempt from the cosmetic
       stage.** The pipeline runs the post-process BEFORE the sentinel restore, so
@@ -82,6 +44,83 @@ see Done:
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **Review follow-up on the same day's work** (2026-08-07). An external review of the
+      three fixes above found one blocker and two documentation errors, and verifying them
+      turned up a fourth thing nobody had looked at.
+
+      **The faithful cycle walk was recursive over strings, and that is a defect.** The
+      output was right and the cost was not: one cycle of 6 400 definitions took **99
+      seconds** and 6 400 stack frames, where the walk it replaced took 113 ms. It is now
+      iterative over node indices with an explicit stack — 1 052 ms for the same document,
+      25 600 now finishes at all, and depth is bounded by the node count instead of by the
+      machine stack. The quadratic part is the contract (N diagnostics × an N-step walk, and
+      `@spintax/core` pays 505 ms where this port pays 14 on a cycle of 400); the hashing and
+      the frames were not. Output identical: the two 4 000-case differentials re-run
+      byte-for-byte, and three control mutations each fail the assertions they should. Both
+      shapes are now in the suite (`TestGraphStress`), which is the actual lesson — the first
+      version shipped with neither, on a review-driven rewrite whose own spec section warned
+      about exactly that.
+
+      **The spec described regexes the reference does not have.** §5.4 gave the extractors a
+      `\b`; `MINSIZE_RE` and friends have none, and `SEP_RE` has a lookbehind the text did
+      not mention. The GATE has the boundary and the extractors do not, so a real key opens
+      the door and `xmaxsize=1` then walks through it — measured in both engines over 200
+      seeds, now pinned by four assertions. The port was right; only the document was wrong,
+      which is the more dangerous of the two.
+
+      **And the differential's size was misreported** — 3 000 permutation documents, not
+      4 000. Corrected against the corpus file itself.
+
+      **The corpus runner was mangling its own input.** Chasing the NUL case the family had
+      just pinned showed FPC's `fpjson` DROPS a `\u0000` escape and turns every escape above
+      ASCII into `?`. See §8 of the spec; the fix is in `tests/SpxJson.pas` and is verified
+      by a byte-level probe plus a mutated engine that now fails the fixture.
+
+- [x] **The last three §3 divergences, closed together** (2026-08-07), ahead of the corpus
+      session that is pinning these forms. Each measured against `@spintax/core` the same
+      day, each with a differential carrying a control run.
+
+      **The malformed-directive shape test.** `checkDirectives` splits on **LF alone** and
+      left-trims **spaces and tabs alone**, where this port split on five terminators and
+      used PHP's charlist. `<VT>#set %x% = A`, `<NUL>#set broken`, `x<CR>#set broken` and
+      `x<U+2028>#set broken` were all reported malformed here and are not directives at all
+      to the reference — a valid template called invalid, the §3 verdict divergence. Two
+      further things surfaced while measuring: the test is `DIRECTIVE_RE.test(trimmed)` with
+      the regex `/gmu`, so a well-formed directive sitting after a CR **inside** the line
+      satisfies it and nothing is reported.
+
+      **Definitions are deduplicated by name, LAST one winning** — for the self-reference
+      test, the cycle walk and the plural taint alike, because the reference builds a Map
+      and overwrites. This port used every occurrence and resolved a name to the FIRST, and
+      the backlog had only half of it: we invented diagnostics the reference does not give
+      (`#set %x% = %x%` then `#set %x% = B`) *and missed ones it does* (`#set %a% = plain`
+      then `#set %a% = %b%` with `%b%` pointing back — the reference reports the cycle
+      twice, this port reported nothing). The taint had the same shape: a middle definition
+      holding an enumeration tainted a name whose surviving value is a literal.
+
+      The COUNT was wrong too, and that was not in the backlog at all. The reference does
+      not deduplicate references and returns from only the current frame, so `#set %a% =
+      %b% %b%` in a cycle reports three times where this port reported once. The walk is
+      now the reference's own, kept from exploding by pruning at names that reach no cycle
+      — a prune that cannot change the output.
+
+      **The permutation config extractors.** `MINSIZE_RE` and friends require the `=`, take
+      the full ASCII `\s` around it, and are regexes, so a failed candidate is retried at
+      the next position. This port made the `=` optional (`[<sep="-" maxsize 2>a|b|c]`
+      rendered a random subset where the reference renders all three), took only space and
+      tab, gave up after the first candidate, and accepted an unterminated quote.
+
+      Three differentials against the reference, 11 000 generated documents: directive
+      shapes 4 000, definition graphs with duplicates 4 000, permutation configs 3 000 —
+      **0 differences** in all three. Seven control mutations fire on exactly the corpus
+      they belong to and nowhere else: 316, 269, 108, 985, 29, 94 and 814. 25 new local
+      assertions; the suite is 474.
+
+      Also closed: **the NBSP `#include` question** ([spintax-js#55](https://github.com/investblog/spintax-js/issues/55),
+      closed 2026-07-25). The ASCII class won and the corpus pins it; measured today,
+      `#include<NBSP>"x"` yields no include in either engine, and a space or tab yields one.
+
 
 - [x] **A template can be parsed once and rendered many times** (2026-08-06).
       `SpCompile` → `TSpTemplate` → `SpRenderCompiled`, additive; `SpRender` is unchanged
