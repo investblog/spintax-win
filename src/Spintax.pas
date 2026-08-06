@@ -195,6 +195,28 @@ const
   SP_DEFAULT_INCLUDE_DEPTH = 20;
 
 { Public API }
+{ A template parsed once and rendered many times.
+
+  SpRender parses on every call, and parsing is where the time goes: phase timing puts
+  rendering at 3% of a render and building plus destroying the node tree at 84% of an
+  article. A host that renders one template repeatedly -- a content tool spinning the same
+  message thousands of times -- pays that on every one.
+
+  The state is opaque on purpose: the node tree is the engine's own, and exposing it would
+  make an internal representation part of the contract. Compile once, render as often as
+  you like, free when done; every choice is still made per render, and a compiled template
+  produces exactly what SpRender produces from the same source. }
+type
+  TSpTemplate = class
+  private
+    FImpl: TObject;
+  public
+    destructor Destroy; override;
+  end;
+
+function SpCompile(const Template: string): TSpTemplate;
+function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
+
 function SpRender(const Template: string; const Ctx: TSpContext): string;
 function SpNeutralize(const Value: string): string;
 function SpSafetyRestore(const Text: string): string;
@@ -3002,6 +3024,47 @@ end;
   #set/#def are NOT, because a child builds its own from its own source. Rng is shared, so
   the sequence continues across the seam. Stack carries the refs currently being expanded,
   for the cycle and depth guards. }
+{ Everything about a template that does not depend on the render: the directive maps, the
+  body's node tree, and the node tree of each #def value.
+
+  What is NOT cached, and cannot be: a #def is rolled once per RENDER and its rolling ORDER
+  depends on the host's variables, since a runtime variable of the same name outranks a
+  definition and changes which aliases the dependency graph can see. So the trees are
+  reused and the ordering is recomputed -- it costs O(definitions), not O(document). }
+type
+  TTemplateImpl = class
+  public
+    SetDefs, DefDefs: TStrMap;
+    Body: TNodeList;
+    DefIdx: TDictionary<string, Integer>;
+    DefTrees: TObjectList<TNodeList>;
+    constructor Create(const Template: string);
+    destructor Destroy; override;
+  end;
+
+constructor TTemplateImpl.Create(const Template: string);
+var bodyText: string; pair: TPair<string, string>;
+begin
+  inherited Create;
+  SetDefs := TStrMap.Create;
+  DefDefs := TStrMap.Create;
+  DefIdx := TDictionary<string, Integer>.Create;
+  DefTrees := TObjectList<TNodeList>.Create(True);
+  ExtractDirectives(StripComments(SpStripSentinels(Template)), SetDefs, DefDefs, bodyText);
+  Body := ParseSequence(bodyText);
+  for pair in DefDefs do
+  begin
+    DefIdx.Add(pair.Key, DefTrees.Count);
+    DefTrees.Add(ParseSequence(pair.Value));
+  end;
+end;
+
+destructor TTemplateImpl.Destroy;
+begin
+  SetDefs.Free; DefDefs.Free; Body.Free; DefIdx.Free; DefTrees.Free;
+  inherited Destroy;
+end;
+
 function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
   Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer;
   Stack: TStringList): string; forward;
@@ -3056,25 +3119,21 @@ begin
   Result := Result + Copy(text, pos_, n - pos_ + 1);
 end;
 
-function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
+{ The half of a render that depends on the host: variables, the #def roll, the tree walk
+  and the includes. Everything it reads from the template was prepared by TTemplateImpl. }
+function RenderCompiled(impl: TTemplateImpl; RuntimeVars: TStrMap; const Locale: string;
   Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
-var setDefs, defDefs, vars, aliases: TStrMap;
-    body: string;
-    nodes, dn: TNodeList;
+var vars, aliases: TStrMap;
     opts: TRenderOpts;
     pair: TPair<string, string>;
     outranked, defOrder: TStringList;
-    oi: Integer;
+    oi, di: Integer;
 begin
-  setDefs := TStrMap.Create;
-  defDefs := TStrMap.Create;
   vars := TStrMap.Create;
   outranked := TStringList.Create;
   try
-    ExtractDirectives(StripComments(SpStripSentinels(Template)), setDefs, defDefs, body);
-
     // buildVars: setDefs raw, then runtime context overlays (lower-cased)
-    for pair in setDefs do vars.AddOrSetValue(pair.Key, pair.Value);
+    for pair in impl.SetDefs do vars.AddOrSetValue(pair.Key, pair.Value);
     if Assigned(RuntimeVars) then
       for pair in RuntimeVars do
       begin
@@ -3090,7 +3149,7 @@ begin
     // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
     // outranks it (never rolled). The order must not come from hash enumeration —
     // see OrderDefinitions above.
-    if defDefs.Count > 0 then
+    if impl.DefDefs.Count > 0 then
     begin
       // Aliases = every macro value a definition can see, minus the definitions
       // that will actually be rolled: a #def shadows a same-named #set, and hopping
@@ -3100,20 +3159,17 @@ begin
       aliases := TStrMap.Create;
       try
         for pair in vars do
-          if not (defDefs.ContainsKey(pair.Key) and (outranked.IndexOf(pair.Key) < 0)) then
+          if not (impl.DefDefs.ContainsKey(pair.Key) and (outranked.IndexOf(pair.Key) < 0)) then
             aliases.AddOrSetValue(pair.Key, pair.Value);
 
-        defOrder := OrderDefinitions(defDefs, aliases);
+        defOrder := OrderDefinitions(impl.DefDefs, aliases);
         try
           for oi := 0 to defOrder.Count - 1 do
           begin
             if outranked.IndexOf(defOrder[oi]) >= 0 then Continue;
-            dn := ParseSequence(defDefs[defOrder[oi]]);
-            try
-              vars.AddOrSetValue(defOrder[oi], RenderNodes(dn, opts));
-            finally
-              dn.Free;
-            end;
+            { the value's tree was parsed at compile time; rolling it is a render }
+            if impl.DefIdx.TryGetValue(defOrder[oi], di) then
+              vars.AddOrSetValue(defOrder[oi], RenderNodes(impl.DefTrees[di], opts));
           end;
         finally
           defOrder.Free;
@@ -3123,21 +3179,34 @@ begin
       end;
     end;
 
-    nodes := ParseSequence(body);
-    try
-      Result := RenderNodes(nodes, opts);
-    finally
-      nodes.Free;
-    end;
+    Result := RenderNodes(impl.Body, opts);
 
     if Resolver <> nil then
       Result := ResolveIncludes(Result, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
   finally
-    setDefs.Free; defDefs.Free; vars.Free; outranked.Free;
+    vars.Free; outranked.Free;
   end;
 end;
 
-function SpRender(const Template: string; const Ctx: TSpContext): string;
+{ One-shot: compile, render, discard. This is what an #include child takes, and what
+  SpRender takes, so the two paths cannot drift apart. }
+function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
+var impl: TTemplateImpl;
+begin
+  impl := TTemplateImpl.Create(Template);
+  try
+    Result := RenderCompiled(impl, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+  finally
+    impl.Free;
+  end;
+end;
+
+{ The wrapper both public entry points share: the RNG the caller did or did not supply,
+  the include stack and depth, then the cosmetic stage and the mandatory restore. `impl`
+  nil means "compile Template first", which is what SpRender does. }
+function RenderTop(impl: TTemplateImpl; const Template: string;
+  const Ctx: TSpContext): string;
 var ownedRng: TSpRng; rng: TSpRng; stack: TStringList; depth: Integer; outp: string;
 begin
   { Owned only when the caller supplied none; the caller's own Rng is never freed here. }
@@ -3148,8 +3217,12 @@ begin
     depth := Ctx.MaxIncludeDepth;
     if depth <= 0 then depth := SP_DEFAULT_INCLUDE_DEPTH;
 
-    outp := RenderDocument(Template, Ctx.Vars, Ctx.Locale, rng,
-                           Ctx.IncludeResolver, depth, stack);
+    if impl <> nil then
+      outp := RenderCompiled(impl, Ctx.Vars, Ctx.Locale, rng,
+                             Ctx.IncludeResolver, depth, stack)
+    else
+      outp := RenderDocument(Template, Ctx.Vars, Ctx.Locale, rng,
+                             Ctx.IncludeResolver, depth, stack);
 
     { Once, over the whole assembled document -- parent and every child it pulled in. The
       cosmetic pipeline therefore sees across the seam, and a sentinel a child emitted is
@@ -3159,6 +3232,28 @@ begin
   finally
     stack.Free; ownedRng.Free;
   end;
+end;
+
+function SpRender(const Template: string; const Ctx: TSpContext): string;
+begin
+  Result := RenderTop(nil, Template, Ctx);
+end;
+
+destructor TSpTemplate.Destroy;
+begin
+  FImpl.Free;
+  inherited Destroy;
+end;
+
+function SpCompile(const Template: string): TSpTemplate;
+begin
+  Result := TSpTemplate.Create;
+  Result.FImpl := TTemplateImpl.Create(Template);
+end;
+
+function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
+begin
+  Result := RenderTop(TTemplateImpl(Tmpl.FImpl), '', Ctx);
 end;
 
 { ─── extract ─────────────────────────────────────────────────────────────── }

@@ -1122,6 +1122,88 @@ end;
   which a 4000-document differential against the previous build asserts (0 differences,
   against 1944 / 817 / 799 for three control mutations). These few pin the shapes that
   differential exists to protect, so a later change trips a named test first. }
+{ SpCompile / SpRenderCompiled: a template parsed once and rendered many times.
+
+  A compiled template must produce exactly what SpRender produces from the same source,
+  and rendering must not change it -- the node tree is reused, so a render that mutated it
+  would poison every later one. Asserted here on the shapes with state, and separately by
+  a 1500-template differential comparing both paths under the same seed with post-process
+  on and off: 0 differences, and 0 for a second render of the same compiled template.
+  Two control mutations of the new code give 385/109 and 4446/4225. }
+procedure TestCompiledTemplate;
+var t: TSpTemplate; ctx: TSpContext; a, b: string; outs: TStringList; i: Integer;
+begin
+  { the same seed through both paths must give the same bytes }
+  t := SpCompile('{a|b} {c|d} {e|f}');
+  try
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    ctx.Rng := TMulberry32Rng.Create(7);
+    try a := SpRender('{a|b} {c|d} {e|f}', ctx); finally ctx.Rng.Free; end;
+    ctx.Rng := TMulberry32Rng.Create(7);
+    try b := SpRenderCompiled(t, ctx); finally ctx.Rng.Free; end;
+    Check('compiled/same-seed-same-bytes', b, a);
+    { and rendering it did not change it }
+    ctx.Rng := TMulberry32Rng.Create(7);
+    try b := SpRenderCompiled(t, ctx); finally ctx.Rng.Free; end;
+    Check('compiled/reuse-is-unchanged', b, a);
+  finally
+    t.Free;
+  end;
+
+  { a #def resolves once per RENDER and must NOT be frozen at compile time: over many
+    renders a compiled template still reaches both branches }
+  t := SpCompile('#def %x% = {p|q}' + #10 + '%x%%x%');
+  outs := TStringList.Create;
+  try
+    outs.Sorted := True; outs.Duplicates := dupIgnore;
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    for i := 1 to 400 do outs.Add(Trim(SpRenderCompiled(t, ctx)));
+    Check('compiled/def-rerolls-per-render', outs.Text, 'pp' + sLineBreak + 'qq' + sLineBreak);
+  finally
+    outs.Free; t.Free;
+  end;
+
+  { a runtime variable outranks a definition of the same name -- the ordering is recomputed
+    per render, so the same compiled template answers to different contexts }
+  t := SpCompile('#def %x% = fromdef' + #10 + '%x%');
+  try
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    Check('compiled/def-used-when-no-context', Trim(SpRenderCompiled(t, ctx)), 'fromdef');
+    ctx.Vars := TStrMap.Create;
+    try
+      ctx.Vars.AddOrSetValue('x', 'fromhost');
+      Check('compiled/context-outranks-the-def', Trim(SpRenderCompiled(t, ctx)), 'fromhost');
+    finally
+      ctx.Vars.Free; ctx.Vars := nil;
+    end;
+    { and the template is still good for the next caller }
+    Check('compiled/still-good-after-a-context', Trim(SpRenderCompiled(t, ctx)), 'fromdef');
+  finally
+    t.Free;
+  end;
+
+  { a #set is a macro -- re-rolled at every reference, compiled or not }
+  t := SpCompile('#set %y% = {p|q}' + #10 + '%y%%y%');
+  outs := TStringList.Create;
+  try
+    outs.Sorted := True; outs.Duplicates := dupIgnore;
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    for i := 1 to 600 do outs.Add(Trim(SpRenderCompiled(t, ctx)));
+    Check('compiled/set-is-still-a-macro', IntToStr(outs.Count), '4');
+  finally
+    outs.Free; t.Free;
+  end;
+
+  { comments and sentinels are stripped at compile time, once, with the same result }
+  t := SpCompile('a /# gone #/ b');
+  try
+    ctx := Default(TSpContext); ctx.Locale := 'en'; ctx.PostProcess := False;
+    Check('compiled/comment-stripped-once', SpRenderCompiled(t, ctx), 'a  b');
+  finally
+    t.Free;
+  end;
+end;
+
 procedure TestDefinitionGraph;
 begin
   { a name that reaches no cycle is memoised -- a clean start must not silence a later
@@ -1335,6 +1417,7 @@ begin
   TestPostProcess;
   TestNulInInput;
   TestDiagPositions;
+  TestCompiledTemplate;
   TestDefinitionGraph;
   TestUnterminatedComment;
   TestExtractDirectives;

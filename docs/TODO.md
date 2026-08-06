@@ -52,34 +52,6 @@ see Done:
       `HasConfigKey` use the full ASCII `\s` set already; align these older sites with a
       before/after differential over VT/FF/CR-bearing configs.
 
-- [ ] **Expose a parsed template. The per-construct cost is now profiled, and it is the
-      node tree — built and torn down on every render.** Phase timing (2026-08-06,
-      `SpRender` split into parse / render / free):
-
-      | template | parse | render | free | other |
-      |---|---|---|---|---|
-      | article 3.7 KB, PP off | 51.7% | 3.0% | 32.4% | 12.9% |
-      | article 3.7 KB, PP on | 34.0% | 2.5% | 20.1% | 43.4% |
-      | 64 KB dense, PP off | 56.7% | 3.5% | 35.8% | 4.1% |
-      | 64 KB long options, PP off | 42.0% | 4.0% | 15.1% | 38.9% |
-
-      Rendering is **3%**. Everything else is building the tree and destroying it: 84% of an
-      article render, 93% of a dense one. `TNode` is a fat class carrying the fields of all
-      six node kinds, so a literal costs a full allocate-zero-finalize, and `{a|b}` costs six
-      objects plus a `TStringList` from `SplitTopLevel`.
-
-      So the earlier allocation guess was right in kind and wrong in what it named: the
-      string allocation removed then was noise beside the class churn.
-
-      Micro-optimising the parser is a poor trade — dropping `SplitTopLevel`'s `TStringList`
-      buys maybe 10–14% of parse, and collapsing literal-only options into the AST is a
-      rewrite of the thing the corpus gates. **Caching the parse removes all 84%**: measured
-      ceiling is ~6× on an article with `PostProcess=False` and ~2.2× with it on. `SpCompile`
-      → `TSpTemplate` → render N times is additive, leaves parse and render code untouched,
-      and is the shape a SER-like host actually needs. Note `#def` must still re-roll per
-      render and its ORDER depends on runtime vars, so a compiled template caches the
-      directive maps and the def node trees, not the ordering; and "the render never mutates
-      the tree" wants a test, not a reading.
 
 - [ ] **Ask the family whether a neutralized span should be exempt from the cosmetic
       stage.** The pipeline runs the post-process BEFORE the sentinel restore, so
@@ -101,6 +73,26 @@ see Done:
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **A template can be parsed once and rendered many times** (2026-08-06).
+      `SpCompile` → `TSpTemplate` → `SpRenderCompiled`, additive; `SpRender` is unchanged
+      and now runs the same two halves in sequence, so the paths cannot drift.
+      See [decisions/0006](decisions/0006-compiled-template.md).
+
+      Phase timing is what justified it: rendering is 3% of a render, and building plus
+      destroying the node tree is 84% of an article and 93% of a construct-dense document.
+      Per render — 3.7 KB article with the cosmetic stage off, **0.98 → 0.04 ms (25×)**; the
+      same with it on, 1.53 → 0.68 ms; 64 KB of sentence-long options, 5.27 → 0.44 ms; a
+      construct every five bytes, 52.3 → 1.90 ms. The projection had been ~6×; it came out
+      higher because the sentinel strip, comment strip and directive extraction are cached
+      too. With the cosmetic stage on the gain is small, because that stage is per render.
+
+      The tree is REUSED, so equivalence is asserted rather than argued: a 1500-template
+      differential through both paths under one seed, cosmetic stage on and off, plus a
+      second render of the same compiled template — 0 differences and 0 changes from reuse,
+      where two control mutations give 385/109 and 4446/4225. Eight local assertions pin the
+      shapes with state. What cannot be cached and is not: the `#def` roll, whose ORDER
+      depends on the host's variables.
 
 - [x] **The definition graph is linear** (2026-08-06). `SpValidate` on chained `#set`s —
       the shape an editor meets, each macro referencing the next — took **23 959 ms at 400

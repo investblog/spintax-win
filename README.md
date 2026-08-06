@@ -233,6 +233,8 @@ zeroed memory means and inventing a tri-state to mimic a JS default would be wor
 ## Public API
 
     function SpRender(const Template: string; const Ctx: TSpContext): string;
+    function SpCompile(const Template: string): TSpTemplate;
+    function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
     function SpNeutralize(const Value: string): string;
     function SpSafetyRestore(const Text: string): string;
     function SpStripSentinels(const Text: string): string;
@@ -244,6 +246,33 @@ zeroed memory means and inventing a tri-state to mimic a JS default would be wor
     end;
     function NormalizeBaseLang(const Locale: string): string;
     function PluralArity(const BaseLang: string): Integer;
+
+`SpCompile` parses a template once so it can be rendered many times. Parsing is where the
+time goes — rendering is 3% of a render, and building plus destroying the node tree is 84%
+of an article — so a host that spins one template repeatedly pays that on every call:
+
+```pascal
+tmpl := SpCompile(source);
+try
+  for i := 1 to 10000 do WriteLn(SpRenderCompiled(tmpl, ctx));
+finally
+  tmpl.Free;                       { the caller owns it }
+end;
+```
+
+A compiled template renders exactly what `SpRender` renders from the same source; every
+choice is still made per render, `#def` still resolves once per render and `#set` is still
+a macro. Measured on the same machine, per render:
+
+| | `SpRender` | compiled |
+|---|---|---|
+| 3.7 KB article, 160 blocks, `PostProcess=False` | 0.98 ms | **0.04 ms** |
+| 3.7 KB article, `PostProcess=True` | 1.53 ms | 0.68 ms |
+| 64 KB, sentence-long options, `PostProcess=False` | 5.27 ms | **0.44 ms** |
+| 64 KB, a construct every five bytes | 52.3 ms | **1.90 ms** |
+
+With the cosmetic stage on the gain is smaller, because that stage runs per render and now
+dominates what is left.
 
 `SpValidate` returns a list of `TSpDiag` (code + severity). A template is invalid
 if any diagnostic has severity `error`; that is the verdict an editor or an
