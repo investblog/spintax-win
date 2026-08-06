@@ -207,14 +207,20 @@ what you want. On text bound for another system, or text that must come back byt
 is not:
 
     ctx.PostProcess := True;
-    SpRender('a #file[list.txt,1,S] b', ctx)   ->  'A #file[list.txt,1, S] b'
+    ctx.Vars['m'] := SpNeutralize('#file[list.txt,1,S]');   { the host's own payload }
+    SpRender('a %m% b', ctx)     ->   'A #file[list.txt,1, S] b'
 
-Both changes are the cosmetic stage: `a` was capitalised as a sentence start, and the comma
-was given a space because a letter follows. **`SpNeutralize` does not protect against
+Two changes, both the cosmetic stage: `a` was capitalised as a sentence start, and the comma
+was given a space because a letter follows it. **`SpNeutralize` does not protect against
 this** — it shields structural characters from the *parser*, and the pipeline runs the
 cosmetic stage *before* the sentinel restore, so neutralized text is ordinary text to the
 typography. `@spintax/core` behaves the same way; this is the family's contract, not a
 quirk of this port.
+
+(The payload has to arrive through `Ctx.Vars` for the example to mean anything. Written
+straight into the template, `[list.txt,1,S]` is a one-option permutation and the parser eats
+the brackets long before the typography gets a turn — which is a different problem, and the
+one `Spintax.Gsa` exists to solve.)
 
 **So: if the output is consumed by another tool, or is a payload rather than prose, render
 with `PostProcess=False`.** That is the documented setting for GSA SER templates below, and

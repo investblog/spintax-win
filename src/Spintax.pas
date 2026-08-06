@@ -3768,6 +3768,7 @@ end;
 
 procedure CheckDirectivesV(const text, src: string; map: TList<Integer>; res: TSpDiagList);
 var lineStart, e, n, i, p, termLen: Integer;
+    curDup, curInc: TSourceCursor;
     line, t, kind, nm, val: string;
     isSet, isDef: Boolean;
     kinds, names, values: TStringList;
@@ -3802,17 +3803,27 @@ begin
   poss := TList<Integer>.Create;
   try
     CollectOccurrences(text, kinds, names, values, poss);
+    { The offsets ascend, so both diagnostics take the resuming cursor. With AddDiagAt each
+      one re-walks the document from offset 1, and the same name defined N times reports N
+      times: 6400 duplicate definitions measured 5.4 s, all of it here and none of it in the
+      detection. Two cursors, because the two diagnostics interleave and each is ascending
+      only within itself. This is the fifth place that defect has been found; the pattern to
+      look for is AddDiagAt inside a loop over occurrences. }
+    InitSourceCursor(curDup);
+    InitSourceCursor(curInc);
     for i := 0 to names.Count - 1 do
     begin
       { duplicate is reported at the LATER occurrence -- poss[i] is that line's '#' }
       if seen.ContainsKey(names[i]) then
-        AddDiagAt(res, 'definition.duplicate-name', 'error', src, map, poss[i], poss[i] + 4)
+        AddDiagAtOrdered(res, 'definition.duplicate-name', 'error', src, map,
+                         poss[i], poss[i] + 4, curDup)
       else seen.Add(names[i], True);
       if kinds[i] = 'def' then
       begin
         p := Pos('#include', values[i]);
         if (p > 0) and ((p + 8 > Length(values[i])) or (not IsAsciiWord(values[i][p + 8]))) then
-          AddDiagAt(res, 'def.include-in-value', 'error', src, map, poss[i], poss[i] + 4);
+          AddDiagAtOrdered(res, 'def.include-in-value', 'error', src, map,
+                           poss[i], poss[i] + 4, curInc);
       end;
     end;
   finally

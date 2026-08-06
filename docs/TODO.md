@@ -65,6 +65,15 @@ see Done:
       GSA template wants anyway. Pinned by `tests/gsa_tests.dpr` so a family change shows up
       here first.
 
+- [ ] **`include.unknown-target` is emitted before the `variable.undefined` warnings; the
+      reference emits it after.** Found by the 2026-08-06 review over 5 000 include-bearing
+      cases: the diagnostic MULTISET is identical to `@spintax/core` (`sort | diff` = 0) and
+      1 184 lines differ in order alone. Pre-existing — identical at `f408fea`, so not from
+      the comment or graph work — and codes plus severity are what §3 makes the contract, so
+      no verdict moves. Worth closing anyway: an editor that lists diagnostics in engine
+      order shows them in a different order than the reference would, and the corpus does not
+      gate order.
+
 - [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
       tests only whether a variable is SET, so the dialect converter below expresses an
       n-way correlated choice as n−1 definitions and a chain of n−1 nested conditionals per
@@ -110,8 +119,9 @@ see Done:
       | one cycle of 6 400 | (hours) | 113 ms |
       | converging DAG, 20 levels (914 bytes) | 89 ms | <1 ms |
       | converging DAG, 2 000 levels | (does not finish) | 71 ms |
+      | 6 400 duplicate definitions of one name | 14 728 ms | 47 ms |
 
-      **Four** causes, and the first round of work found only three of them. Every lookup was
+      **Five** causes, and the first round of work found three of them. Every lookup was
       a linear `TStringList.IndexOf` and every visit re-parsed the value's references; the
       taint propagation was a fixpoint sweep, which on a chain taints one name per pass and
       so runs once per definition over every definition; the cycle walk restarted at every
@@ -126,7 +136,11 @@ see Done:
       colour walk. And the fourth cause was not in the graph at all: with every definition
       reporting, `AddDiagAt` re-walked the document from offset 1 per diagnostic, which is
       the resuming-cursor defect this file already records for `SpExtract`. Both loops take
-      `AddDiagAtOrdered` now.
+      `AddDiagAtOrdered` now — and a review then found it a **fifth** time, in
+      `definition.duplicate-name`, which is why one `#set`-heavy shape (the same name defined
+      over and over) was still quadratic after the round that claimed every shape was linear.
+      The pattern to grep for is `AddDiagAt` inside a loop over occurrences; the remaining
+      sites (brackets, malformed directives) are pre-existing and still there.
 
       Verdicts unchanged, asserted by three differentials against the pre-rewrite build —
       12 000 documents in all, carrying 17, 1 944 and 2 856 circular-reference diagnostics:

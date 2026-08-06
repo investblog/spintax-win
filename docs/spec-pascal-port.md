@@ -193,6 +193,8 @@ not in this one. Both are open.
 
 ```pascal
 function SpRender(const Template: string; const Ctx: TSpContext): string;
+function SpCompile(const Template: string): TSpTemplate;          { = TSpTemplate.Create }
+function SpRenderCompiled(Tmpl: TSpTemplate; const Ctx: TSpContext): string;
 function SpNeutralize(const Value: string): string;
 function SpSafetyRestore(const Text: string): string;
 function SpStripSentinels(const Text: string): string;
@@ -204,6 +206,23 @@ function SpValidate(const Src, Locale: string;
 function NormalizeBaseLang(const Locale: string): string;
 function PluralArity(const BaseLang: string): Integer;
 ```
+
+`SpCompile` parses a template once so it can be rendered many times, which matters because
+rendering is 3% of a render and the node tree is 84% of one (§4). `TSpTemplate` is opaque:
+it holds a single `TObject`, so the node tree stays an implementation detail and does not
+become part of anything anyone can depend on. The constructor takes the template, so a
+handle without one cannot be built, and `SpRenderCompiled` raises `ESpintax` on a nil
+handle — the one error type this unit has, raised on programmer error and never on template
+content, which is the rule the reference states for its own.
+
+A compiled template renders exactly what `SpRender` renders from the same source, asserted
+by a 1500-template differential through both paths under one seed with the cosmetic stage on
+and off. What is cached is the sentinel strip, the comment strip, the directive extraction,
+the body's tree and each `#def` value's tree. What is **not**, and cannot be, is the `#def`
+ROLL: a definition resolves once per render and its ordering depends on the host's
+variables, because a runtime variable of the same name outranks it. `#include` children are
+compiled per render too — their source comes from the resolver at render time. See
+[`decisions/0006`](decisions/0006-compiled-template.md).
 
 `TSpContext` carries the variable map (`TStrMap = TDictionary<string, string>`), the
 locale, a `PostProcess` flag, and an injected `TSpRng`. The RNG seam ships `TFirstRng`,
@@ -361,226 +380,18 @@ measured a chain with no cycle — the one shape its memo repaired — pronounce
 linear, and wrote that into this file. A review found the two shapes that were not
 measured. Before calling a cost linear, build the input that would make it not.
 
-### `SpRender`, and the price of doing nothing
+### An unterminated `/#` costs what the reference costs
 
-`SpRender` had never been measured; the editor-side pair above had. The number that made the
-gap obvious: **64 KB of plain text carrying no spintax at all cost 15 ms** — the engine had
-nothing to select, nothing to substitute, and still spent that. Two causes, neither of them
-the parse tree.
+Requiring the closing `#/` before consuming anything (§4) means a failed opener is rescanned
+from the next character, exactly as a regex engine retries at the next position. On a
+document densely packed with unterminated openers that is quadratic: `'/#a'` repeated to
+12/24/37/49 KB costs 20/81/172/298 ms. The code it replaced was linear only because it
+swallowed the rest of the document on the first opener.
 
-**Per-character accumulation on the whole document.** `TStrBuf` already existed, added when
-the post-process was found to be quadratic, but it was scoped to the post-process under a
-comment stating that "concatenation elsewhere is not on a hot path". That was never measured.
-Four accumulators walk the entire document on every single render — `SpStripSentinels`,
-`StripComments`, `ParseSequence`'s literal, `SpSafetyRestore` — and each grew its result one
-character at a time, reallocating per character. `ExtractDirectives` did the same per line,
-`SplitTopLevel` per character of every option, `RenderNodes` per node. They now share the
-buffer, and the two sentinel passes return the argument untouched when the document holds no
-sentinel, which is the ordinary case.
-
-**A string allocation per code point, 46 times per word.** `MatchesFoldedAt` compared
-`SpUpperCodePoint(a) <> SpUpperCodePoint(b)`, and that function returns a **string** because a
-few code points uppercase to more than one character. `ScanSingleAbbr` calls it for all 46
-abbreviations at every word start, so folding cost two heap allocations per code point per
-abbreviation. It was 1383 ms of the 1606 ms post-process on a 1 MB render — 86% of the stage,
-in a step that shields `etc.` and `Mr.`.
-
-Two fixes. Where both code points are ASCII the mapping is exactly `'a'..'z' → -32`, verified
-against the table over all 128, so it is taken without allocating; only a mixed pair still goes
-through the table, because a non-ASCII code point can fold **into** ASCII (U+017F → `S`) and
-short-circuiting that would drop a real match. And `SpUpperFirstCp` gives the first code point
-of the uppercase mapping without building the string, which makes `GAbbrevFirstUp[k] <> upHere`
-a one-integer necessary condition for a fold-match — it can reject a candidate but never a
-match. That equality was checked exhaustively against `SpUpperCodePoint` over every code point
-to U+10FFFF: zero mismatches. A first attempt bucketed the abbreviations by ASCII first letter
-instead and bought nothing, because 28 of the 46 are Cyrillic and the ASCII branch never ran.
-
-Measured on the same machine, FPC 3.2.2 / i386 / `-O3`, per render:
-
-| 64 KB template | before | after |
-|---|---|---|
-| plain text, no spintax, `PostProcess=False` | 15.4 ms | 2.5 ms |
-| plain text, no spintax, `PostProcess=True` | 181 ms | 25 ms |
-| sentence-long options, `PostProcess=False` | 17.3 ms | 3.3 ms |
-| sentence-long options, `PostProcess=True` | 66.2 ms | 10.8 ms |
-| `{a\|b}` every five bytes, `PostProcess=False` | 45.3 ms | 38.8 ms |
-
-and end to end: a 3.7 KB article with 160 spin blocks 7.0 → 1.4 ms with the post-process on,
-1 MB of flat spintax 2133 → 421 ms with it on and 297 → 124 ms with it off.
-
-The one row that barely moves is the dense one, and what is left there is **not** explained
-yet. The cost scales with the number of CONSTRUCTS, not with bytes: the marginal cost per
-construct is 3.0 µs measured on the sparse template (468 constructs) and 2.96 µs on the dense
-one (13 107), the same 64 KB either way. The obvious story — a `TNode`, a `TNodeList` and a
-`TStringList` allocated per construct, so allocation-bound — was asserted here first and then
-tested: removing one allocation per option (`FlushLiteral` reserved a fresh buffer even when
-the parse was finished with it) moved the dense figure by less than the noise floor,
-40.76 ms against 40.81 ms as the minimum of six interleaved runs. The allocation was real
-and the removal is kept, but the explanation did not survive its own measurement, and this
-paragraph is not going to carry a second unmeasured one. What is known: ~3 µs per construct,
-flat in document size, cause unattributed.
-
-`SpRender` also reparses the template on every call, which is pure waste for the host that
-renders one template thousands of times; exposing a parsed template is an API change and is
-not in this one. Both are open.
-
-## 5. Public API
-
-```pascal
-function SpRender(const Template: string; const Ctx: TSpContext): string;
-function SpNeutralize(const Value: string): string;
-function SpSafetyRestore(const Text: string): string;
-function SpStripSentinels(const Text: string): string;
-function SpExtract(const Src: string): TExtractResult;
-function SpExtractDirectives(const Src: string): TSpDirectiveList;
-function SpValidate(const Src, Locale: string; KnownIncludes: TStringList): TSpDiagList;
-function SpValidate(const Src, Locale: string;
-                    KnownIncludes, KnownVariables: TStringList): TSpDiagList;
-function NormalizeBaseLang(const Locale: string): string;
-function PluralArity(const BaseLang: string): Integer;
-```
-
-`TSpContext` carries the variable map (`TStrMap = TDictionary<string, string>`), the
-locale, a `PostProcess` flag, and an injected `TSpRng`. The RNG seam ships `TFirstRng`,
-`TLastRng`, `TSequenceRng` and a seeded `TMulberry32Rng` — the first three are what the
-deterministic fixtures drive.
-
-`SpValidate` returns `TSpDiagList` (`TList<TSpDiag>`). Each `TSpDiag` carries `Code` and
-`Severity` — the parity contract, the only fields the corpus gates — plus **best-effort
-source positions** `Line`, `Column`, `EndLine`, `EndColumn` for editors (squiggles,
-jump-to-error, LLM-repair prompts). Invalid iff any diagnostic is severity `error` — that
-is the verdict an editor or an LLM-repair loop keys off.
-
-The positions are deliberately outside the parity claim and are **not** required to match
-`@spintax/core` or the PHP validator, which report their own line/column. The contract:
-
-- all 1-based; **0 means unknown**, a valid and common answer — a finding that cannot be
-  cheaply and safely located stays `0/0` rather than guessing;
-- `Column`/`EndColumn` count **code points** from the line start, so the value is identical
-  under FPC (UTF-8) and a UTF-16 compiler and points at a character, not a byte — the corpus
-  is full of Cyrillic, where a byte column would land mid-glyph;
-- `Line` uses editor end-of-line semantics (`\n`, `\r\n`, `\r` each one line), on purpose
-  distinct from the engine's `/gmu` render-time line model;
-- `End*` give a span when one is cheap, else 0.
-
-The editor-critical codes are located (brackets, malformed `#set`/`#def`, undefined
-variables, unknown includes, plural arity, and the rest); `tests/local_tests.dpr`
-(`TestDiagPositions`) pins the exact line/column/span for a representative set, including a
-Cyrillic case that a byte-column implementation would fail. Positions add fields to a record
-whose old readers used only `Code`/`Severity`, so they stay source-compatible.
-
-Coordinates are reported against the **original source**, not the comment-stripped text the
-validator scans. `/# … #/` comments remove characters and the newlines inside them, so a
-position taken from the stripped text would drift after any block comment. `SpValidate`
-keeps a stripped→source offset map (`StripComments` fills it) and reports through it, so
-detection is byte-identical to before — the same stripped text, the same verdicts — while
-`Line`/`Column` land where an editor sees them. Pinned by the after-comment cases in
-`TestDiagPositions`.
-
-`KnownVariables` names what the **host** will supply at render time, mirroring the
-reference's `ValidateOptions.knownVariables`: a reference to one is not "undefined", so the
-`variable.undefined` warning is suppressed for it. Matching is case-insensitive. It only
-ever silences a **warning** — an unresolved `%var%` has never made a template invalid and
-must not start to, or a host rendering with runtime variables would see its own templates
-called broken.
-
-`SpExtractDirectives` returns `TSpDirectiveList` (`TList<TSpDirective>`): every `#set` /
-`#def` / `#include` **occurrence** the renderer sees, in source order, duplicates kept, each
-with `Kind`, `Name` (macro names lower-cased, include targets verbatim), `Value`, the
-consumed line as `Text`, and the line's span in the original source under the same position
-contract as `TSpDiag`. It is the editor-side companion to `SpExtract`, which answers *which*
-names and targets a template uses and is deduplicated, unordered, valueless and unlocated —
-everything a validator needs and nothing an editor can substitute, display or re-emit from.
-
-The distinction is not cosmetic. Because the target list is deduplicated, one entry stands
-for a target that appears both inside `/# … #/` and live, so a host expanding `#include` by
-name expands the commented copy too; comments do not nest, so an included fragment carrying
-its own comment then escapes the one it landed in. Reporting occurrences also keeps the
-comment rule and the five line terminators in this unit rather than copied into every host.
-The scan is the renderer's own — `StripComments` first, then the same directive parse and the
-same include anchor (`MatchIncludeAt`, §5.1) that `SpExtract` and `SpValidate` run — so a
-directive inside a comment, an inline `#include`, and an `#include` in a `#def` value (which
-validate flags as `def.include-in-value`) are absent, present and reported-as-a-`def`
-respectively, exactly as the renderer treats them. An `#include` whose whitespace ran across a
-terminator is one occurrence whose span crosses source lines; everything else spans its line.
-Pinned by `TestExtractDirectives` in `tests/local_tests.dpr`, whose comment cases were
-confirmed to fail when the scan is pointed at the raw source instead of the stripped text.
-
-Three limits on "the renderer sees", all three shared with `SpExtract` and `SpValidate`, none
-of them specific to this function:
-
-- **`#include` is resolved at RENDER time, not by this scan** (§5.2). What the list reports is
-  "the line `SpExtract` and `SpValidate` call an include" — the same anchor the resolver runs
-  on, so the three agree, but the occurrence list is an editing tool and never expands
-  anything itself.
-- **The scan reads the source as written; `SpRender` deletes reserved sentinels
-  (U+E000–U+E005) first.** A raw one inside directive syntax makes the two disagree both ways:
-  `#se<U+E000>t %x% = A` is no directive here and a `#set` to the renderer, and `/<U+E000>#`
-  opens no comment here and one to the renderer. Measured on `@spintax/core`: its `extract` and
-  `validate` diverge from its `render` in exactly the same two ways, so this is the family's
-  contract for reserved characters in author markup, not a gap in this port. Three editor-side
-  functions that agree with each other are worth more to a host than one that agrees with the
-  renderer; sentinels reach a template through `SpNeutralize`, not through author markup.
-- **Directives split on five line terminators, coordinates count three.** `NextLineBreak`
-  ends a directive line on LF, CRLF, CR, U+2028 or U+2029, while `Line`/`Column` follow the
-  editor EOL model of `TSpDiag` (LF, CRLF, CR). Two directives separated by U+2028 are
-  therefore two occurrences on **one** line, the second at the column just past the
-  separator — which is what an editor that does not break on U+2028 will draw.
-
-Cost is one pass over the source for the whole document, not one per directive: the walk that
-turns a stripped offset into line/column resumes from where the previous span left it
-(`CursorLineCol`), which is why it shares its loop with `SourceLineCol` instead of copying it.
-Rescanning from offset 1 each time — the first version of this — measured 628 ms for 400
-directives at the END of a 124 KB document against 32 ms for the same 400 at its start, the
-same document either way; it now costs 7.8 ms wherever they sit, steps 1.0 source characters
-per document character with zero cursor restarts, and stays flat from 50 to 800 directives
-where it used to run 63 → 881 ms. The shape of a benchmark, not its size, is what has to be
-varied.
-
-`SpExtract` and `SpValidate` were the expensive pair for a while — `SpExtract` 281 ms against
-5 ms at 1600 directives — for reasons of their own: a body rebuilt line by line with
-`s := s + line`, ordered-unique lists deduplicated by `TStringList.IndexOf`, and one
-`SourceLineCol` walk from offset 1 per diagnostic. All three are O(document × items). They now
-carry a dictionary for membership, scan each line where it lies instead of rebuilding one, and
-resume the position walk (`AddDiagAtOrdered`). Measured at 6400 items in a document, 4× input
-per step:
-
-| | before | after |
-|---|---|---|
-| `SpExtract`, `#set`-heavy | 25 → 289 → 4704 ms | 0 → 0 → 15 ms |
-| `SpExtract`, `%ref%`-heavy | 53 → 914 → 11 390 ms | 3 → 7 → 15 ms |
-| `SpValidate`, `%ref%`-heavy | 88 → 1328 → 19 282 ms | 0 → 8 → 31 ms |
-| `SpValidate`, `#set`-heavy | 41 → 609 → 10 375 ms | 19 → 320 → **4547 ms** |
-
-The last row was still quadratic then, and it got its own differential on 2026-08-06. What
-remained was the definition graph — the `#set` taint propagation and the cycle walk behind
-`variable.self-reference` and `variable.circular-reference`. Three things were wrong with it,
-and only the first was the one the row above suggested:
-
-- every lookup was a linear `TStringList.IndexOf` — the name being resolved, the path
-  membership test, whether a reference is a definition — and each visit re-parsed the
-  value's references from scratch;
-- the cycle walk restarts at every definition and never remembered what it had cleared, so
-  a chain of macros was re-walked from each of its links;
-- the taint propagation was a fixpoint sweep, and on a chain each pass taints exactly one
-  more name, so it ran once per definition over every definition.
-
-Now: the graph is indexed once, the path is a set, a start that finishes without reporting
-marks everything it touched as reaching no cycle, and the taint propagates along reverse
-edges from a worklist. Chained `#set`s, which is the shape an editor meets:
-
-| chained definitions | before | after |
-|---|---|---|
-| 100 | 396 ms | 3 ms |
-| 200 | 2 853 ms | — |
-| 400 | 23 959 ms | 6 ms |
-| 1 600 | (hours) | 30 ms |
-| 6 400 | (hours) | 114 ms |
-
-Flat definitions were already linear and stay so (6 400 in 85 ms). Verdicts are unchanged,
-asserted by a 4 000-document differential over cycle- and chain-heavy generated input
-against the previous build: **0 differences**, where three control mutations of the new code
-produce 1 944, 817 and 799.
+`@spintax/core` on the identical input: 25/82/178/320 ms. So this is parity in cost as well
+as in behaviour, and it is the family's shared weakness rather than this port's — but it is
+written down here because nothing else says a `/#`-dense document is quadratic, and the
+shape is cheap to construct by accident.
 
 ### 5.0 The `#set` / `#def` line, and the CR it takes with it
 

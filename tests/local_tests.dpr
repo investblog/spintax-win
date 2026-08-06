@@ -982,6 +982,19 @@ end;
   "severity @line:col..endline:endcol". No fixture can express positions (the corpus gates
   code+severity only), so this is the only gate. Columns count CODE POINTS. Codes and
   severities are asserted too, to prove locating a finding never changed its verdict. }
+{ How MANY diagnostics carry a code. DiagPos answers WHERE the first one is and stops,
+  which cannot express "one per definition" -- a mutation reporting once passed it. }
+function DiagCount(const tmpl, locale, code: string): Integer;
+var d: TSpDiagList; i: Integer;
+begin
+  Result := 0;
+  d := SpValidate(tmpl, locale, nil, nil);
+  try
+    for i := 0 to d.Count - 1 do
+      if d[i].Code = code then Inc(Result);
+  finally d.Free; end;
+end;
+
 function DiagPos(const tmpl, locale, code: string; const knownInc: array of string): string;
 var d: TSpDiagList; i: Integer; ki: TStringList;
 begin
@@ -1117,8 +1130,11 @@ end;
   render and validate, against 1120 differences with the fix reverted. }
 { The definition graph: self-reference, circular reference, and the plural count-macro
   taint. The walk and the taint propagation were rewritten on 2026-08-06 for speed -- an
-  indexed graph, a set for the path, a memo for names proved to reach no cycle, and a
-  worklist over reverse edges instead of a fixpoint sweep. Diagnostics must be identical,
+  indexed graph, a worklist over reverse edges instead of a fixpoint sweep, and cycle
+  reachability computed once for the whole graph by an iterative colour walk. (A first
+  round used a per-definition walk with a memo; it left a converging graph exponential and
+  one big cycle quadratic, which a review found and a benchmark had not.) Diagnostics must
+  be identical,
   which a 4000-document differential against the previous build asserts (0 differences,
   against 1944 / 817 / 799 for three control mutations). These few pin the shapes that
   differential exists to protect, so a later change trips a named test first. }
@@ -1278,10 +1294,19 @@ begin
   Check('graph/clean-then-cyclic',
         Verdict('#set %clean% = plain' + #10 +
                 '#set %a% = %b%' + #10 + '#set %b% = %a%'), 'invalid');
-  { and the cyclic pair is still reported per definition, not once }
+  { And the cyclic pair is reported per DEFINITION, not once for the document -- measured
+    against @spintax/core, which reports one per definition including a feeder that only
+    reaches the cycle. DiagPos cannot express this: it returns the FIRST diagnostic with a
+    code and stops, so a mutation that reports once passed it. Count them. }
   Check('graph/cycle-reported-at-each-definition',
-        DiagPos('#set %a% = %b%' + #10 + '#set %b% = %a%', 'en',
-                'variable.circular-reference', []), 'error @1:1..1:5');
+        IntToStr(DiagCount('#set %a% = %b%' + #10 + '#set %b% = %a%', 'en',
+                           'variable.circular-reference')), '2');
+  Check('graph/cycle-reported-for-a-feeder-too',
+        IntToStr(DiagCount('#set %f% = %a%' + #10 + '#set %a% = %b%' + #10 +
+                           '#set %b% = %a%', 'en', 'variable.circular-reference')), '3');
+  Check('graph/no-cycle-reports-none',
+        IntToStr(DiagCount('#set %a% = %b%' + #10 + '#set %b% = plain', 'en',
+                           'variable.circular-reference')), '0');
   { a direct self-loop is a self-reference, never a cycle }
   Check('graph/self-reference-not-circular',
         DiagPos('#set %a% = %a%', 'en', 'variable.self-reference', []), 'error @1:1..1:5');
