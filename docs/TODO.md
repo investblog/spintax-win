@@ -13,20 +13,9 @@ The single list of open work.
 
 All three of the 2026-07-25 divergence sweep are closed, all on 2026-08-06 — the
 unterminated `/#` in the morning's run, `PhpLtrim` and the extra
-`variable.self-reference` in the evening's. What is left
-open is questions for the family and one known ordering difference.
-
-- [ ] **Ask the family whether a neutralized span should be exempt from the cosmetic
-      stage.** The pipeline runs the post-process BEFORE the sentinel restore, so
-      `neutralize` protects structural characters from the parser and nothing from
-      typography: `#file[l.txt,1,S]` handed in through the context comes back as
-      `#file[l.txt,1, S]` with the stage on. Measured identical in `@spintax/core`
-      (2026-08-06), so this port is at parity and must not change it alone. But "passes
-      through untouched" stops being true the moment the cosmetic stage is on, which is
-      worth putting to the reference. Reported from real use — porting the GSA converter
-      into the editor — and worked around there with `PostProcess=False`, which a converted
-      GSA template wants anyway. Pinned by `tests/gsa_tests.dpr` so a family change shows up
-      here first.
+`variable.self-reference` in the evening's — and the corpus session has since verified them
+and pinned the forms (see Done). What is left open is one syntax proposal and one known
+ordering difference; the neutralize question was answered on 2026-08-07.
 
 - [ ] **`include.unknown-target` is emitted before the `variable.undefined` warnings; the
       reference emits it after.** Found by the 2026-08-06 review over 5 000 include-bearing
@@ -45,6 +34,42 @@ open is questions for the family and one known ordering difference.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **The family answered the neutralize question: the span is NOT exempt** (2026-08-07),
+      and the escape hatch is `PostProcess=False`. Filed from this port on 2026-08-06 after
+      the GSA converter met it in the editor; pinned by `@42d51c3` as two fixtures this
+      engine already passes -- `neutralize/cosmetics-apply-to-neutralized-span` and
+      `neutralize/postprocess-off-roundtrips-byte-exact`. So `#file[l.txt,1,S]` coming back
+      as `#file[l.txt,1, S]` with the cosmetic stage on is the contract in every engine, not
+      a divergence to fix here, and a host whose output is a payload rather than prose
+      renders with the stage off. `tests/gsa_tests.dpr` pinned this before the corpus did and
+      keeps pinning it; the difference now is that a family change would break the corpus
+      first.
+
+- [x] **The corpus session verified the three fixes and pinned the forms** (2026-08-07).
+      `spintax-js@d6c5455` adds 15 cases over exactly this port's divergences --
+      `validate/directive-check-*`, `validate/definition-last-wins-*`,
+      `set/last-definition-wins`, `set/duplicate-cycle-renders-lenient`,
+      `set/malformed-head-cr-directive-survivor`, `perm/config-*` -- on top of 13
+      comment cases (`@8402cb8`) and the two neutralize answers (`@42d51c3`). The corpus is
+      234 cases and this engine passes 230 with 4 `kind:rng` skips and an empty
+      `known-failures.txt`. The `/m` survivor, the quote-aware `findConfigEnd` and `SEP_RE`
+      without a `\b` are green here too.
+
+      **The one failure that round was the harness, and both sides found it independently.**
+      `fpjson` drops a `\u0000`, so `validate/directive-check-nul-line-is-text` reached the
+      engine as `#set broken` and `invalid` was the correct answer to the wrong question. See
+      the entry below; fixed in `tests/SpxJson.pas` the same evening, verified by a byte-level
+      probe and by a mutated engine that then failed the fixture.
+
+      **And the `PhpLtrim` divergence turned out to be the family's, not this port's.** The
+      same bare `ltrim()` charlist was live in BOTH PHP engines -- a NUL producing a false
+      `set.malformed` (`spintax-php@c41f3db`, `plugin@9b193bc`) -- and `spintax-py` was
+      scanning a normalised copy with an anchored match (`spintax-py@620fad4`). A measurement
+      taken here to close a Pascal backlog item found real bugs in three sibling engines.
+      Worth remembering the next time a divergence looks like "just this port being wrong":
+      the reference is the contract, but a shared ANCESTOR's habit -- PHP's trim charlist --
+      travels into every port that reads that ancestor.
 
 - [x] **Review follow-up on the same day's work** (2026-08-06). An external review of the
       three fixes above found one blocker and two documentation errors, and verifying them

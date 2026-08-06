@@ -122,8 +122,13 @@ Two things about it are easy to get wrong and are written down because they were
   comes back as `#file[list.txt,1, S]` — brackets intact because they are sentinels, the
   comma respaced because it is not. Measured identical in `@spintax/core` on 2026-08-06, so
   it is the family's contract and not this port's to change; a host whose output is a
-  payload rather than prose renders with `PostProcess=False`. Whether the family SHOULD
-  exempt neutralized spans is an open question in `docs/TODO.md`.
+  payload rather than prose renders with `PostProcess=False`. Put to the family the same day
+  and **answered on 2026-08-07: the span is not exempt** — `neutralize` shields structure
+  from the parser, never typography from the cosmetic stage — with `PostProcess=False` as the
+  escape hatch. Both halves are now corpus fixtures
+  (`neutralize/cosmetics-apply-to-neutralized-span`,
+  `neutralize/postprocess-off-roundtrips-byte-exact`), so a change of mind upstream breaks
+  the gate here before it reaches a user.
 
 This **reverses** [`decisions/0002`](decisions/0002-postprocess-remainder.md), which
 recorded the minimal stage as a deliberate scope decision.
