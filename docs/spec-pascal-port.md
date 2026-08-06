@@ -67,7 +67,7 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(234 cases total, 2026-08-07 — the corpus grew that day with the cases the family pinned
+(234 cases total, 2026-08-06 — the corpus grew that day with the cases the family pinned
 from this port's divergences):
 
 | fixture file | cases | passing |
@@ -439,7 +439,7 @@ for (const line of text.split('\n')) {
 }
 ```
 
-Three things in four lines, and this port had two of them wrong until 2026-08-07 (both
+Three things in four lines, and this port had two of them wrong until 2026-08-06 (both
 reported valid templates as invalid — the §3 verdict divergence, not a message difference):
 
 - the split is `'\n'` — **LF alone**, not the family's five terminators. A CR or a U+2028
@@ -558,7 +558,7 @@ cycle walk, and the plural taint. This port kept every occurrence and resolved a
 **first**, which diverged in both directions at once — inventing diagnostics the reference
 does not give and missing ones it does:
 
-| template (one directive per line) | reference | this port, before 2026-08-07 |
+| template (one directive per line) | reference | this port, before 2026-08-06 |
 |---|---|---|
 | `#set %x% = %x%` / `#set %x% = B` | — | `variable.self-reference` |
 | `#set %a% = plain` / `#set %a% = %b%` / `#set %b% = %a%` | two `circular-reference` | — |
@@ -619,7 +619,7 @@ The **exponential** part is not ours to fix. On a converging graph where every n
 the cycle, every distinct path ends in a push, so the DIAGNOSTICS are exponential in the
 document: 507 bytes of `#set` lines produce 2 097 152 `variable.circular-reference` errors.
 `@spintax/core` produces exactly the same count on the same input — 512, 8 192, 131 072 and
-2 097 152 at 8, 12, 16 and 20 levels, verified 2026-08-07 — which is the strongest evidence
+2 097 152 at 8, 12, 16 and 20 levels, verified 2026-08-06 — which is the strongest evidence
 the walk is a faithful port, and also a family-wide property worth knowing before feeding a
 validator an untrusted document. A walk cannot be cheaper than the output it must produce;
 the only honest fix would be a family decision to cap or deduplicate the diagnostics.
@@ -643,13 +643,13 @@ const LASTSEP_RE = /lastsep\s*=\s*"([^"]*)"/i;
 `/\b(?:minsize|maxsize|sep|lastsep)\s*=/i`; none of the four above carries a `\b` at all. So
 one unglued key opens the door and a glued-on one then walks through it: in
 `[<sep="-" xmaxsize=1>a|b|c]` the `sep=` satisfies the gate and `xmaxsize=1` is then read as
-`maxsize`, giving one element. Measured over 200 seeds in both engines on 2026-08-07 — the
+`maxsize`, giving one element. Measured over 200 seeds in both engines on 2026-08-06 — the
 reference yields exactly the three single elements, and so does this port. Remove the real
 key and the boundary matters again: `[<xmaxsize=1>a|b]` has no config at all and renders
 `Axmaxsize=1b`, the whole string being the single-separator form.
 
 Being regexes, they have three further properties a hand-written scan does not get for free,
-and this port was missing all three until 2026-08-07:
+and this port was missing all three until 2026-08-06:
 
 - **the `=` is required.** With it optional, `[<sep="-" maxsize 2>a|b|c]` parsed as
   `maxsize=2` and rendered a random two of the three where the reference renders all three —
@@ -724,7 +724,7 @@ over from the sibling ports:
 - **The harness is part of the measurement.** FPC's `fpjson` does not decode a JSON
   code-point escape faithfully: it DROPS a `\u0000` on every accessor and turns every escape
   above ASCII into a question mark, because the scanner converts through the system codepage
-  (measured on FPC 3.2.2, 2026-08-07). The corpus's first NUL-bearing fixture arrived at the
+  (measured on FPC 3.2.2, 2026-08-06). The corpus's first NUL-bearing fixture arrived at the
   engine as `#set broken`, and the engine's correct answer was reported as a failure.
   `SpxJson` now decodes those escapes itself before fpjson sees them; a NUL travels as
   U+0001, the only kind of character fpjson delivers intact, and a file carrying one of its

@@ -85,7 +85,7 @@ begin
 end;
 
 { FPC's fpjson does not decode a code-point escape faithfully, and the two ways it fails
-  were both measured here on 2026-08-07, on FPC 3.2.2:
+  were both measured here on 2026-08-06, on FPC 3.2.2:
 
     "a\u0000b"   -> "ab"    the NUL is DROPPED, on every accessor -- AsString,
                               AsUnicodeString and Value alike, because the loss is in the

@@ -1179,7 +1179,7 @@ begin
   if Result then Text := Body else Text := '';
 end;
 
-{ Three divergences the family is about to pin as fixtures, closed on 2026-08-07. Every
+{ Three divergences the family is about to pin as fixtures, closed on 2026-08-06. Every
   expectation was measured against @spintax/core the same day, and each fix carries a
   differential with a control run that proves the harness can fail. }
 
@@ -1282,7 +1282,7 @@ begin
     /\b(?:minsize|maxsize|sep|lastsep)\s*=/i, MINSIZE_RE is /minsize\s*=\s*(\d+)/i with no
     \b at all. So a real key opens the door and a glued-on one then walks through it. It
     reads like an oversight in the reference and it is the contract: measured against
-    @spintax/core on 2026-08-07 over 200 seeds, `[<sep="-" xmaxsize=1>a|b|c]` yields exactly
+    @spintax/core on 2026-08-06 over 200 seeds, `[<sep="-" xmaxsize=1>a|b|c]` yields exactly
     the three single elements there -- one element, no separator -- and
     `[<minsize=2 xsep="-">a|b|c]` joins with "-" under every one of them. Both hold here.
 
@@ -1465,7 +1465,7 @@ end;
   first version of the faithful walk was recursive over strings and neither shape was in
   the suite: a cycle of 6 400 took 99 SECONDS and 6 400 stack frames.
 
-  Both counts are the reference's, measured on 2026-08-07: a cycle of N gives N, and the
+  Both counts are the reference's, measured on 2026-08-06: a cycle of N gives N, and the
   converging DAG of 8 levels gives 512 -- @spintax/core answers 512, 8 192, 131 072 and
   2 097 152 at 8, 12, 16 and 20 levels, from a document that never exceeds 507 bytes. The
   diagnostics ARE exponential in that shape, in the reference too; the walk cannot be

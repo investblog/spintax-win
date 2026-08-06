@@ -11,8 +11,9 @@ The single list of open work.
 
 ## Open
 
-All three of the 2026-07-25 divergence sweep are closed — the unterminated `/#` on
-2026-08-06, `PhpLtrim` and the extra `variable.self-reference` on 2026-08-07. What is left
+All three of the 2026-07-25 divergence sweep are closed, all on 2026-08-06 — the
+unterminated `/#` in the morning's run, `PhpLtrim` and the extra
+`variable.self-reference` in the evening's. What is left
 open is questions for the family and one known ordering difference.
 
 - [ ] **Ask the family whether a neutralized span should be exempt from the cosmetic
@@ -45,7 +46,7 @@ open is questions for the family and one known ordering difference.
 
 ## Done
 
-- [x] **Review follow-up on the same day's work** (2026-08-07). An external review of the
+- [x] **Review follow-up on the same day's work** (2026-08-06). An external review of the
       three fixes above found one blocker and two documentation errors, and verifying them
       turned up a fourth thing nobody had looked at.
 
@@ -77,7 +78,7 @@ open is questions for the family and one known ordering difference.
       ASCII into `?`. See §8 of the spec; the fix is in `tests/SpxJson.pas` and is verified
       by a byte-level probe plus a mutated engine that now fails the fixture.
 
-- [x] **The last three §3 divergences, closed together** (2026-08-07), ahead of the corpus
+- [x] **The last three §3 divergences, closed together** (2026-08-06), ahead of the corpus
       session that is pinning these forms. Each measured against `@spintax/core` the same
       day, each with a differential carrying a control run.
 
