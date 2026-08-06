@@ -113,6 +113,15 @@ Two things about it are easy to get wrong and are written down because they were
 - **The reference does not use one flag set.** `CAP_AFTER_BLOCK_RE`, `EMAIL_RE`,
   `DOMAIN_RE` and `SINGLE_ABBR_RE` are `/giu/`, where property escapes are case-folded;
   the rest are strict. See §7 hazard 6.
+- **The stage runs BEFORE the sentinel restore, so `neutralize` does not protect against
+  it.** Neutralize shields structural characters from the PARSER; by the time the cosmetic
+  passes run, a neutralized span is ordinary text to them, and only the characters that are
+  still sentinels survive untouched. `#file[list.txt,1,S]` handed in through the context
+  comes back as `#file[list.txt,1, S]` — brackets intact because they are sentinels, the
+  comma respaced because it is not. Measured identical in `@spintax/core` on 2026-08-06, so
+  it is the family's contract and not this port's to change; a host whose output is a
+  payload rather than prose renders with `PostProcess=False`. Whether the family SHOULD
+  exempt neutralized spans is an open question in `docs/TODO.md`.
 
 This **reverses** [`decisions/0002`](decisions/0002-postprocess-remainder.md), which
 recorded the minimal stage as a deliberate scope decision.

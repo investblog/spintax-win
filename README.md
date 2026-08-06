@@ -26,7 +26,7 @@ begin
   DefaultSystemCodePage := CP_UTF8;
 
   ctx := Default(TSpContext);
-  ctx.PostProcess := True;          { cosmetic stage; off in a zeroed record }
+  ctx.PostProcess := True;          { cosmetic stage -- see the warning below }
 
   SpRender('{Hello|Hi} there!', ctx);
   // "Hello there!" or "Hi there!"
@@ -198,7 +198,29 @@ This is not theoretical — it is what made the Linux CI leg fail while Windows
 passed, and it took a byte dump to see, because every log renders the corruption
 as `?`.
 
-## One API-shape difference from the reference
+## `PostProcess` — what it does, and when to turn it off
+
+The cosmetic stage is not a formatter you can ignore. It is **this family's typography**,
+twelve steps that rewrite the rendered text: capitalising sentence starts, respacing
+punctuation, collapsing whitespace runs, shielding URLs and abbreviations. On prose that is
+what you want. On text bound for another system, or text that must come back byte-exact, it
+is not:
+
+    ctx.PostProcess := True;
+    SpRender('a #file[list.txt,1,S] b', ctx)   ->  'A #file[list.txt,1, S] b'
+
+Both changes are the cosmetic stage: `a` was capitalised as a sentence start, and the comma
+was given a space because a letter follows. **`SpNeutralize` does not protect against
+this** — it shields structural characters from the *parser*, and the pipeline runs the
+cosmetic stage *before* the sentinel restore, so neutralized text is ordinary text to the
+typography. `@spintax/core` behaves the same way; this is the family's contract, not a
+quirk of this port.
+
+**So: if the output is consumed by another tool, or is a payload rather than prose, render
+with `PostProcess=False`.** That is the documented setting for GSA SER templates below, and
+the same reasoning applies to any host with its own output conventions.
+
+### The API-shape difference that goes with it
 
 `Default(TSpContext)` leaves `PostProcess` **False**, while the reference defaults
 `postProcess: true`. A host that fills the record itself and never sets the flag
@@ -272,13 +294,10 @@ ctx.PostProcess := False;              { required too -- see below }
 SpRender(tmpl, ctx);
 ```
 
-**Render with `PostProcess=False`.** The cosmetic stage is *this family's* typography, and
-a converted template goes straight back to SER. With it on, the engine capitalises sentence
-starts and respaces punctuation in the author's GSA text — and reaches inside a rescued
-macro, because the family's pipeline runs the cosmetic stage *before* the sentinel restore:
-`a #file_links[names.dat,2,S] b` comes out as `A #file_links[names.dat,2, S] b`. That is not
-a defect and not local to this port — `@spintax/core` returns the same bytes — but it is not
-what a SER template wants.
+**Render with `PostProcess=False`** — this is the case the general warning above is about.
+A converted template goes straight back to SER, whose typography is its own, and with the
+stage on the engine both retypesets the author's GSA text and reaches inside a rescued
+macro: `a #file_links[names.dat,2,S] b` comes out as `A #file_links[names.dat,2, S] b`.
 
 - `~{a|b|c}` → `[a|b|c]`. The guide defines the tilde form as *all* variations in a
   *random* order, which is this family's permutation exactly.
