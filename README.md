@@ -268,8 +268,17 @@ macros := TStrMap.Create;              { both are the caller's to own and free }
 unsup  := TStringList.Create;
 tmpl   := SpGsaToSpintax(gsaTemplate, macros, unsup);
 ctx.Vars := macros;                    { required -- see below }
+ctx.PostProcess := False;              { required too -- see below }
 SpRender(tmpl, ctx);
 ```
+
+**Render with `PostProcess=False`.** The cosmetic stage is *this family's* typography, and
+a converted template goes straight back to SER. With it on, the engine capitalises sentence
+starts and respaces punctuation in the author's GSA text — and reaches inside a rescued
+macro, because the family's pipeline runs the cosmetic stage *before* the sentinel restore:
+`a #file_links[names.dat,2,S] b` comes out as `A #file_links[names.dat,2, S] b`. That is not
+a defect and not local to this port — `@spintax/core` returns the same bytes — but it is not
+what a SER template wants.
 
 - `~{a|b|c}` → `[a|b|c]`. The guide defines the tilde form as *all* variations in a
   *random* order, which is this family's permutation exactly.

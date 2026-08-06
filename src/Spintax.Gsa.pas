@@ -98,6 +98,22 @@
   `#def %__gsa_g1_1%` -- those are ordinary legal names, and the engine folds variable case,
   so the check has to as well.
 
+  RENDER THE RESULT WITH PostProcess=False.
+
+  The cosmetic post-process is this FAMILY'S typography, and a converted template is meant
+  to be rendered and handed straight back to SER, whose typography is its own. With the
+  stage on, the engine capitalises sentence starts and respaces punctuation in the author's
+  GSA text -- and reaches inside a rescued macro, because the family's pipeline runs the
+  cosmetic stage BEFORE the sentinel restore:
+
+      a #file_links[names.dat,2,S] b   ->   A #file_links[names.dat,2, S] b
+
+  `neutralize` protects structural characters from the PARSER, never text from typography.
+  The brackets survive as sentinels; the comma is an ordinary character and step 7 puts a
+  space after it when a letter follows. This is not a defect and not local: @spintax/core
+  returns the same bytes, measured 2026-08-06. It is pinned in tests/gsa_tests.dpr so that
+  a change in the family shows up here rather than in what SER receives.
+
   ONE ARTIFACT WORTH KNOWING. A `#def` owns its line, and the family's rule is that the
   directive's TEXT is removed while its line break stays. So every definition this emits
   leaves a blank line behind. They are appended at the END of the template for that reason

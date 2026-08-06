@@ -486,6 +486,42 @@ begin
   end;
 end;
 
+{ ─── 5b. the cosmetic stage is this family's typography, not GSA's ───────── }
+
+{ Reported from real use while porting the converter into an editor: a rescued macro comes
+  back with a space inside it.
+
+      #file[l.txt,1,S]   ->   #file[l.txt,1, S]
+
+  It is NOT a defect here, and not the converter's. The family's pipeline runs the cosmetic
+  post-process BEFORE the sentinel restore, so `neutralize` protects structural characters
+  from the PARSER, never the text from the typography. The brackets survive because they
+  are sentinels; the comma is an ordinary character, and step 7 puts a space after it when
+  a letter follows. Measured against @spintax/core on 2026-08-06, which returns the same
+  bytes for the same input, so this is the contract rather than a divergence.
+
+  The symptom is wider than the comma, and that is the real point: with the cosmetic stage
+  on, this engine also capitalises sentence starts and collapses spacing in the AUTHOR'S
+  GSA text. A converted template is meant to be rendered and handed back to SER, whose
+  typography is its own -- so render it with PostProcess=False. These assertions exist so
+  that if the family ever exempts neutralized spans, this suite says so instead of
+  silently changing what SER receives. }
+procedure TestCosmeticStageIsOurs;
+begin
+  { the recommended setting: nothing is retypeset }
+  CheckVerbatim('cosmetic/off-is-verbatim', 'a #file[l.txt,1,S] b');
+
+  { and with it on -- pinned as the family's behaviour, not endorsed as desirable }
+  Check('cosmetic/on-spaces-a-comma-in-a-macro',
+        ConvRender('#file[l.txt,1,S]', True), '#file[l.txt,1, S]');
+  Check('cosmetic/on-also-capitalises-the-author''s-text',
+        ConvRender('a #file_links[names.dat,2,S] b', True),
+        'A #file_links[names.dat,2, S] b');
+  { a digit after the comma takes no space -- the shape of the rule, so a change is visible }
+  Check('cosmetic/on-leaves-a-comma-before-a-digit',
+        ConvRender('#err[404,1] x', True), '#err[404,1] x');
+end;
+
 { ─── 6. the generated names cannot collide ───────────────────────────────── }
 
 procedure TestNamespace;
@@ -555,6 +591,7 @@ begin
   TestBlockFormRefused;
   TestLiteralText;
   TestRefusals;
+  TestCosmeticStageIsOurs;
   TestCaseAndOverlap;
   TestNamespace;
   TestArtifacts;

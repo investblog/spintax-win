@@ -154,6 +154,29 @@ user text as case-folded until proved otherwise.
 **Partly overlapping tag sets were silently called independent**, which is a ruling on an
 undocumented case rather than a translation of a documented one. They are refused now.
 
+## The cosmetic stage belongs to this family, so a converted template turns it off
+
+Reported from real use while porting the converter into an editor: a rescued macro came back
+as `#file[l.txt,1, S]`. Brackets intact, a space inside the comma list.
+
+Not a defect, and not the converter's. The family's pipeline runs the cosmetic post-process
+**before** the sentinel restore, so `neutralize` protects structural characters from the
+*parser* and never protects text from *typography*. The brackets survive because they are
+sentinels; the comma is an ordinary character and step 7 spaces it when a letter follows.
+`@spintax/core` returns the same bytes for the same input (measured 2026-08-06), so this is
+the contract, not a divergence — and changing it here alone would be a fork of it.
+
+The symptom is wider than the comma, which is the real point: with the stage on this engine
+also capitalises sentence starts in the author's GSA text
+(`a #file_links[…] b` → `A #file_links[…] b`). A converted template is rendered and handed
+back to SER, whose typography is its own, so the documented setting is `PostProcess=False`.
+The behaviour with it on is pinned in `tests/gsa_tests.dpr` rather than left to surprise
+someone: if the family ever exempts neutralized spans, the suite says so.
+
+Whether it *should* exempt them is a fair question — "passes through untouched" stops being
+true the moment the cosmetic stage is on — but it is a question for the reference and the
+corpus, and it is in the backlog as one.
+
 ## Consequences
 
 - An existing SER template runs on this engine unchanged, which is the adoption argument
