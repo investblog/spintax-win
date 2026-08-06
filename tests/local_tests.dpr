@@ -478,6 +478,28 @@ begin
   Check('pp/domain-then-cyrillic', RenderPP(U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421])), U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421]));
   Check('pp/url-keeps-sentence-stop', RenderPP(U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E])), U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E]));
   Check('pp/sentence-run-at-end', RenderPP(U([$0057, $006F, $0077, $0021, $0021, $0021])), U([$0057, $006F, $0077, $0021, $0021, $0021]));
+
+  { The two branches of the abbreviation fold, pinned because the 2026-08-06 speed work
+    added a fast path and a pre-filter that nothing in this suite could have caught.
+
+    MatchesFoldedAt now folds an ASCII pair without going through the Unicode table, and
+    ScanSingleAbbr rejects a candidate whose folded FIRST code point differs. Both were
+    proved by exhaustive one-off runs, which the next refactor will not repeat. These are
+    the two shapes where a wrong shortcut is observable, and the abbreviation is `st`:
+
+      long s + t   folds to ST, so `st.` MATCHES across a non-ASCII/ASCII pair. An
+                   ASCII-only fast path that short-circuited a mixed pair would miss it,
+                   capitalize the next sentence, and uppercase the long s.
+      sharp s + t  folds to SST. Its first code point is S, exactly like `st`'s, so the
+                   pre-filter admits it -- and the full comparison must still reject it.
+                   A pre-filter mistaken for a decision would shield this as an
+                   abbreviation and leave `hello` lower-case.
+
+    Measured against @spintax/core on 2026-08-06, both ways. }
+  Check('pp/abbrev-folds-non-ascii-into-ascii', RenderPP(U([$017F, $0074, $002E, $0020, $0068, $0065, $006C, $006C, $006F])), U([$017F, $0074, $002E, $0020, $0068, $0065, $006C, $006C, $006F]));
+  Check('pp/abbrev-prefilter-is-not-the-verdict', RenderPP(U([$00DF, $0074, $002E, $0020, $0068, $0065, $006C, $006C, $006F])), U([$0053, $0053, $0074, $002E, $0020, $0048, $0065, $006C, $006C, $006F]));
+  { the control: same shape, no abbreviation, so the sentence DOES break }
+  Check('pp/abbrev-control-not-an-abbrev', RenderPP(U([$0078, $0074, $002E, $0020, $0068, $0065, $006C, $006C, $006F])), U([$0058, $0074, $002E, $0020, $0048, $0065, $006C, $006C, $006F]));
 end;
 
 { The placeholder scheme delimits with NUL, so input that already contains NUL meets the

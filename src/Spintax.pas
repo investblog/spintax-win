@@ -427,6 +427,43 @@ begin
   Result := SpCodePointToStr(cp);
 end;
 
+{ The FIRST code point of SpUpperCodePoint(cp), without building the string. Same two
+  tables, same order, so it is that function's first character by construction.
+
+  It exists for pre-filters: two code points can only fold-match if their uppercase
+  strings are equal, which requires their first code points to be equal. Comparing
+  these is therefore a necessary condition -- never rejects a real match, and the
+  survivors still go through the full string comparison. }
+function SpUpperFirstCp(cp: LongWord): LongWord;
+var lo, hi, mid, i: Integer;
+begin
+  lo := 0; hi := UPPER_MULTI_COUNT - 1;
+  while lo <= hi do
+  begin
+    mid := (lo + hi) div 2;
+    if cp < UPPER_MULTI_CP[mid] then hi := mid - 1
+    else if cp > UPPER_MULTI_CP[mid] then lo := mid + 1
+    else
+    begin
+      { SpUpperCodePoint skips zero slots when it builds the string, so the first
+        character is the first NON-zero entry, not necessarily slot 0. }
+      for i := 0 to UPPER_MULTI_MAXLEN - 1 do
+        if UPPER_MULTI_TO[mid * UPPER_MULTI_MAXLEN + i] <> 0 then
+          Exit(UPPER_MULTI_TO[mid * UPPER_MULTI_MAXLEN + i]);
+      Exit(cp);
+    end;
+  end;
+  lo := 0; hi := UPPER_RUNS_COUNT - 1;
+  while lo <= hi do
+  begin
+    mid := (lo + hi) div 2;
+    if LongInt(cp) < UPPER_RUNS[mid * 3] then hi := mid - 1
+    else if LongInt(cp) > UPPER_RUNS[mid * 3 + 1] then lo := mid + 1
+    else Exit(LongWord(LongInt(cp) + UPPER_RUNS[mid * 3 + 2]));
+  end;
+  Result := cp;
+end;
+
 { ─── RNG ─────────────────────────────────────────────────────────────────── }
 
 function TFirstRng.Next(min, max: Integer): Integer;
@@ -573,10 +610,10 @@ end;
 { Split on top-level '|': brace and bracket depths tracked independently and
   decremented unconditionally (may go negative); split only when BOTH are 0. }
 procedure SplitTopLevel(const inner: string; out parts: TStringList);
-var brace, bracket, i: Integer; cur: string; ch: Char;
+var brace, bracket, i, start: Integer; ch: Char;
 begin
   parts := TStringList.Create;
-  brace := 0; bracket := 0; cur := '';
+  brace := 0; bracket := 0; start := 1;
   for i := 1 to Length(inner) do
   begin
     ch := inner[i];
@@ -584,15 +621,16 @@ begin
     else if ch = '}' then Dec(brace)
     else if ch = '[' then Inc(bracket)
     else if ch = ']' then Dec(bracket);
+    { Cut the option out in one Copy at the separator rather than growing it a
+      character at a time -- the options of a real template are whole sentences, and
+      appending to a string reallocates it on every character. }
     if (ch = '|') and (brace = 0) and (bracket = 0) then
     begin
-      parts.Add(cur);
-      cur := '';
-    end
-    else
-      cur := cur + ch;
+      parts.Add(Copy(inner, start, i - start));
+      start := i + 1;
+    end;
   end;
-  parts.Add(cur);
+  parts.Add(Copy(inner, start, Length(inner) - start + 1));
 end;
 
 { First top-level '|' in a conditional body (single counter clamped at 0); 0 if none. }
@@ -611,6 +649,85 @@ begin
     else if (ch = '|') and (depth = 0) then Exit(j);
   end;
   Result := 0;
+end;
+
+{ ─── a growable buffer ───────────────────────────────────────────────────────
+  `res := res + one character` reallocates and copies the whole accumulator on every
+  append, which makes a single linear pass quadratic. It was first hit in the
+  post-process, whose sixteen passes measured 0.11 s at 14 KB but 45 s at 950 KB.
+
+  The fix was scoped to the post-process then, under a comment asserting that
+  "concatenation elsewhere is not on a hot path". That was never measured, and it was
+  wrong: SpStripSentinels, StripComments, ParseSequence's literal accumulator and
+  SpSafetyRestore each walk the WHOLE document on EVERY render, character by character.
+  They cost 15 ms on 64 KB carrying no spintax at all -- the price of doing nothing.
+  Hence this buffer sits here, above every one of its users, rather than in the
+  post-process. Verify before scoping a fix by where the bug was found. }
+type
+  TStrBuf = record
+    Data: string;
+    Len: Integer;
+    procedure Init(capacity: Integer);
+    procedure Reset;
+    procedure Grow(needed: Integer);
+    procedure AppendChar(c: Char);
+    procedure AppendSlice(const s: string; start, count: Integer);
+    procedure AppendStr(const s: string);
+    function Finish: string;
+  end;
+
+procedure TStrBuf.Init(capacity: Integer);
+begin
+  if capacity < 16 then capacity := 16;
+  SetLength(Data, capacity);
+  Len := 0;
+end;
+
+procedure TStrBuf.Grow(needed: Integer);
+var cap: Integer;
+begin
+  cap := Length(Data);
+  if Len + needed <= cap then Exit;
+  { Reset leaves the buffer with no storage at all, so the doubling has to start from
+    something -- from zero it would never reach the requested size. }
+  if cap < 16 then cap := 16;
+  while cap < Len + needed do cap := cap * 2;
+  SetLength(Data, cap);
+end;
+
+{ Drop what was accumulated WITHOUT reserving anything. The point is the buffer that is
+  never written to again: a re-Init would allocate for a literal that may not come. }
+procedure TStrBuf.Reset;
+begin
+  Data := '';
+  Len := 0;
+end;
+
+procedure TStrBuf.AppendChar(c: Char);
+begin
+  Grow(1);
+  Inc(Len);
+  Data[Len] := c;
+end;
+
+procedure TStrBuf.AppendSlice(const s: string; start, count: Integer);
+var i: Integer;
+begin
+  if count <= 0 then Exit;
+  Grow(count);
+  for i := 0 to count - 1 do Data[Len + 1 + i] := s[start + i];
+  Inc(Len, count);
+end;
+
+procedure TStrBuf.AppendStr(const s: string);
+begin
+  AppendSlice(s, 1, Length(s));
+end;
+
+function TStrBuf.Finish: string;
+begin
+  SetLength(Data, Len);
+  Result := Data;
 end;
 
 { ─── neutralize / sentinels (U+E000..U+E005 = EE 80 80 .. EE 80 85) ─────────── }
@@ -657,10 +774,22 @@ begin
   {$ENDIF}
 end;
 
-function SpNeutralize(const Value: string): string;
-var i, k: Integer; ch: Char; found: Boolean;
+{ Index of the first sentinel, or 0 when the text carries none. Both readers below run
+  on every render over the whole document, and a document with no sentinel in it -- the
+  overwhelmingly common case -- then needs no buffer and no copy at all: the argument is
+  returned as-is and only its reference count moves. }
+function FirstSentinelIn(const s: string): Integer;
+var i, k, adv: Integer;
 begin
-  Result := '';
+  for i := 1 to Length(s) do
+    if SentinelAt(s, i, k, adv) then Exit(i);
+  Result := 0;
+end;
+
+function SpNeutralize(const Value: string): string;
+var buf: TStrBuf; i, k: Integer; ch: Char; found: Boolean;
+begin
+  buf.Init(Length(Value) + 16);
   for i := 1 to Length(Value) do
   begin
     ch := Value[i];
@@ -668,49 +797,58 @@ begin
     for k := 0 to High(STRUCTURAL) do
       if ch = STRUCTURAL[k] then
       begin
-        Result := Result + Sentinel(k);
+        buf.AppendStr(Sentinel(k));
         found := True;
         Break;
       end;
-    if not found then Result := Result + ch;
+    if not found then buf.AppendChar(ch);
   end;
+  Result := buf.Finish;
 end;
 
 function SpSafetyRestore(const Text: string): string;
-var i, k, adv: Integer;
+var buf: TStrBuf; i, k, adv, first: Integer;
 begin
-  Result := '';
-  i := 1;
+  first := FirstSentinelIn(Text);
+  if first = 0 then Exit(Text);
+  buf.Init(Length(Text) + 16);
+  buf.AppendSlice(Text, 1, first - 1);
+  i := first;
   while i <= Length(Text) do
   begin
     if SentinelAt(Text, i, k, adv) then
     begin
-      Result := Result + STRUCTURAL[k];
+      buf.AppendChar(STRUCTURAL[k]);
       Inc(i, adv);
     end
     else
     begin
-      Result := Result + Text[i];
+      buf.AppendChar(Text[i]);
       Inc(i);
     end;
   end;
+  Result := buf.Finish;
 end;
 
 function SpStripSentinels(const Text: string): string;
-var i, k, adv: Integer;
+var buf: TStrBuf; i, k, adv, first: Integer;
 begin
-  Result := '';
-  i := 1;
+  first := FirstSentinelIn(Text);
+  if first = 0 then Exit(Text);
+  buf.Init(Length(Text) + 16);
+  buf.AppendSlice(Text, 1, first - 1);
+  i := first;
   while i <= Length(Text) do
   begin
     if SentinelAt(Text, i, k, adv) then
       Inc(i, adv)
     else
     begin
-      Result := Result + Text[i];
+      buf.AppendChar(Text[i]);
       Inc(i);
     end;
   end;
+  Result := buf.Finish;
 end;
 
 { ─── plurals ─────────────────────────────────────────────────────────────── }
@@ -763,10 +901,22 @@ end;
   comment is wrong (spintax-js#... editor coordinates). Detection is byte-identical either
   way: the returned string is the same, only a parallel map is filled. Pass map = nil to skip. }
 function StripComments(const text: string; map: TList<Integer>): string; overload;
-var i, n: Integer;
+var buf: TStrBuf; i, n: Integer; hasComment: Boolean;
 begin
-  Result := '';
-  i := 1; n := Length(text);
+  n := Length(text);
+  { No `/#` anywhere means nothing is stripped, and the caller that wants no position
+    map wants the text back unchanged -- skip the copy. A map caller still needs every
+    index recorded, so it takes the walk. }
+  if map = nil then
+  begin
+    hasComment := False;
+    for i := 1 to n - 1 do
+      if (text[i] = '/') and (text[i+1] = '#') then begin hasComment := True; Break; end;
+    if not hasComment then Exit(text);
+  end;
+
+  buf.Init(n + 16);
+  i := 1;
   while i <= n do
   begin
     if (i + 1 <= n) and (text[i] = '/') and (text[i+1] = '#') then
@@ -779,10 +929,11 @@ begin
     else
     begin
       if map <> nil then map.Add(i);
-      Result := Result + text[i];
+      buf.AppendChar(text[i]);
       Inc(i);
     end;
   end;
+  Result := buf.Finish;
 end;
 
 function StripComments(const text: string): string; overload;
@@ -791,10 +942,10 @@ begin
 end;
 
 function CollapseNewlines3(const s: string): string;
-var i, run: Integer;
+var buf: TStrBuf; i, run, j: Integer;
 begin
   // \n{3,} -> \n\n
-  Result := ''; i := 1;
+  buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     if s[i] = #10 then
@@ -802,14 +953,15 @@ begin
       run := 0;
       while (i <= Length(s)) and (s[i] = #10) do begin Inc(run); Inc(i); end;
       if run >= 3 then run := 2;
-      Result := Result + StringOfChar(#10, run);
+      for j := 1 to run do buf.AppendChar(#10);
     end
     else
     begin
-      Result := Result + s[i];
+      buf.AppendChar(s[i]);
       Inc(i);
     end;
   end;
+  Result := buf.Finish;
 end;
 
 { Parse a single directive line body after leading [ \t] already consumed at LStart.
@@ -1010,14 +1162,15 @@ end;
 
 procedure ExtractDirectives(const text: string; setDefs, defDefs: TStrMap; out body: string);
 var
-  kind, nm, val, kept, line: string;
+  kind, nm, val, line: string;
+  kept: TStrBuf;
   lineStart, n, e, termLen: Integer;
   isDirective: Boolean;
 begin
   // Mirror the reference regex: only the directive TEXT is removed, the newline
   // that separated its line stays. So a directive line becomes an empty segment;
   // segments are re-joined with #10 and then \n{3,} collapses to \n\n.
-  kept := '';
+  kept.Init(Length(text) + 16);
   lineStart := 1;
   n := Length(text);
   while lineStart <= n + 1 do
@@ -1032,7 +1185,7 @@ begin
       // emit nothing for the directive's own text
     end
     else
-      kept := kept + line;
+      kept.AppendStr(line);
     { Keep the terminator that was actually there. Emitting #10 for every line would turn a
       bare CR into LF; the reference preserves the character it broke on.
 
@@ -1052,13 +1205,13 @@ begin
     if termLen > 0 then
       if isDirective and (text[e] = #13)
          and ((e + 1 > n) or (LineBreakLen(text, e + 1) > 0)) then
-        kept := kept + Copy(text, e + 1, termLen - 1)
+        kept.AppendSlice(text, e + 1, termLen - 1)
       else
-        kept := kept + Copy(text, e, termLen);
+        kept.AppendSlice(text, e, termLen);
     if e > n then Break;
     lineStart := e + termLen;
   end;
-  body := CollapseNewlines3(kept);
+  body := CollapseNewlines3(kept.Finish);
 end;
 
 { ─── AST ─────────────────────────────────────────────────────────────────── }
@@ -1386,27 +1539,32 @@ begin
 end;
 
 function ParseSequence(const text: string): TNodeList;
-var i, j, endp, namelen: Integer; ch: Char; literal, nm: string; node: TNode;
+var i, j, endp, namelen: Integer; ch: Char; nm: string; node: TNode; literal: TStrBuf;
 
   procedure FlushLiteral;
   begin
-    if literal <> '' then
+    if literal.Len > 0 then
     begin
-      node := TNode.Create; node.Kind := nkLiteral; node.Text := literal;
-      Result.Add(node); literal := '';
+      node := TNode.Create; node.Kind := nkLiteral; node.Text := literal.Finish;
+      Result.Add(node);
+      { Finish handed Data out as the node's text, so the buffer must let go of it rather
+        than keep writing into a string it no longer owns. Reset, not Init: a flush is
+        usually the LAST thing this parse does -- every option of an enumeration ends with
+        one -- and reserving for a literal that never comes was an allocation per option. }
+      literal.Reset;
     end;
   end;
 
 begin
   Result := TNodeList.Create(True);
-  literal := ''; i := 1;
+  literal.Init(Length(text) + 16); i := 1;
   while i <= Length(text) do
   begin
     ch := text[i];
     if ch = '{' then
     begin
       endp := FindMatchingClose(text, i, '{', '}');
-      if endp = 0 then begin literal := literal + ch; Inc(i); Continue; end;
+      if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
       FlushLiteral;
       Result.Add(ParseBraceConstruct(Copy(text, i + 1, endp - i - 1)));
       i := endp + 1; Continue;
@@ -1414,7 +1572,7 @@ begin
     if ch = '[' then
     begin
       endp := FindMatchingClose(text, i, '[', ']');
-      if endp = 0 then begin literal := literal + ch; Inc(i); Continue; end;
+      if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
       FlushLiteral;
       Result.Add(ParsePermutation(Copy(text, i + 1, endp - i - 1)));
       i := endp + 1; Continue;
@@ -1433,7 +1591,7 @@ begin
         i := j + 1; Continue;
       end;
     end;
-    literal := literal + ch;
+    literal.AppendChar(ch);
     Inc(i);
   end;
   FlushLiteral;
@@ -1460,13 +1618,19 @@ begin
 end;
 
 function ExpandVarsOnly(const text: string; const opts: TRenderOpts): string;
-var iter, i, j: Integer; changed: Boolean; outp, nm, val, res: string;
+var iter, i, j: Integer; changed, hasPct: Boolean; outp, nm, val: string; res: TStrBuf;
 begin
   outp := text;
   for iter := 1 to MAX_VARIABLE_DEPTH do
   begin
+    { No '%' left means no reference left to expand -- stop before rebuilding the string. }
+    hasPct := False;
+    for i := 1 to Length(outp) do
+      if outp[i] = '%' then begin hasPct := True; Break; end;
+    if not hasPct then Break;
+
     changed := False;
-    res := ''; i := 1;
+    res.Init(Length(outp) + 16); i := 1;
     while i <= Length(outp) do
     begin
       if outp[i] = '%' then
@@ -1477,13 +1641,13 @@ begin
         begin
           if opts.Vars.TryGetValue(LowerAscii(nm), val) then
           begin
-            res := res + val; changed := True; i := j + 1; Continue;
+            res.AppendStr(val); changed := True; i := j + 1; Continue;
           end;
         end;
       end;
-      res := res + outp[i]; Inc(i);
+      res.AppendChar(outp[i]); Inc(i);
     end;
-    outp := res;
+    outp := res.Finish;
     if not changed then Break;
   end;
   Result := outp;
@@ -1607,7 +1771,7 @@ end;
 function RenderPermutation(node: TNode; const opts: TRenderOpts): string;
 type TElem = record Text: string; Sep: string; HasSep: Boolean; end;
 var elems: array of TElem; total, i, j, min, max, pick: Integer; tmp: TElem;
-    globalSep, globalLast, sep: string;
+    globalSep, globalLast, sep: string; buf: TStrBuf;
 begin
   total := node.PermOptions.Count;
   if total = 0 then Exit('');
@@ -1641,14 +1805,18 @@ begin
   if node.PermHasLastSep then globalLast := node.PermLastSep else globalLast := node.PermSep;
 
   if pick = 0 then Exit('');
-  Result := elems[0].Text;
+  if pick = 1 then Exit(elems[0].Text);
+  buf.Init(256);
+  buf.AppendStr(elems[0].Text);
   for i := 1 to pick - 1 do
   begin
     if elems[i].HasSep then sep := elems[i].Sep
     else if i = pick - 1 then sep := globalLast
     else sep := globalSep;
-    Result := Result + PadSeparator(sep) + elems[i].Text;
+    buf.AppendStr(PadSeparator(sep));
+    buf.AppendStr(elems[i].Text);
   end;
+  Result := buf.Finish;
 end;
 
 function RenderNode(node: TNode; const opts: TRenderOpts): string;
@@ -1666,11 +1834,16 @@ begin
 end;
 
 function RenderNodes(nodes: TNodeList; const opts: TRenderOpts): string;
-var i: Integer;
+var i: Integer; buf: TStrBuf;
 begin
-  Result := '';
+  { One node is the common case (a template with no spintax parses to a single literal);
+    hand its text straight back rather than copying it through a buffer. }
+  if nodes.Count = 0 then Exit('');
+  if nodes.Count = 1 then Exit(RenderNode(nodes[0], opts));
+  buf.Init(256);
   for i := 0 to nodes.Count - 1 do
-    Result := Result + RenderNode(nodes[i], opts);
+    buf.AppendStr(RenderNode(nodes[i], opts));
+  Result := buf.Finish;
 end;
 
 { ─── #def rolling (dependency order) ─────────────────────────────────────── }
@@ -1809,18 +1982,36 @@ end;
   treated as ordinary text and the next word got capitalised after it.
   Returns the matched length in code units, or 0. }
 function MatchesFoldedAt(const s: string; i: Integer; const lit: string): Integer;
-var p, q, lenS, lenL: Integer; a, b: string;
+var p, q, lenS, lenL: Integer; a, b: string; cs, cl: LongWord;
 begin
   Result := 0;
   p := i; q := 1;
   while q <= Length(lit) do
   begin
     if p > Length(s) then Exit;
-    SpCodePointAt(s, p, lenS);
-    SpCodePointAt(lit, q, lenL);
-    a := SpUpperCodePoint(SpCodePointAt(s, p, lenS));
-    b := SpUpperCodePoint(SpCodePointAt(lit, q, lenL));
-    if a <> b then Exit;
+    cs := SpCodePointAt(s, p, lenS);
+    cl := SpCodePointAt(lit, q, lenL);
+    { SpUpperCodePoint returns a STRING, so the table path allocates twice per code
+      point -- and ScanSingleAbbr calls this for all 46 abbreviations at EVERY position
+      of the text, which made those allocations the post-process's largest single cost.
+      When both code points are ASCII the mapping is exactly 'a'..'z' -> -32 (verified
+      against the table over all 128), so take it without allocating.
+
+      Only when BOTH are ASCII. A non-ASCII code point can uppercase INTO ASCII --
+      U+017F LATIN SMALL LETTER LONG S -> 'S' -- so a mixed pair must still go through
+      the table or a real match would be missed. }
+    if (cs < 128) and (cl < 128) then
+    begin
+      if (cs >= Ord('a')) and (cs <= Ord('z')) then Dec(cs, 32);
+      if (cl >= Ord('a')) and (cl <= Ord('z')) then Dec(cl, 32);
+      if cs <> cl then Exit;
+    end
+    else
+    begin
+      a := SpUpperCodePoint(cs);
+      b := SpUpperCodePoint(cl);
+      if a <> b then Exit;
+    end;
     Inc(p, lenS);
     Inc(q, lenL);
   end;
@@ -2111,25 +2302,37 @@ begin
   if groups >= 2 then Result := lastEnd - i;
 end;
 
-{ Rebuilt once from the generated code-point table, in whatever width this compiler uses. }
-{ Built once, on first use, and freed in finalization. Not thread-safe to initialise
-  concurrently -- the engine has no other global state and no threading contract, so this
-  is documented rather than locked. }
+{ Rebuilt once from the generated code-point table, in whatever width this compiler uses.
+  Built on first use. Not thread-safe to initialise concurrently -- the engine has no other
+  global state and no threading contract, so this is documented rather than locked. }
 var
-  GAbbrevs: TStringList = nil;
+  { The 46 abbreviations, plus the folded first code point of each.
+
+    ScanSingleAbbr runs at every word start of the document, and comparing all 46 there
+    in full was 86% of the entire post-process -- measured at 1383 ms of 1606 on a 1 MB
+    render. An abbreviation can only match when its first code point folds equal to the
+    text's, so one integer comparison rejects almost every candidate before the string
+    walk starts. The list is still traversed in order, so first-match-wins is unchanged.
+
+    Keyed on the folded code point rather than the raw one, because the match folds, and
+    ASCII-only bucketing would have been useless anyway: 28 of the 46 are Cyrillic. }
+  GAbbrevArr: array of string;
+  GAbbrevFirstUp: array of LongWord;
 
 procedure EnsureAbbrevs;
-var i, k, n, len: Integer; a: string;
+var i, k, n, len, cpLen: Integer; a: string;
 begin
-  if GAbbrevs <> nil then Exit;
-  GAbbrevs := TStringList.Create;
+  if Length(GAbbrevArr) > 0 then Exit;
+  SetLength(GAbbrevArr, ABBREV_COUNT);
+  SetLength(GAbbrevFirstUp, ABBREV_COUNT);
   i := 0;
   for k := 1 to ABBREV_COUNT do
   begin
     len := ABBREV_DATA[i]; Inc(i);
     a := '';
     for n := 1 to len do begin a := a + SpCodePointToStr(ABBREV_DATA[i]); Inc(i); end;
-    GAbbrevs.Add(a);
+    GAbbrevArr[k - 1] := a;
+    GAbbrevFirstUp[k - 1] := SpUpperFirstCp(SpCodePointAt(a, 1, cpLen));
   end;
 end;
 
@@ -2137,20 +2340,23 @@ end;
   whitespace, end of text, or a tag right after. Case-insensitive, hence the folded
   predicate for the preceding character. }
 function ScanSingleAbbr(const s: string; i: Integer): Integer;
-var k, p, cpLen, prev: Integer; a: string;
+var k, p, cpLen, prev: Integer; upHere: LongWord;
 begin
   Result := 0;
   EnsureAbbrevs;
+  if i > Length(s) then Exit;
   { negative lookbehind: no letter or digit immediately before }
   if i > 1 then
   begin
     prev := PrevCodePointStart(s, i);
     if IsLetterOrNumFoldedAt(s, prev, cpLen) then Exit;
   end;
-  for k := 0 to GAbbrevs.Count - 1 do
+  upHere := SpUpperFirstCp(SpCodePointAt(s, i, cpLen));
+  for k := 0 to High(GAbbrevArr) do
   begin
-    a := GAbbrevs[k];
-    cpLen := MatchesFoldedAt(s, i, a);
+    { Necessary condition for a fold-match, one integer compare -- see GAbbrevFirstUp. }
+    if GAbbrevFirstUp[k] <> upHere then Continue;
+    cpLen := MatchesFoldedAt(s, i, GAbbrevArr[k]);
     if cpLen = 0 then Continue;
     p := i + cpLen;
     if (p > Length(s)) or (s[p] <> '.') then Continue;
@@ -2165,69 +2371,6 @@ type
 { Replace every match of one scanner with a placeholder, left to right. The key is
   NUL prefix underscore counter NUL, exactly the reference's shape: NUL cannot occur in
   rendered output, so nothing else can collide with it. }
-{ ─── a growable buffer ───────────────────────────────────────────────────────
-  The post-process runs sixteen passes over the whole text, and each one used to
-  accumulate its result with  res := res + one character , which reallocates and copies
-  on every append. That made the stage quadratic: measured 0.11 s at 14 KB but 45 s at
-  950 KB, where four times the input cost seven to ten times the work.
-
-  Used ONLY inside the post-process. Concatenation elsewhere is not on a hot path and is
-  left alone. }
-type
-  TStrBuf = record
-    Data: string;
-    Len: Integer;
-    procedure Init(capacity: Integer);
-    procedure Grow(needed: Integer);
-    procedure AppendChar(c: Char);
-    procedure AppendSlice(const s: string; start, count: Integer);
-    procedure AppendStr(const s: string);
-    function Finish: string;
-  end;
-
-procedure TStrBuf.Init(capacity: Integer);
-begin
-  if capacity < 16 then capacity := 16;
-  SetLength(Data, capacity);
-  Len := 0;
-end;
-
-procedure TStrBuf.Grow(needed: Integer);
-var cap: Integer;
-begin
-  cap := Length(Data);
-  if Len + needed <= cap then Exit;
-  while cap < Len + needed do cap := cap * 2;
-  SetLength(Data, cap);
-end;
-
-procedure TStrBuf.AppendChar(c: Char);
-begin
-  Grow(1);
-  Inc(Len);
-  Data[Len] := c;
-end;
-
-procedure TStrBuf.AppendSlice(const s: string; start, count: Integer);
-var i: Integer;
-begin
-  if count <= 0 then Exit;
-  Grow(count);
-  for i := 0 to count - 1 do Data[Len + 1 + i] := s[start + i];
-  Inc(Len, count);
-end;
-
-procedure TStrBuf.AppendStr(const s: string);
-begin
-  AppendSlice(s, 1, Length(s));
-end;
-
-function TStrBuf.Finish: string;
-begin
-  SetLength(Data, Len);
-  Result := Data;
-end;
-
 { perMatchPrefix: the URI pass mints two prefixes from one alternation, so it derives the
   prefix from the match instead of taking the fixed one. Every other pass passes False. }
 procedure ShieldPass(var text: string; scan: TScanFn; const prefix: string;
@@ -3856,12 +3999,5 @@ begin
   end;
   smap.Free;
 end;
-
-initialization
-  { Delphi requires an initialization section before a finalization one; FPC does not.
-    The abbreviation list is still built lazily -- this exists only to make the pair legal. }
-
-finalization
-  GAbbrevs.Free;
 
 end.

@@ -117,6 +117,69 @@ Two things about it are easy to get wrong and are written down because they were
 This **reverses** [`decisions/0002`](decisions/0002-postprocess-remainder.md), which
 recorded the minimal stage as a deliberate scope decision.
 
+### `SpRender`, and the price of doing nothing
+
+`SpRender` had never been measured; the editor-side pair above had. The number that made the
+gap obvious: **64 KB of plain text carrying no spintax at all cost 15 ms** — the engine had
+nothing to select, nothing to substitute, and still spent that. Two causes, neither of them
+the parse tree.
+
+**Per-character accumulation on the whole document.** `TStrBuf` already existed, added when
+the post-process was found to be quadratic, but it was scoped to the post-process under a
+comment stating that "concatenation elsewhere is not on a hot path". That was never measured.
+Four accumulators walk the entire document on every single render — `SpStripSentinels`,
+`StripComments`, `ParseSequence`'s literal, `SpSafetyRestore` — and each grew its result one
+character at a time, reallocating per character. `ExtractDirectives` did the same per line,
+`SplitTopLevel` per character of every option, `RenderNodes` per node. They now share the
+buffer, and the two sentinel passes return the argument untouched when the document holds no
+sentinel, which is the ordinary case.
+
+**A string allocation per code point, 46 times per word.** `MatchesFoldedAt` compared
+`SpUpperCodePoint(a) <> SpUpperCodePoint(b)`, and that function returns a **string** because a
+few code points uppercase to more than one character. `ScanSingleAbbr` calls it for all 46
+abbreviations at every word start, so folding cost two heap allocations per code point per
+abbreviation. It was 1383 ms of the 1606 ms post-process on a 1 MB render — 86% of the stage,
+in a step that shields `etc.` and `Mr.`.
+
+Two fixes. Where both code points are ASCII the mapping is exactly `'a'..'z' → -32`, verified
+against the table over all 128, so it is taken without allocating; only a mixed pair still goes
+through the table, because a non-ASCII code point can fold **into** ASCII (U+017F → `S`) and
+short-circuiting that would drop a real match. And `SpUpperFirstCp` gives the first code point
+of the uppercase mapping without building the string, which makes `GAbbrevFirstUp[k] <> upHere`
+a one-integer necessary condition for a fold-match — it can reject a candidate but never a
+match. That equality was checked exhaustively against `SpUpperCodePoint` over every code point
+to U+10FFFF: zero mismatches. A first attempt bucketed the abbreviations by ASCII first letter
+instead and bought nothing, because 28 of the 46 are Cyrillic and the ASCII branch never ran.
+
+Measured on the same machine, FPC 3.2.2 / i386 / `-O3`, per render:
+
+| 64 KB template | before | after |
+|---|---|---|
+| plain text, no spintax, `PostProcess=False` | 15.4 ms | 2.5 ms |
+| plain text, no spintax, `PostProcess=True` | 181 ms | 25 ms |
+| sentence-long options, `PostProcess=False` | 17.3 ms | 3.3 ms |
+| sentence-long options, `PostProcess=True` | 66.2 ms | 10.8 ms |
+| `{a\|b}` every five bytes, `PostProcess=False` | 45.3 ms | 38.8 ms |
+
+and end to end: a 3.7 KB article with 160 spin blocks 7.0 → 1.4 ms with the post-process on,
+1 MB of flat spintax 2133 → 421 ms with it on and 297 → 124 ms with it off.
+
+The one row that barely moves is the dense one, and what is left there is **not** explained
+yet. The cost scales with the number of CONSTRUCTS, not with bytes: the marginal cost per
+construct is 3.0 µs measured on the sparse template (468 constructs) and 2.96 µs on the dense
+one (13 107), the same 64 KB either way. The obvious story — a `TNode`, a `TNodeList` and a
+`TStringList` allocated per construct, so allocation-bound — was asserted here first and then
+tested: removing one allocation per option (`FlushLiteral` reserved a fresh buffer even when
+the parse was finished with it) moved the dense figure by less than the noise floor,
+40.76 ms against 40.81 ms as the minimum of six interleaved runs. The allocation was real
+and the removal is kept, but the explanation did not survive its own measurement, and this
+paragraph is not going to carry a second unmeasured one. What is known: ~3 µs per construct,
+flat in document size, cause unattributed.
+
+`SpRender` also reparses the template on every call, which is pure waste for the host that
+renders one template thousands of times; exposing a parsed template is an API change and is
+not in this one. Both are open.
+
 ## 5. Public API
 
 ```pascal
