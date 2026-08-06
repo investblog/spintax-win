@@ -88,6 +88,9 @@
     measurement above shows correlation of a kind -- but not what the feature request said,
     and not something the guide documents, so there is nothing here to translate INTO.
   - a block whose tag repeats across its own options, which the guide does not describe.
+  - blocks whose tag SETS overlap without being equal -- one tagged A and B beside one
+    tagged A and C. They share a tag, and whether SER pairs them through it is undocumented
+    and unmeasured; calling them independent would be answering that question silently.
 
   NAMESPACE. The generated names carry a prefix chosen so that it does not occur anywhere
   in the source template, case-insensitively, nor among the keys already in MacroVars. A
@@ -274,6 +277,12 @@ begin
   FPrefix := APrefix;
   FVars := AVars;
   FKeys := TStringList.Create;
+  { TStringList.IndexOf folds case by default, and the keys here are the author's own
+    text. Without this, `#file[A.txt,1,S]` and `#file[a.txt,1,S]` share one variable and
+    the second renders as the first -- silent corruption of a file name. This is the same
+    defect the family fixed in v0.2.2, where IndexOf folded an include target; it is worth
+    treating every TStringList lookup over user text as case-folded until told otherwise. }
+  FKeys.CaseSensitive := True;
   FNames := TStringList.Create;
   FCounts := TStringList.Create;
 end;
@@ -478,6 +487,7 @@ type
     FIds: TStringList;       { group identity }
     FOrders: TStringList;    { canonical key order, LF-joined, parallel to FIds }
     FUses: TStringList;      { how many blocks each group has, as text }
+    FBad: TStringList;       { '1' when the group's tags overlap another group's }
   public
     constructor Create;
     destructor Destroy; override;
@@ -485,6 +495,8 @@ type
     procedure OrderOf(index: Integer; into: TStringList);
     function BlockCount(index: Integer): Integer;
     procedure CountBlock(index: Integer);
+    procedure MarkConflicts;
+    function Conflicted(index: Integer): Boolean;
     function Count: Integer;
   end;
 
@@ -492,13 +504,15 @@ constructor TTagGroups.Create;
 begin
   inherited Create;
   FIds := TStringList.Create;
+  FIds.CaseSensitive := True;
   FOrders := TStringList.Create;
   FUses := TStringList.Create;
+  FBad := TStringList.Create;
 end;
 
 destructor TTagGroups.Destroy;
 begin
-  FIds.Free; FOrders.Free; FUses.Free;
+  FIds.Free; FOrders.Free; FUses.Free; FBad.Free;
   inherited Destroy;
 end;
 
@@ -515,6 +529,7 @@ begin
   FIds.Add(id);
   FOrders.Add(keys.Text);
   FUses.Add('0');
+  FBad.Add('0');
   Result := FIds.Count - 1;
 end;
 
@@ -531,6 +546,43 @@ end;
 procedure TTagGroups.CountBlock(index: Integer);
 begin
   FUses[index] := IntToStr(StrToInt(FUses[index]) + 1);
+end;
+
+{ Two groups whose tag sets OVERLAP without being equal are a case the guide does not
+  describe: a block tagged A and B beside one tagged A and C share a tag, and whether SER
+  pairs them through it is not documented and was not measured. Treating them as
+  independent is a silent answer to that question, which this unit's rule forbids, so both
+  groups are marked and every block in them is lifted out and reported instead. }
+procedure TTagGroups.MarkConflicts;
+var i, j, k, shared: Integer; a, b: TStringList;
+begin
+  a := TStringList.Create;
+  b := TStringList.Create;
+  try
+    a.CaseSensitive := True;
+    b.CaseSensitive := True;
+    for i := 0 to FIds.Count - 1 do
+      for j := i + 1 to FIds.Count - 1 do
+      begin
+        a.Text := FOrders[i];
+        b.Text := FOrders[j];
+        shared := 0;
+        for k := 0 to a.Count - 1 do
+          if b.IndexOf(a[k]) >= 0 then Inc(shared);
+        if (shared > 0) and ((shared <> a.Count) or (shared <> b.Count)) then
+        begin
+          FBad[i] := '1';
+          FBad[j] := '1';
+        end;
+      end;
+  finally
+    a.Free; b.Free;
+  end;
+end;
+
+function TTagGroups.Conflicted(index: Integer): Boolean;
+begin
+  Result := FBad[index] = '1';
 end;
 
 { Reads a block's tag layout. `keys` and `texts` come back parallel and in written order,
@@ -676,6 +728,12 @@ begin
             order.Assign(keys); order.Sort;
             id := order.Text;
             g := ctx.Groups.GroupOf(id, keys);
+            { a set that partly overlaps another group's is undocumented -- refuse it }
+            if (not collectOnly) and ctx.Groups.Conflicted(g) then kind := bkUnsupported;
+          end;
+
+          if kind = bkPerOption then
+          begin
 
             if collectOnly then
             begin
@@ -743,15 +801,18 @@ begin
   ctx.Groups := TTagGroups.Create;
   ctx.Unsupported := Unsupported;
   try
-    { two walks: the first fixes every group, its key order and how many blocks it has }
+    { Three steps: the first walk fixes every group, its key order and how many blocks it
+      has; MarkConflicts then rules on the overlapping sets; only then can the second walk
+      know which blocks it may convert. }
     WalkTags(Src, ctx, True);
+    ctx.Groups.MarkConflicts;
     body := WalkTags(Src, ctx, False);
 
     defs := '';
     order := TStringList.Create;
     try
       for g := 0 to ctx.Groups.Count - 1 do
-        if ctx.Groups.BlockCount(g) > 1 then
+        if (ctx.Groups.BlockCount(g) > 1) and (not ctx.Groups.Conflicted(g)) then
         begin
           ctx.Groups.OrderOf(g, order);
           defs := defs + DefsFor(lift.Prefix, g, order.Count);

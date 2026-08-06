@@ -440,6 +440,52 @@ begin
   Check('empty input', Conv(''), '');
 end;
 
+{ ─── 5a. case, and tag sets that only partly overlap ─────────────────────── }
+
+procedure TestCaseAndOverlap;
+var vars: TStrMap; unsup: TStringList; tmpl: string; outs: TStringList;
+begin
+  { TStringList.IndexOf folds case, and the lifter keys on the author's own text. Two
+    macros differing only in case shared one variable, so the second rendered as the
+    first -- a file name silently replaced by another. Shipped in v0.4.0. }
+  vars := TStrMap.Create;
+  unsup := TStringList.Create;
+  try
+    tmpl := SpGsaToSpintax('#file[A.txt,1,S] and #file[a.txt,1,S]', vars, unsup);
+    Check('macros differing only in case get their own variable',
+          tmpl, '%__gsa_m1% and %__gsa_m2%');
+    CheckTrue('and both are stored', vars.Count = 2);
+  finally
+    vars.Free; unsup.Free;
+  end;
+  CheckVerbatim('case/two-macros', '#file[A.txt,1,S] and #file[a.txt,1,S]');
+  CheckVerbatim('case/three-macros',
+                '#file[Ab.txt,1,S] and #file[aB.txt,1,S] and #file[zz.txt,1,S]');
+  { the same key path carries refused blocks }
+  CheckVerbatim('case/two-refused-blocks',
+                '{#.de Hallo|#.com Hello} / {#.DE HALLO|#.COM HELLO}');
+
+  { A tag set that partly overlaps another is undocumented: `#A` is shared, but the sets
+    differ. Independence is an answer, and not one anybody measured, so both blocks are
+    refused instead. }
+  CheckVerbatim('overlap/partial-tag-sets', '{#A a|#B b}{#A c|#C d}');
+  Check('partly overlapping tag sets are reported',
+        Refused('{#A a|#B b}{#A c|#C d}'), '{#A a|#B b};{#A c|#C d};');
+
+  outs := TStringList.Create;
+  try
+    { an identical set on both blocks is still converted, and still correlates }
+    Outcomes('{#A a|#B b}{#A c|#B d}', 3000, False, outs);
+    Check('an identical tag set still correlates', outs.Text,
+          'ac' + sLineBreak + 'bd' + sLineBreak);
+    { and two sets that share nothing are still independent }
+    Outcomes('{#A a|#B b}{#C c|#D d}', 4000, False, outs);
+    CheckTrue('disjoint tag sets stay independent', outs.Count = 4);
+  finally
+    outs.Free;
+  end;
+end;
+
 { ─── 6. the generated names cannot collide ───────────────────────────────── }
 
 procedure TestNamespace;
@@ -509,6 +555,7 @@ begin
   TestBlockFormRefused;
   TestLiteralText;
   TestRefusals;
+  TestCaseAndOverlap;
   TestNamespace;
   TestArtifacts;
   TestCombined;

@@ -76,6 +76,9 @@ somewhere to put its own answer. What is lifted:
 - `{#.de Hallo|#.com Hello}` — selects on the **target URL's domain**. Not a spin at all,
   but a conditional on host context.
 - a block where only SOME options carry a tag, or whose tag repeats across its own options.
+- blocks whose tag sets overlap without being equal (one tagged A and B beside one tagged
+  A and C). They share a tag; whether SER pairs them through it is undocumented, so calling
+  them independent would answer that question silently.
 
 A lifted block is restored to the author's own text first, macros included, so the host is
 handed what it wrote rather than this unit's placeholders.
@@ -138,6 +141,18 @@ invented.
 
 Worth saying plainly: this is the SER author's own description of his own syntax, and his
 engine does not do it. The measurement is the thing to send him, not an opinion.
+
+## v0.4.1 — two defects a second review found in v0.4.0
+
+**A lifted construct was keyed case-insensitively.** `TStringList.IndexOf` folds case, and
+the lifter keys on the author's own text, so `#file[A.txt,1,S]` and `#file[a.txt,1,S]`
+shared one variable and the second rendered as the first — a file name silently replaced by
+another, in a published tag. This is the same defect the family fixed in `v0.2.2`, where
+`IndexOf` folded an include target; it is worth treating every `TStringList` lookup over
+user text as case-folded until proved otherwise.
+
+**Partly overlapping tag sets were silently called independent**, which is a ruling on an
+undocumented case rather than a translation of a documented one. They are refused now.
 
 ## Consequences
 

@@ -92,7 +92,7 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
 ## Done
 
 - [x] **A GSA SER dialect front end** (2026-08-06), `src/Spintax.Gsa.pas` +
-      `tests/gsa_tests.dpr`, 81 checks in both an optimised and a `-Co -Cr` build.
+      `tests/gsa_tests.dpr`, 90 checks in both an optimised and a `-Co -Cr` build.
       Optional, outside the corpus contract, so an existing SER template runs on this
       engine unchanged instead of the engine growing GSA syntax.
       See [decisions/0005](decisions/0005-gsa-dialect-front-end.md).
