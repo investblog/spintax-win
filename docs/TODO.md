@@ -67,7 +67,76 @@ from this year's diffs, **all three verdict-moving** (§3 REQUIRED):
       differential rather than a ride on someone else's — a name→index map and DFS colours is
       the shape of the fix. Everything else is linear.
 
+- [ ] **The render path's two remaining costs. One of them is not diagnosed.**
+      (a) **~3 µs per construct, cause unknown.** After the sweep below, `SpRender` is linear
+      and cheap on ordinary text, but a construct-dense template still costs ~41 ms per
+      64 KB. The cost scales with construct COUNT, not bytes — 3.0 µs/construct measured on
+      a sparse template, 2.96 µs on a dense one — so it is per-construct work, flat in
+      document size. The natural suspect is the node tree (`TNode` + `TNodeList` +
+      a `TStringList` per construct), but that is a guess that has already failed once:
+      removing one allocation per option moved it 40.81 → 40.76 ms, inside the noise, when
+      the allocation story predicts several ms. Profile it before optimising it; do not
+      write the allocation explanation down again until something measures it.
+      (b) **`SpRender` reparses the template on every call**, which is pure waste for the
+      host that renders one template thousands of times — the shape SER-like tools actually
+      have. Exposing a parsed template (`SpCompile` → render N times) is an additive API
+      change and would need the family's agreement on naming, not just a local edit.
+
+- [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
+      tests only whether a variable is SET, so the dialect converter below expresses an
+      n-way correlated choice as n−1 definitions and a chain of n−1 nested conditionals per
+      block. With `{?VAR=x?a|b}` it would be one definition and one test — readable output
+      instead of generated noise. A family syntax change: reference and corpus first, and
+      worth raising only if something other than this converter wants it too.
+
 ## Done
+
+- [x] **A GSA SER dialect front end** (2026-08-06), `src/Spintax.Gsa.pas` +
+      `tests/gsa_tests.dpr`, 81 checks in both an optimised and a `-Co -Cr` build.
+      Optional, outside the corpus contract, so an existing SER template runs on this
+      engine unchanged instead of the engine growing GSA syntax.
+      See [decisions/0005](decisions/0005-gsa-dialect-front-end.md).
+
+      Reading the macro guide rather than the feature request corrected two of its three
+      claims: `~{a|b|c}` is *"all variations used but in a random order"*, which `[a|b|c]`
+      already was, and spintags tag each OPTION and correlate by LABEL.
+
+      The form the request actually described -- tag on the BLOCK, correlation by option
+      INDEX -- was built, then measured in SER's own Article Manager and removed. Eight
+      copies of one three-option block in a single article: untagged control
+      `1 1 2 3 2 2 1 1`, the guide's per-option form `1 1 1 1 1 1 1 1`, the request's form
+      `2 1 1 1 1 1 1 1`. Index correlation predicts eight identical digits with certainty,
+      so SER does not do it; the guide's form correlating is real at p ~ 0.05%. Blocks with
+      only some options tagged are now refused and handed to the host. The SER author's
+      description of his own syntax does not match his engine, and the measurement is what
+      to send him.
+
+      Two rounds of review, and the second one is the one worth remembering. Every finding
+      it raised lived in the gap between what the converter WRITES and what `SpRender` then
+      renders — the suite had been asserting almost entirely on the former. `#file_links[…]`
+      was unprotected because the name scan stopped at the underscore; `%related_url_link
+      [ignore=a|b]%` had its arguments shuffled; and a block documented as "left exactly as
+      written" was left in the template, where the engine read it as an ordinary spin and
+      printed one random branch with the tag still attached. The rule that came out of it:
+      a conversion may never leave the engine free to render a GSA construct as something
+      else, so anything unconvertible is lifted OUT into a variable and reported.
+
+- [x] **`SpRender` no longer pays for text it does not change** (2026-08-06). 64 KB of plain
+      text carrying no spintax cost 15 ms; it costs 2.5 ms. Two causes, neither the parse
+      tree. Four accumulators walked the whole document per render growing a string one
+      character at a time (`SpStripSentinels`, `StripComments`, `ParseSequence`'s literal,
+      `SpSafetyRestore`) — the `TStrBuf` added for the post-process had been scoped to it
+      under a comment claiming nothing else was hot, which had never been measured. And
+      `MatchesFoldedAt` allocated two strings per code point because `SpUpperCodePoint`
+      returns one, times 46 abbreviations at every word start: 1383 ms of a 1606 ms
+      post-process on a 1 MB render. Now an allocation-free ASCII fold (mixed pairs still go
+      through the table — U+017F folds into ASCII) plus `SpUpperFirstCp` as a one-integer
+      necessary condition, verified against `SpUpperCodePoint` over every code point to
+      U+10FFFF, zero mismatches. Post-process on 1 MB 2133 → 421 ms; a 3.7 KB article with
+      160 blocks 7.0 → 1.4 ms. Corpus 200/0/4, 411 local assertions in both builds -- the three new ones pin the
+      folding fast path and the pre-filter, and each was proved to fail when its branch is
+      mutated away.
+      See `docs/spec-pascal-port.md` §4, "`SpRender`, and the price of doing nothing".
 
 - [x] **The permutation config is gated on the family's two tests** (2026-07-26, `v0.3.3`).
       `ParsePermConfig` chose key form on a bare `Pos()` substring hit, so `[<separator>a|b]`

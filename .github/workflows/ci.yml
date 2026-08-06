@@ -71,6 +71,9 @@ jobs:
         run: |
           mkdir -p lib
           fpc -Mdelphi -Sew -vw -vm4046 -Fusrc -FUlib -Cn src/Spintax.pas
+          # The dialect front end is held to the same bar. Naming only src/Spintax.pas here
+          # would let a warning regression in the optional unit through a green CI.
+          fpc -Mdelphi -Sew -vw -vm4046 -Fusrc -FUlib -Cn src/Spintax.Gsa.pas
 
       # check-corpus.sh, NOT corpus_runner directly: the runner is a reporter and exits 0
       # whatever it finds, so a job wired to it would be green with 21 fixtures failing.
@@ -99,6 +102,16 @@ jobs:
       - name: Local tests with overflow checks (Delphi Debug equivalent)
         shell: bash
         run: ./tests/local_tests_checked
+
+      # The GSA dialect front end is optional and outside the family's contract, so the
+      # corpus says nothing about it. It ships in this repository, so it is gated here.
+      - name: GSA dialect converter
+        shell: bash
+        run: ./tests/gsa_tests
+
+      - name: GSA dialect converter with overflow checks
+        shell: bash
+        run: ./tests/gsa_tests_checked
 
   # The shell scripts are part of the build contract (build.sh drives every consumer's
   # first five minutes with this repo), so they are gated like source, not trusted.

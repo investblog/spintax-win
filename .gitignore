@@ -59,6 +59,8 @@ ppas.sh
 tests/corpus_runner
 tests/local_tests
 tests/local_tests_checked
+tests/gsa_tests
+tests/gsa_tests_checked
 examples/demo
 
 # Lazarus / Delphi per-user session state — machine-local, never shared

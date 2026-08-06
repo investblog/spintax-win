@@ -18,5 +18,13 @@ fpc -Mdelphi -Fusrc -Futests -FUlib -O2 tests/local_tests.dpr -otests/local_test
 # Delphi-only bug class into one FPC can catch.
 mkdir -p lib/checked
 fpc -Mdelphi -Co -Cr -Fusrc -Futests -FUlib/checked tests/local_tests.dpr -otests/local_tests_checked
+# The optional GSA dialect front end and its own suite. Not part of the engine's contract
+# and not gated by the corpus, so it builds and runs separately -- but held to the same
+# two bars as the engine: warnings are errors, and a second build with overflow and range
+# checks on, which is what Delphi's Debug configuration does.
+fpc -Mdelphi -Sew -vw -vm4046 -Fusrc -FUlib -Cn src/Spintax.Gsa.pas
+fpc -Mdelphi -Fusrc -FUlib -O2 tests/gsa_tests.dpr -otests/gsa_tests
+mkdir -p lib/gsachecked
+fpc -Mdelphi -Co -Cr -Fusrc -FUlib/gsachecked tests/gsa_tests.dpr -otests/gsa_tests_checked
 fpc -Mdelphi -Fusrc -FUlib -O2 examples/demo.lpr -oexamples/demo
-echo "built: tests/corpus_runner, tests/local_tests(+checked), examples/demo"
+echo "built: tests/corpus_runner, tests/local_tests(+checked), tests/gsa_tests(+checked), examples/demo"

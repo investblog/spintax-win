@@ -166,14 +166,17 @@ than a failure.
 ## Layout
 
     src/Spintax.pas           the engine (unit Spintax)
+    src/Spintax.Gsa.pas       optional GSA SER dialect front end (unit Spintax.Gsa)
     tests/corpus_runner.dpr   golden-corpus conformance runner (reports; always exits 0)
     tests/SpxJson.pas         JSON facade: fpjson, or System.JSON on a UTF-16 compiler
     tests/check-corpus.sh     the gate: runs the runner, diffs against the baseline
     tests/known-failures.txt  expected-failure baseline (currently empty)
     tests/local_tests.dpr     assertions no corpus fixture can express
+    tests/gsa_tests.dpr       assertions for the GSA front end
     src/Spintax.Unicode.inc   generated Unicode tables (scripts/gen-unicode-tables.cjs)
     examples/demo.lpr         command-line render demo
     docs/spec-pascal-port.md  the governing parity contract
+    docs/decisions/           the architecture decision records
 
 ## Encoding: a host responsibility
 
@@ -249,6 +252,61 @@ the child's source into the document would give: the child is parsed and rendere
 deeper than `MaxIncludeDepth` (`0` → `SP_DEFAULT_INCLUDE_DEPTH` = 20) resolves to
 an empty string rather than an error. The cosmetic post-process and the sentinel
 restore run once, over the assembled document.
+
+## Optional: running GSA SER templates
+
+`src/Spintax.Gsa.pas` is a front end, not part of the engine: it rewrites a
+[GSA Search Engine Ranker](https://docu.gsa-online.de/search_engine_ranker/macro_guide)
+template into the syntax above, so an existing SER project renders here unchanged. The
+engine gains no GSA syntax — the family's contract is the corpus, and a dialect belongs
+beside it. It has its own suite (`tests/gsa_tests.dpr`) and is not gated by the corpus.
+
+```pascal
+uses Spintax, Spintax.Gsa;
+
+macros := TStrMap.Create;              { both are the caller's to own and free }
+unsup  := TStringList.Create;
+tmpl   := SpGsaToSpintax(gsaTemplate, macros, unsup);
+ctx.Vars := macros;                    { required -- see below }
+SpRender(tmpl, ctx);
+```
+
+- `~{a|b|c}` → `[a|b|c]`. The guide defines the tilde form as *all* variations in a
+  *random* order, which is this family's permutation exactly.
+- Spintags as the guide writes them — `{#T1 a|#T2 b}` … `{#T1 c|#T2 d}`, a tag on every
+  option, correlated by label. Each group becomes one `#def` plus conditionals, so the
+  blocks stay paired instead of choosing independently. Confirmed against SER itself:
+  eight copies of one tagged block in a single article all return the same branch, where
+  eight untagged copies do not.
+- `#file[...]`, `#file_links[...]`, `#openai[...]`, `%related_url_link[...]%` and their
+  siblings → `%…mN%`, with the macro text handed back in `macros`. This is not cosmetic:
+  `[` opens a permutation here, so an unconverted `#file[list.txt,1,S]` renders as
+  `#filelist.txt,1,S`, and a macro carrying a `|` gets its arguments **shuffled**. It
+  cannot be repaired inside the template, because `SpRender` strips reserved sentinels
+  from a template before parsing — hence the map.
+
+It also lifts out the GSA text that this engine would otherwise read as *its* syntax. GSA
+has no permutation and no comment form, so `[b]bold[/b]`, `[10|20]`, a `#top` fragment URL
+and a line beginning `#set` are ordinary characters there — and, left alone, this engine
+eats the brackets, shuffles the bracketed list, swallows the rest of the document as an
+unterminated comment, and consumes the directive line. Those characters are lifted the same
+way a macro is; identical ones share one variable.
+
+**`macros` is not optional.** Ignore it and every lifted construct renders as a visible
+`%…m1%` instead of its real text. That is deliberate: the alternative failure mode is
+output that still looks like a macro and is not one. Merge it into `ctx.Vars` rather than
+the other way round — a host entry of the same name would shadow a lifted one.
+
+**`unsup` is what the converter refused.** `{#.de …|#.com …}` selects on the target URL's
+domain — host context, not a spin. So is a block where only some options carry a tag: SER
+does something real with those, but measurably not what its own feature request described,
+and nothing the guide documents (see the ADR). Those blocks are lifted out and reported as
+`name=original text`; left in the
+template they would not be "left alone", they would be rendered as an ordinary spin, one
+random branch with the tag still in it. Rendered as they are, they reproduce the source
+exactly; a host that wants to resolve one overrides that variable.
+
+See [ADR 0005](docs/decisions/0005-gsa-dialect-front-end.md).
 
 ## License
 
