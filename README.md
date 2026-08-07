@@ -374,7 +374,11 @@ template they would not be "left alone", they would be rendered as an ordinary s
 random branch with the tag still in it. Rendered as they are, they reproduce the source
 exactly; a host that wants to resolve one overrides that variable.
 
-See [ADR 0005](docs/decisions/0005-gsa-dialect-front-end.md).
+**[`docs/gsa-ser-conversion.md`](docs/gsa-ser-conversion.md) is the complete mapping** —
+every construct in GSA's macro guide, what it converts to, what is passed through, what is
+refused and why, with a worked end-to-end example. Read that before integrating; the summary
+above is the short version. The decision behind the front end is
+[ADR 0005](docs/decisions/0005-gsa-dialect-front-end.md).
 
 ## License
 

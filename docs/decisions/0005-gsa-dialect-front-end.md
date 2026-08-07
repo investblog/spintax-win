@@ -41,6 +41,10 @@ Every `%…%` macro (`%spinfile-f%`, `%spinfolder-p%`, `%columnspinfile-f-2%`) d
 through untouched, as does `#file=f` and `#spin…#nospin` — the bracketed form is the one
 that breaks, and it is the one we assured him was safe.
 
+The construct-by-construct mapping this decision produced is
+[`../gsa-ser-conversion.md`](../gsa-ser-conversion.md) — written for an integrator, and the
+place to look for what the code does rather than why it does it.
+
 ## Decision
 
 A GSA template is **converted into this engine's syntax** by an optional unit that the
