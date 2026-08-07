@@ -325,7 +325,45 @@ bracketed macro and the refused domain block come back exactly as written, and
   partially tagged block, overlapping tag sets — the converter refuses rather than guesses.
   Those cases are yours to resolve through `Unsupported`, with the author's text in hand.
 
-## 11. How this is tested
+## 11. What survives a round trip, and what is not executed at all
+
+### The engine spins; it does not run SER
+
+Every data-source macro is **preserved, never executed**. `#file[…]`, `#file_links[…]`,
+`#file=…`, `%spinfile-…%`, `%spinfolder-…%`, `%columnspinfile-…%`, `#spin…#nospin`,
+`#trans_xx_yy…#notrans`, `#grabbedAll`, `#random`, `#gennick`, `#openai`,
+`%related_url_link[…]%` — all of them come out of a render as text, for SER to resolve
+downstream. Nothing here reads a file, calls an API or picks a nickname.
+
+### Everyday SER text, measured
+
+Convert → render over five seeds, compared byte-for-byte with the input:
+
+| input | result |
+|---|---|
+| `Save 50% now, 20% later.` | survives |
+| `Value %myvar% here.` / `%my_var%` | survives — an unknown `%…%` is left alone |
+| `Path C:\dir\file.txt ok.` | survives |
+| `Cost { rises.` (a lone brace) | survives |
+| `Try ~{a\|b now.` (unclosed tilde form) | survives |
+| `x #file[a.txt y` (unclosed macro bracket) | survives |
+| `Ping #tag and #set-like text.` | survives |
+| `#trans_en_de hi #notrans` | survives |
+| `100%% done`, `a ~ b ^ c` | survive |
+| `A {placeholder} here.` | → `A placeholder here.` — **spin syntax, not a defect** |
+
+The last row is the ordinary meaning of `{…}` in every engine of this family and in SER
+alike: a group with no `|` is a one-option spin, so it emits its single option and the
+braces are consumed as the syntax they are. A template that needs literal braces in the
+output has to supply them through a host variable, the same as any other reserved
+character.
+
+And the forms that would break **without** the lifting of §7 — `[b]bold[/b]`, `[10|20]`, a
+`/#` fragment URL, a line opening with `#set`, and a block whose text starts with `?` or
+`plural ` (a conditional and a plural here, an ordinary spin in SER) — all survive because
+they are lifted, not because they were harmless.
+
+## 12. How this is tested
 
 `tests/gsa_tests.dpr` — 94 assertions, run in CI beside the engine's suites, in both an
 optimised and a `-Co -Cr` (overflow and range checked) build, with warnings as errors.
