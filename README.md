@@ -10,7 +10,7 @@ Free Pascal 3.2.2+ in `{$mode delphi}`.
 The fourth engine in the Spintax family, and an **independent implementation** --
 not a transcription of the others. It is held to the same behaviour contract by a
 **shared golden corpus** of language-neutral fixtures, the same one that gates the
-TypeScript, PHP and Python engines: **230 of its 234 cases pass and none fail**. The
+TypeScript, PHP and Python engines: **231 of its 235 cases pass and none fail**. The
 other 4 are skipped by design -- `kind:rng`, which assert within-engine reproducibility
 rather than a cross-engine output.
 
@@ -101,7 +101,7 @@ cross-engine gate. Measured on this port:
 | corpus file            | cases | passed | note                                  |
 |------------------------|-------|--------|---------------------------------------|
 | render-semantics       | 72    | 72     | plurals, conditionals, permutations, variables, set/def |
-| validate               | 54    | 54     | bracket/directive/permutation/plural/variable diagnostics |
+| validate               | 55    | 55     | bracket/directive/permutation/plural/variable diagnostics |
 | render-postprocess     | 43    | 43     | full 12-step pipeline                 |
 | render-deterministic   | 16    | 16     | variable substitution, enumeration selection |
 | comments               | 13    | 13     | `/# … #/` stripping, including the unterminated opener |
@@ -109,7 +109,7 @@ cross-engine gate. Measured on this port:
 | neutralize             | 10    | 10     | T2 shielding round-trip               |
 | render-rng-selection   | 10    | 10     | selection semantics under injected RNG |
 
-Totals: **`PASS=230 FAIL=0 SKIP=4`** over 234 cases. Only `kind:rng` render cases
+Totals: **`PASS=231 FAIL=0 SKIP=4`** over 235 cases. Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 

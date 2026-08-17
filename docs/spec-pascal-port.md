@@ -700,21 +700,51 @@ new check inherits that branch's `Continue` rather than inventing a second probl
 default arity is asked of the same table the renderer uses rather than written as `2`: the
 validator and the renderer disagreeing about that number is the whole of the bug.
 
+**One qualification, and it is the family's, not this port's.** The form count the validator
+uses is the pipes it can SEE; the renderer counts them after expanding `%variables%`. So a
+form list grown or shrunk by a reference is judged on the wrong number, in both directions —
+measured in both engines on 2026-08-18:
+
+| template | validate | render |
+|---|---|---|
+| `#def %tail% = few\|many` + `{plural 2: one\|%tail%}` | silent | fullwidth fallback |
+| `#def %forms% = one\|many` + `{plural 2: %forms%}` | `plural.locale-missing` | resolves fine |
+
+The reference does exactly the same, so this is a shared contract hole rather than a
+divergence, and it predates the warning: `plural.arity` has always had it, where the
+consequence is worse — with `locale=ru` the first row is a `plural.arity` **error** on a
+template that renders correctly. `TestPluralLocaleMissing` pins both rows as they are, so a
+family fix shows up here as a failing test rather than as silence. Fixing it properly means
+counting after expansion in the validator, which is a family change: reference and corpus
+first. Found by Codex review of the adoption commit.
+
 **What the corpus can and cannot say.** `validate/plural-no-locale-arity-mismatch-warns`
 pins that the warning is emitted; expected diagnostics are matched as a **subset**, so the
 mirror rule — a 2-form block staying silent — is not expressible there. That half, and the
 locale/verdict table above, live in `TestPluralLocaleMissing` in `tests/local_tests.dpr`,
-measured case for case against `@spintax/core` 0.4.0. Two of its checks assert the RENDER
-side, because the warning's claim is about what rendering does and would otherwise go on
-being emitted after a render change had made it false.
+measured case for case against `@spintax/core` 0.4.0. Four of its 18 checks assert the
+RENDER side, because the warning's claim is about what rendering does and would otherwise go
+on being emitted after a render change had made it false.
 
 **It cost a position walk.** All four plural diagnostics anchor at their block's `{plural `
 and are emitted in source order, but each went through the mapper that rescans from offset 1,
 which is O(document × blocks) — the sixth site of the defect AGENTS.md names. Latent while
 the no-locale path raised nothing; the warning gives it one per block. Measured on 2000
 3-form blocks in 102 KB: **1460 ms**, and the same document under `locale=en` (the
-`plural.arity` path, which has had this shape since it was written) **1705 ms**. With one
-resumed cursor shared by the loop, **10 ms** each.
+`plural.arity` path, which has had this shape since it was written) **1705 ms**. With a
+resumed cursor, **10 ms** each.
+
+The loop keeps **two** cursors, and that was a Codex-review finding on the first attempt,
+which shared one. A resumed walk is cheap only while its offsets never go backwards: blocks
+arrive in source order, but a single block can raise `plural.count-macro` **and** one of the
+others at the same anchor, and the second call then asks for an offset the cursor has already
+passed, so `CursorLineCol` restarts from 1. Answers stay correct; the cost comes back. 2000
+blocks raising both measured **523 ms** through one cursor and **11 ms** through two. Each is
+monotonic on its own — `count-macro` fires at most once per block, and nested-brackets /
+arity / locale-missing are mutually exclusive. `TestPluralLocaleMissing` pins that shape's
+COORDINATES and nothing else: the single-cursor version answered them correctly too, since a
+cursor asked for an offset it has passed restarts rather than lying. Only this measurement
+separates the two, which is why it is written down here.
 
 ## 6. Trust model
 

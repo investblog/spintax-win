@@ -41,9 +41,21 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       warning fires where no locale normalizes AND the form count is not the render default
       (`PluralArity('')`, asked of the table rather than written as `2`); the verdict never
       moves, and any locale replaces it with the real answer. All six shapes measured
-      against `@spintax/core` 0.4.0 before a line was written; 12 checks in
-      `TestPluralLocaleMissing`, two of them on the RENDER side, because the warning's claim
+      against `@spintax/core` 0.4.0 before a line was written; 18 checks in
+      `TestPluralLocaleMissing`, four of them on the RENDER side, because the warning's claim
       is about what rendering does.
+
+      **Codex reviewed the commit and found two real things.** (1) The first cursor fix
+      shared ONE walk across a loop where a block can raise `plural.count-macro` AND one of
+      the arity-family diagnostics at the same anchor, so the second call restarted the walk
+      from offset 1 -- correct positions, 523 ms on 2000 such blocks; two cursors, each
+      monotonic on its own, give 11 ms, and the positions of that shape are now pinned.
+      (2) The validator counts the pipes it can see while the renderer counts them after
+      expanding `%variables%`, so a form list grown or shrunk by a reference is judged on the
+      wrong number in both directions. The reference does the same and `plural.arity` has
+      always done it -- there it is worse, calling INVALID a template that renders correctly
+      -- so it is a family contract hole, now qualified in spec §5.5 and pinned as-is by four
+      checks. Worth raising upstream in spintax-js.
 
       **The issue predicted the corpus would not police this here. It did.** The new fixture
       `validate/plural-no-locale-arity-mismatch-warns` failed against this engine before the
@@ -55,9 +67,9 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       **And it made a dormant defect expensive.** All four plural diagnostics used the
       rescan-from-offset-1 mapper — the sixth site of the `AddDiagAt` shape — which cost
       nothing while the no-locale path raised nothing. 2000 3-form blocks in 102 KB: 10 ms
-      before, **1460 ms** with the warning, **10 ms** once the loop shared one resumed
-      cursor (`locale=en`, quadratic since it was written, 1705 → 10 ms). Measured, not
-      reasoned: the probe is in the session scratchpad, the numbers are in spec §5.5.
+      before, **1460 ms** with the warning, **10 ms** once the loop walked positions with
+      resumed cursors (`locale=en`, quadratic since it was written, 1705 → 10 ms). Measured,
+      not reasoned; the numbers are in spec §5.5.
 
 - [x] **The family answered the neutralize question: the span is NOT exempt** (2026-08-07),
       and the escape hatch is `PostProcess=False`. Filed from this port on 2026-08-06 after

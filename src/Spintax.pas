@@ -4056,7 +4056,7 @@ var base: string; arity, defArity, i, k, cnt, m: Integer;
     tainted: TDictionary<string, Boolean>;
     starts: TList<Integer>;
     hasBracket: Boolean;
-    cur: TSourceCursor;
+    curMacro, curForms: TSourceCursor;
 begin
   base := '';
   if locale <> '' then base := NormalizeBaseLang(locale);
@@ -4076,17 +4076,25 @@ begin
     BuildMacroTaint(kinds, names, values, tainted);
     FindPluralBlocks(text, counts, forms, starts);
 
-    { Blocks come back in source order and every finding anchors at its block's start, so
-      the offsets handed to the mapper never go backwards and one resumed walk serves them
-      all. The plain AddDiagAt rescans from offset 1 per diagnostic, which is fine for a
-      document raising two and O(document x blocks) for one raising thousands: 2000 no-locale
-      3-form blocks in 102 KB measured 1460 ms this way and 10 ms with the cursor, and the
+    { The plain AddDiagAt rescans from offset 1 per diagnostic, which is fine for a document
+      raising two and O(document x blocks) for one raising thousands: 2000 no-locale 3-form
+      blocks in 102 KB measured 1460 ms that way and 10 ms with a resumed cursor, and the
       same document with locale=en -- the plural.arity path, which has had this shape since
       it was written -- went 1705 ms to 10 ms. The no-locale case only became expensive when
       plural.locale-missing gave it a diagnostic to report; before that it raised none and
       cost 10 ms, so the warning would have shipped a 140x regression on the very shape it
-      was added for. Sixth site of this defect (see AGENTS.md). }
-    InitSourceCursor(cur);
+      was added for. Sixth site of this defect (see AGENTS.md).
+
+      TWO cursors, not one, because a resumed walk is only cheap while its offsets never go
+      backwards. Blocks arrive in source order, but a single block can raise count-macro AND
+      one of the others, and both anchor at the same start -- so after the first call left
+      the cursor at start+8, the second asks for start again and CursorLineCol restarts from
+      offset 1. Correct, and quadratic: 2000 such blocks measured 523 ms through one cursor
+      and 11 ms through these two. Each is monotonic on its own, since count-macro fires at
+      most once per block and nested-brackets / arity / locale-missing are mutually
+      exclusive. Codex review, 2026-08-18, measured before and after. }
+    InitSourceCursor(curMacro);
+    InitSourceCursor(curForms);
     for i := 0 to counts.Count - 1 do
     begin
       { every plural diagnostic anchors at the block's '{plural ' (8-char prefix span) }
@@ -4098,7 +4106,7 @@ begin
           if tainted.ContainsKey(refs[k]) then
           begin
             AddDiagAtOrdered(res, 'plural.count-macro', 'error', src, map,
-              starts[i], starts[i] + 8, cur); Break;
+              starts[i], starts[i] + 8, curMacro); Break;
           end;
       finally
         refs.Free;
@@ -4110,7 +4118,7 @@ begin
       if hasBracket then
       begin
         AddDiagAtOrdered(res, 'plural.nested-brackets', 'error', src, map,
-          starts[i], starts[i] + 8, cur);
+          starts[i], starts[i] + 8, curForms);
         Continue;
       end;
 
@@ -4120,7 +4128,7 @@ begin
       begin
         if cnt <> arity then
           AddDiagAtOrdered(res, 'plural.arity', 'error', src, map,
-            starts[i], starts[i] + 8, cur);
+            starts[i], starts[i] + 8, curForms);
       end
       { No locale means no arity VERDICT, deliberately: the template may be right for the
         locale the host will render with, and failing a good template for a fact the caller
@@ -4131,10 +4139,17 @@ begin
         spintax-js#65 reached ~1000 live articles. So the seam is a WARNING: it says the one
         true thing, that this resolves only if a matching locale arrives at render time,
         without moving the verdict. A block of exactly defArity forms stays silent, because
-        the default resolves it. }
+        the default resolves it.
+
+        cnt is the pipes as WRITTEN, while the renderer counts them after expanding
+        %variables%, so a form list grown or shrunk by a reference is judged on the wrong
+        number in both directions. That is the family's contract, not this port's choice --
+        the reference counts raw here too, and plural.arity has always done the same -- and
+        changing it means changing the family. Spec sec.5.5 has the two shapes and the four
+        tests that pin them. }
       else if cnt <> defArity then
         AddDiagAtOrdered(res, 'plural.locale-missing', 'warning', src, map,
-          starts[i], starts[i] + 8, cur);
+          starts[i], starts[i] + 8, curForms);
     end;
   finally
     kinds.Free; names.Free; values.Free; tainted.Free; counts.Free; forms.Free; starts.Free;

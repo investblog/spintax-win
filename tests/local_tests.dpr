@@ -1099,15 +1099,49 @@ begin
         DiagsIn('{plural 1: a|b} and {plural 2: x|y|z}', ''),
         'valid: plural.locale-missing/warning');
 
-  { Positions, because the four plural diagnostics now share ONE resumed position walk
-    (a diagnostic per block made the rescan-from-the-start helper O(document x blocks):
-    2000 blocks in 102 KB cost 1460 ms, 10 ms with the cursor). A resumed walk is exactly
-    where a second finding can come out at the first one's coordinates, so both are pinned,
-    on different lines and at different columns. }
+  { Positions, because the plural diagnostics now walk them with resumed cursors instead of
+    rescanning the document per finding (2000 blocks in 102 KB: 1460 ms before, 10 ms after).
+    A resumed walk is where a second finding can come out at the first one's COORDINATES, so
+    both are pinned, on different lines and at different columns. What this cannot see is the
+    walk's cost -- see the note on the next pair. }
   Check('locale-missing/positions',
         DiagPosAll('{plural 3: a|b|c}'#10'x'#10'y {plural 3: a|b|c}', '',
                    'plural.locale-missing'),
         'warning @1:1..1:9; warning @3:3..3:11');
+
+  { Two findings on ONE block, over two blocks: count-macro and the arity-family diagnostic
+    share an anchor. Read this pair for what it is -- COORDINATES for a shape the checks
+    above do not build, and nothing more. It would pass just as well against the single
+    shared cursor it was written for, because asking a cursor for an offset it has already
+    passed restarts the walk and still answers correctly; the defect there was cost, 523 ms
+    against 11 ms on 2000 such blocks, and no assertion in this file can see that. The cost
+    lives in spec sec.5.5, measured. Found by Codex review, 2026-08-18. }
+  Check('locale-missing/two-per-block-macro-positions',
+        DiagPosAll('#set %n% = {a|b}'#10'{plural %n%: a|b|c}'#10'x {plural %n%: a|b|c}', '',
+                   'plural.count-macro'),
+        'error @2:1..2:9; error @3:3..3:11');
+  Check('locale-missing/two-per-block-warning-positions',
+        DiagPosAll('#set %n% = {a|b}'#10'{plural %n%: a|b|c}'#10'x {plural %n%: a|b|c}', '',
+                   'plural.locale-missing'),
+        'warning @2:1..2:9; warning @3:3..3:11');
+
+  { The validator counts the pipes it can SEE; the renderer counts them after expanding
+    variables. So a form list grown or shrunk by a %def% reference is judged on the wrong
+    number, in both directions. Not this port's divergence and not new here -- the reference
+    does exactly the same, and `plural.arity` has carried it since it was written, where it
+    is worse: it calls INVALID a template that renders correctly. Both shapes measured in
+    both engines on 2026-08-18 and pinned as they are, so that a family fix is visible here
+    as a failure rather than as silence. }
+  Check('locale-missing/expanded-forms-false-negative',
+        DiagsIn('#def %tail% = few|many'#10'{plural 2: one|%tail%}', ''), 'valid: ');
+  Check('locale-missing/expanded-forms-false-negative renders unresolved',
+        RenderIn('#def %tail% = few|many'#10'{plural 2: one|%tail%}', ''),
+        #10 + FullwidthBrace(True) + 'plural 2: one|few|many' + FullwidthBrace(False));
+  Check('locale-missing/expanded-forms-false-positive',
+        DiagsIn('#def %forms% = one|many'#10'{plural 2: %forms%}', ''),
+        'valid: plural.locale-missing/warning');
+  Check('locale-missing/expanded-forms-false-positive renders fine',
+        RenderIn('#def %forms% = one|many'#10'{plural 2: %forms%}', ''), #10'many');
 
   { The claim in the warning, checked against the ENGINE rather than asserted: the block
     really does fail to resolve at the default, and really does resolve once the locale
