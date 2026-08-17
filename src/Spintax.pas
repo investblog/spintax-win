@@ -4051,15 +4051,21 @@ begin
 end;
 
 procedure CheckPluralsV(const text, src, locale: string; map: TList<Integer>; res: TSpDiagList);
-var base: string; arity, i, k, cnt, m: Integer;
+var base: string; arity, defArity, i, k, cnt, m: Integer;
     counts, forms, kinds, names, values, refs: TStringList;
     tainted: TDictionary<string, Boolean>;
     starts: TList<Integer>;
     hasBracket: Boolean;
+    cur: TSourceCursor;
 begin
   base := '';
   if locale <> '' then base := NormalizeBaseLang(locale);
   if base <> '' then arity := PluralArity(base) else arity := 0;
+  { How many forms RENDER resolves against when the host names no locale. Asked of the same
+    table the renderer uses rather than written as 2: the whole of spintax-js#65 is the
+    validator and the renderer disagreeing about that number, and a literal here is how they
+    would drift apart again. }
+  defArity := PluralArity('');
 
   kinds := TStringList.Create; names := TStringList.Create; values := TStringList.Create;
   tainted := TDictionary<string, Boolean>.Create;
@@ -4070,6 +4076,17 @@ begin
     BuildMacroTaint(kinds, names, values, tainted);
     FindPluralBlocks(text, counts, forms, starts);
 
+    { Blocks come back in source order and every finding anchors at its block's start, so
+      the offsets handed to the mapper never go backwards and one resumed walk serves them
+      all. The plain AddDiagAt rescans from offset 1 per diagnostic, which is fine for a
+      document raising two and O(document x blocks) for one raising thousands: 2000 no-locale
+      3-form blocks in 102 KB measured 1460 ms this way and 10 ms with the cursor, and the
+      same document with locale=en -- the plural.arity path, which has had this shape since
+      it was written -- went 1705 ms to 10 ms. The no-locale case only became expensive when
+      plural.locale-missing gave it a diagnostic to report; before that it raised none and
+      cost 10 ms, so the warning would have shipped a 140x regression on the very shape it
+      was added for. Sixth site of this defect (see AGENTS.md). }
+    InitSourceCursor(cur);
     for i := 0 to counts.Count - 1 do
     begin
       { every plural diagnostic anchors at the block's '{plural ' (8-char prefix span) }
@@ -4080,7 +4097,8 @@ begin
         for k := 0 to refs.Count - 1 do
           if tainted.ContainsKey(refs[k]) then
           begin
-            AddDiagAt(res, 'plural.count-macro', 'error', src, map, starts[i], starts[i] + 8); Break;
+            AddDiagAtOrdered(res, 'plural.count-macro', 'error', src, map,
+              starts[i], starts[i] + 8, cur); Break;
           end;
       finally
         refs.Free;
@@ -4091,17 +4109,32 @@ begin
         if CharInSet(forms[i][m], ['{', '}', '[', ']']) then begin hasBracket := True; Break; end;
       if hasBracket then
       begin
-        AddDiagAt(res, 'plural.nested-brackets', 'error', src, map, starts[i], starts[i] + 8);
+        AddDiagAtOrdered(res, 'plural.nested-brackets', 'error', src, map,
+          starts[i], starts[i] + 8, cur);
         Continue;
       end;
 
+      cnt := 1;
+      for m := 1 to Length(forms[i]) do if forms[i][m] = '|' then Inc(cnt);
       if arity > 0 then
       begin
-        cnt := 1;
-        for m := 1 to Length(forms[i]) do if forms[i][m] = '|' then Inc(cnt);
         if cnt <> arity then
-          AddDiagAt(res, 'plural.arity', 'error', src, map, starts[i], starts[i] + 8);
-      end;
+          AddDiagAtOrdered(res, 'plural.arity', 'error', src, map,
+            starts[i], starts[i] + 8, cur);
+      end
+      { No locale means no arity VERDICT, deliberately: the template may be right for the
+        locale the host will render with, and failing a good template for a fact the caller
+        never claimed is worse than silence. The RENDERER has no such luxury. It resolves
+        against defArity whatever the caller said, so a block of any other form count comes
+        out as the fullwidth-brace fallback, and those braces are U+FF5B/U+FF5D -- no
+        downstream check scanning for ASCII braces will ever see them, which is how
+        spintax-js#65 reached ~1000 live articles. So the seam is a WARNING: it says the one
+        true thing, that this resolves only if a matching locale arrives at render time,
+        without moving the verdict. A block of exactly defArity forms stays silent, because
+        the default resolves it. }
+      else if cnt <> defArity then
+        AddDiagAtOrdered(res, 'plural.locale-missing', 'warning', src, map,
+          starts[i], starts[i] + 8, cur);
     end;
   finally
     kinds.Free; names.Free; values.Free; tainted.Free; counts.Free; forms.Free; starts.Free;

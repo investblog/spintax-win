@@ -35,6 +35,30 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
 ## Done
 
+- [x] **`plural.locale-missing` adopted, and it woke a latent quadratic** (2026-08-18).
+      Issue #1, filed from [spintax-js#65](https://github.com/investblog/spintax-js/issues/65)
+      after a pipeline shipped unresolved plural blocks into ~1000 live articles. The
+      warning fires where no locale normalizes AND the form count is not the render default
+      (`PluralArity('')`, asked of the table rather than written as `2`); the verdict never
+      moves, and any locale replaces it with the real answer. All six shapes measured
+      against `@spintax/core` 0.4.0 before a line was written; 12 checks in
+      `TestPluralLocaleMissing`, two of them on the RENDER side, because the warning's claim
+      is about what rendering does.
+
+      **The issue predicted the corpus would not police this here. It did.** The new fixture
+      `validate/plural-no-locale-arity-mismatch-warns` failed against this engine before the
+      change: the runner matches expected diagnostics as a subset, and a missing expected
+      diagnostic is a failure — the "warning does not move the verdict, so a silent engine
+      still passes" reasoning holds only for a runner that checks the verdict alone (the PHP
+      one). Corpus is 235 cases, this engine 231 + 4 `kind:rng` skips.
+
+      **And it made a dormant defect expensive.** All four plural diagnostics used the
+      rescan-from-offset-1 mapper — the sixth site of the `AddDiagAt` shape — which cost
+      nothing while the no-locale path raised nothing. 2000 3-form blocks in 102 KB: 10 ms
+      before, **1460 ms** with the warning, **10 ms** once the loop shared one resumed
+      cursor (`locale=en`, quadratic since it was written, 1705 → 10 ms). Measured, not
+      reasoned: the probe is in the session scratchpad, the numbers are in spec §5.5.
+
 - [x] **The family answered the neutralize question: the span is NOT exempt** (2026-08-07),
       and the escape hatch is `PostProcess=False`. Filed from this port on 2026-08-06 after
       the GSA converter met it in the editor; pinned by `@42d51c3` as two fixtures this

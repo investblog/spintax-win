@@ -67,13 +67,13 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(234 cases total, 2026-08-06 — the corpus grew that day with the cases the family pinned
-from this port's divergences):
+(235 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
+pinned from this port's divergences, and once more with `plural.locale-missing`, §5.5):
 
 | fixture file | cases | passing |
 |---|---|---|
 | render-semantics | 72 | 72 |
-| validate | 54 | 54 |
+| validate | 55 | 55 |
 | render-postprocess | 43 | 43 |
 | render-deterministic | 16 | 16 |
 | comments | 13 | 13 |
@@ -82,7 +82,7 @@ from this port's divergences):
 | render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 
-**`PASS=230 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=231 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -670,6 +670,51 @@ and this port was missing all three until 2026-08-06:
 makes selection order a non-goal): **0 differences**, against controls of 94 (`=` optional)
 and 814 (narrow whitespace). The glued-key forms are pinned by `TestPermConfigExtractors`
 instead — a generator that varies a config string rarely spells `xmaxsize=`.
+
+### 5.5 `plural.locale-missing`: a warning where validate used to be silent
+
+Adopted 2026-08-18 from [`spintax-js#65`](https://github.com/investblog/spintax-js/issues/65),
+where a pipeline rendering ~1000 articles per campaign shipped unresolved plural blocks into
+finished pages, and filed against this engine as issue #1.
+
+`SpValidate` files **no arity verdict when no locale normalizes** — deliberately, and that
+half stands: the template may be right for the locale the host will actually render with, and
+failing a good template for a fact the caller never claimed is worse than silence. The
+renderer has no such choice. It resolves against `PluralArity('')` = 2 whatever the caller
+said, so a block of any other form count comes out as the fullwidth-brace fallback
+(U+FF5B/U+FF5D) — invisible to any downstream check that scans for ASCII braces.
+
+So the seam is a **warning**, which by definition does not move the verdict:
+
+| shape | no locale | `ru` | `en` |
+|---|---|---|---|
+| 3 forms | `plural.locale-missing` / warning, still **valid** | silent | `plural.arity` / error |
+| 2 forms | silent — the default resolves it | `plural.arity` / error | silent |
+
+All six cells measured on the reference, 2026-08-18; supplying any locale replaces the
+warning with the real verdict, in both directions.
+
+A non-empty locale that normalizes to nothing (`_en`) is no locale at all, here as in the
+arity check, and a structurally broken block still reports only `plural.nested-brackets` — the
+new check inherits that branch's `Continue` rather than inventing a second problem. The
+default arity is asked of the same table the renderer uses rather than written as `2`: the
+validator and the renderer disagreeing about that number is the whole of the bug.
+
+**What the corpus can and cannot say.** `validate/plural-no-locale-arity-mismatch-warns`
+pins that the warning is emitted; expected diagnostics are matched as a **subset**, so the
+mirror rule — a 2-form block staying silent — is not expressible there. That half, and the
+locale/verdict table above, live in `TestPluralLocaleMissing` in `tests/local_tests.dpr`,
+measured case for case against `@spintax/core` 0.4.0. Two of its checks assert the RENDER
+side, because the warning's claim is about what rendering does and would otherwise go on
+being emitted after a render change had made it false.
+
+**It cost a position walk.** All four plural diagnostics anchor at their block's `{plural `
+and are emitted in source order, but each went through the mapper that rescans from offset 1,
+which is O(document × blocks) — the sixth site of the defect AGENTS.md names. Latent while
+the no-locale path raised nothing; the warning gives it one per block. Measured on 2000
+3-form blocks in 102 KB: **1460 ms**, and the same document under `locale=en` (the
+`plural.arity` path, which has had this shape since it was written) **1705 ms**. With one
+resumed cursor shared by the loop, **10 ms** each.
 
 ## 6. Trust model
 

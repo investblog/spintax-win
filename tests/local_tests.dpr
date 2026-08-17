@@ -1011,6 +1011,113 @@ begin
   finally d.Free; end;
 end;
 
+{ Verdict and diagnostics in one answer -- "valid: code/severity code/severity" -- because
+  the point of a WARNING is that it does not move the verdict, and a helper that returned
+  only the codes could not tell that half from a lucky pass. }
+function DiagsIn(const tmpl, locale: string): string;
+var d: TSpDiagList; i: Integer; verdict, codes: string;
+begin
+  verdict := 'valid'; codes := '';
+  d := SpValidate(tmpl, locale, nil, nil);
+  try
+    for i := 0 to d.Count - 1 do
+    begin
+      if d[i].Severity = 'error' then verdict := 'invalid';
+      if codes <> '' then codes := codes + ' ';
+      codes := codes + d[i].Code + '/' + d[i].Severity;
+    end;
+  finally d.Free; end;
+  Result := verdict + ': ' + codes;
+end;
+
+{ EVERY position carrying a code, "severity @line:col..endline:endcol" joined by '; '.
+  DiagPos answers where the FIRST one is and stops, which cannot see a second finding
+  reported at the first one's coordinates. }
+function DiagPosAll(const tmpl, locale, code: string): string;
+var d: TSpDiagList; i: Integer;
+begin
+  Result := '';
+  d := SpValidate(tmpl, locale, nil, nil);
+  try
+    for i := 0 to d.Count - 1 do
+      if d[i].Code = code then
+      begin
+        if Result <> '' then Result := Result + '; ';
+        Result := Result + Format('%s @%d:%d..%d:%d',
+          [d[i].Severity, d[i].Line, d[i].Column, d[i].EndLine, d[i].EndColumn]);
+      end;
+  finally d.Free; end;
+end;
+
+{ plural.locale-missing (spintax-js#65).
+
+  Validation files no arity VERDICT without a locale, on purpose. Rendering has no such
+  choice: it resolves against the 2-form default, so a 3-form block with no locale reaches
+  finished text as the fullwidth-brace fallback -- which is how a pipeline shipped unrendered
+  plural blocks into ~1000 live articles. The warning is the seam between those two truths.
+
+  The corpus carries ONE case of this (`validate/plural-no-locale-arity-mismatch-warns`),
+  and it can only pin that the warning IS emitted: expected diagnostics are matched as a
+  SUBSET, so absence is not expressible there. Every mirror rule below -- a 2-form block
+  staying silent, a locale replacing the warning with the real verdict, the nested-brackets
+  guard -- exists only here, which is where the other four engines put theirs too.
+
+  MEASURED against the reference (@spintax/core dist 0.4.0, node) on 2026-08-18, case for
+  case, not derived from this port. }
+procedure TestPluralLocaleMissing;
+begin
+  Check('locale-missing/3-forms-no-locale', DiagsIn('{plural 3: a|b|c}', ''),
+        'valid: plural.locale-missing/warning');
+  { The mirror the corpus cannot state: at the default form count there is nothing to warn
+    about, because the default resolves the block. }
+  Check('locale-missing/2-forms-silent',    DiagsIn('{plural 3: a|b}', ''),   'valid: ');
+  { One form is not two either -- the check is "not the default", not "more than the
+    default". }
+  Check('locale-missing/1-form-warns',      DiagsIn('{plural 5: item}', ''),
+        'valid: plural.locale-missing/warning');
+
+  { Any locale replaces the warning with the real verdict: nothing for ru, an ERROR for en. }
+  Check('locale-missing/ru-is-silent',      DiagsIn('{plural 3: a|b|c}', 'ru'), 'valid: ');
+  Check('locale-missing/en-is-arity-error', DiagsIn('{plural 3: a|b|c}', 'en'),
+        'invalid: plural.arity/error');
+  { A non-empty locale that normalizes to nothing is no locale at all -- the guard is on the
+    NORMALIZED base, and it governs the warning exactly as it governs the arity check. }
+  Check('locale-missing/unnormalizable',    DiagsIn('{plural 1: a|b|c}', '_en'),
+        'valid: plural.locale-missing/warning');
+
+  { A structurally broken block reports only that: the nested-brackets branch leaves the
+    block, and the new check inherits that guard rather than inventing a second problem. }
+  Check('locale-missing/nested-brackets-only', DiagsIn('{plural 3: {a|b}|c|d}', ''),
+        'invalid: plural.nested-brackets/error');
+  { A macro count does NOT leave the block, in the reference and here: both findings are
+    reported, in this order. }
+  Check('locale-missing/count-macro-too',
+        DiagsIn('#set %n% = {a|b}'#10'{plural %n%: a|b|c}', ''),
+        'invalid: plural.count-macro/error plural.locale-missing/warning');
+  { Every block is judged on its own -- the 2-form one stays silent next to a warning. }
+  Check('locale-missing/per-block',
+        DiagsIn('{plural 1: a|b} and {plural 2: x|y|z}', ''),
+        'valid: plural.locale-missing/warning');
+
+  { Positions, because the four plural diagnostics now share ONE resumed position walk
+    (a diagnostic per block made the rescan-from-the-start helper O(document x blocks):
+    2000 blocks in 102 KB cost 1460 ms, 10 ms with the cursor). A resumed walk is exactly
+    where a second finding can come out at the first one's coordinates, so both are pinned,
+    on different lines and at different columns. }
+  Check('locale-missing/positions',
+        DiagPosAll('{plural 3: a|b|c}'#10'x'#10'y {plural 3: a|b|c}', '',
+                   'plural.locale-missing'),
+        'warning @1:1..1:9; warning @3:3..3:11');
+
+  { The claim in the warning, checked against the ENGINE rather than asserted: the block
+    really does fail to resolve at the default, and really does resolve once the locale
+    arrives. Without this pair the warning could go on being emitted after a render change
+    had made it false. }
+  Check('locale-missing/render-leaves-it-unresolved', RenderIn('{plural 3: a|b|c}', ''),
+        FullwidthBrace(True) + 'plural 3: a|b|c' + FullwidthBrace(False));
+  Check('locale-missing/render-with-locale-resolves', RenderIn('{plural 3: a|b|c}', 'ru'), 'b');
+end;
+
 function DiagPos(const tmpl, locale, code: string; const knownInc: array of string): string;
 var d: TSpDiagList; i: Integer; ki: TStringList;
 begin
@@ -1667,6 +1774,7 @@ begin
   TestSeededRng;
   TestPermutationConfig;
   TestPluralFallbacks;
+  TestPluralLocaleMissing;
   TestIncludes;
   TestIncludeAnchor;
   TestIncludeResolver;
