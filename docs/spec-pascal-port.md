@@ -67,14 +67,14 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(257 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
+(258 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
 pinned from this port's divergences, once more with `plural.locale-missing` (§5.5), and
 again the next day with the two plural fixes §5.5 and §5.6 describe):
 
 | fixture file | cases | passing |
 |---|---|---|
 | render-semantics | 80 | 80 |
-| validate | 69 | 69 |
+| validate | 70 | 70 |
 | render-postprocess | 43 | 43 |
 | render-deterministic | 16 | 16 |
 | comments | 13 | 13 |
@@ -83,7 +83,7 @@ again the next day with the two plural fixes §5.5 and §5.6 describe):
 | render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 
-**`PASS=253 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=254 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -377,12 +377,12 @@ loops take the resuming cursor.
 | converging DAG, 2 000 levels | (does not finish) | 71 ms |
 | 6 400 flat definitions | 64 ms | 85 ms |
 
-Those figures are **historical**, and the rows about cycles no longer describe this engine:
-they measure a walk that emitted one diagnostic per name, which is not what the reference
-emits. §5.3 replaced the emission rule the next day and the cost moved with it — see the
-table there. What survived unchanged is everything the table's other rows measure: the
-indexed graph, the worklist taint, the resuming cursors, and the reachability set, which is
-now the walk's prune rather than the walk itself.
+Those figures are **historical**, and the rows about cycles have now been overtaken twice.
+They measure a walk that emitted one diagnostic per name; §5.3 replaced that with per-path
+emission the next day, and the family reversed it back to per-name on 2026-08-18
+(spintax-js#59), where the current costs live. What survived both turns is everything the
+table's other rows measure: the indexed graph, the worklist taint, the resuming cursors, and
+the reachability set — which is no longer a prune on a walk but the emitter itself.
 
 The DESCENT predicate is still narrower than "is in a cycle": a name is walked when it can
 REACH a cycle of length two or more, a direct self-loop being `self-reference` instead.
@@ -556,7 +556,7 @@ The corpus has no field for any of this. The gate is a differential against `@sp
 with a matching resolver on both sides — 52 cases, **48 of which differ when the seam is left
 nil**, zero when it is not — plus `TestIncludeResolver` in `tests/local_tests.dpr`.
 
-### 5.3 Definitions are a map, and the cycle count is the walk's
+### 5.3 Definitions are a map, and the cycle count WAS the walk's
 
 `extractDirectives` returns `setDefs`/`defDefs` as **Maps**, so a name defined twice keeps
 the **last** value, and everything downstream reads that map: the self-reference test, the
@@ -570,65 +570,59 @@ does not give and missing ones it does:
 | `#set %a% = plain` / `#set %a% = %b%` / `#set %b% = %a%` | two `circular-reference` | — |
 | `#def %n% = plain` / `#set %n% = {a|b}` / `#set %n% = plain` / `{plural %n%:…}` | — | `plural.count-macro` |
 
-The **count** is a separate contract, and a harder one, because it is a property of the walk
-rather than of the graph:
+The **count** was a separate contract, and a harder one, because it was a property of the
+walk rather than of the graph. The reference's `detectCycle` did not deduplicate references
+and its `return` left only the current frame, so `#set %a% = %b% %b%` with `#set %b% = %a%`
+gave **three** `variable.circular-reference` diagnostics where the graph has two names. This
+port reproduced that walk exactly, on 2026-08-07, rather than reasoning about which names are
+in a cycle — because no reasoning about the graph reproduces a number that belongs to the
+traversal.
 
-```js
-function detectCycle(current, defs, visited, rootPos, out) {
-  for (const m of defs.get(current).matchAll(/%(\w+)%/gu)) {
-    const ref = m[1].toLowerCase()
-    if (ref === current) continue
-    if (visited.includes(ref)) { out.push(diagAt(rootPos)); return }
-    if (defs.has(ref)) detectCycle(ref, defs, [...visited, ref], rootPos, out)
-  }
-}
-```
+**The family reversed it on 2026-08-18** (`@spintax/core` 0.6.0, `spintax/core` 0.8.0, the
+plugin mirror, [spintax-js#59](https://github.com/investblog/spintax-js/issues/59)): **one
+diagnostic per NAME that takes part in, or leads to, a cycle.** The reason is the shape below,
+and it is not a preference: the number of ROUTES through a converging graph is exponential in
+its depth, and re-walking every route *is* the emission, so per-path could not be kept and
+bounded. 547 bytes took the live `/validate-template` out with HTTP 503.
 
-References are **not** deduplicated, so `#set %a% = %b% %b%` walks `%b%` twice; and the
-`return` leaves only the current frame, so an outer frame keeps iterating after an inner one
-reported. That template plus `#set %b% = %a%` gives **three** `variable.circular-reference`
-diagnostics, all anchored at `%a%`'s definition. This port gave one, and the corpus compares
-the multiset of codes.
+This port emitted per path for eleven days. The set of names never differed — `MarkCyclic`
+already computed exactly the per-name predicate as a prune — so the change deletes the walk
+and emits from the set it was pruned by. Measured here:
 
-So the walk is now the reference's own, with one prune that cannot change the output: the
-global reachability set of §5's rewrite, used only to refuse to descend into a name that
-reaches no cycle at all. A name that cannot reach a cycle can push nothing from any path.
+| shape | per path (through `v0.7.0`) | per name |
+|---|---|---|
+| `#set %a% = %b% %b%` + `#set %b% = %a%` | 3 diagnostics | **2** |
+| converging diamond, 20 levels, 507 bytes (the corpus fixture) | 2 097 152 diagnostics in 7 949 ms | **22 in about 1 ms** |
+| one cycle of 6 400 | 975 ms | **113 ms** |
+| one cycle of 25 600 | 18 775 ms | **503 ms** |
+| one cycle of 51 200 | 82 222 ms | **2 071 ms** |
 
-Measured against `@spintax/core`: 4 000 generated definition graphs carrying duplicates,
-self-loops and multi-references, **0 differences**, against controls of 985 (first-wins),
-108 (taint over every occurrence) and 29 (one diagnostic per name).
+The last three rows are the quadratic going away with the walk: a cycle of N used to be N
+diagnostics each found by an N-step descent. What is left grows a little faster than the
+document — 17.7, 19.6 and 40 µs per name across the last three rows — and is **deliberately
+not diagnosed further**, because it is 40× cheaper at the largest size measured and nothing
+in it is a bound that fails to hold.
 
-**What the faithful walk costs, and why it is not free.** The prune bounds an ordinary
-document and bounds nothing on a document built out of cycles, because there the answer
-itself is large. Two shapes, both now in `tests/local_tests.dpr` because the first version
-of this walk shipped without either:
+The diamond row is the one that matters: the corpus carries that shape as
+`validate/cycle-diamond-terminates`, and it **cannot** gate the count, because expected
+diagnostics are matched as a subset — it gates only that the engine answers. That is exactly
+what let per-path emission hide for eleven days, and it is why the count is pinned in
+`TestGraphStress` here, as each engine was asked to pin its own. The two canaries that pinned
+the old numbers were rewritten **in place, with the reversal in the comment**, rather than
+silently corrected.
 
-| shape | recursive, over strings | iterative, over node indices | `@spintax/core` |
-|---|---|---|---|
-| one cycle of 400 | 378 ms | 14 ms | 505 ms |
-| one cycle of 1 600 | 7 114 ms | 98 ms | — |
-| one cycle of 6 400 | **99 419 ms** | 1 052 ms | — |
-| one cycle of 25 600 | (did not finish) | 22 295 ms | — |
-| converging DAG, 8 levels → 512 diags | — | 1 ms | 13 ms |
-| converging DAG, 20 levels → 2 097 152 diags | — | 8 153 ms | 11 456 ms |
+Verified against `@spintax/core` 0.6.0 by differential: **800 generated definition graphs** —
+cycles, converging diamonds, self-loops, duplicate names, dangling references and repeated
+references — **0 differences**, against a control of **91** on the `v0.7.0` tree.
 
-Two different things are in that table.
+The message text and the eight-name route cap the reference added with this change do not
+reach this port: `TSpDiag` carries a code, a severity and positions, and no message.
 
-The **quadratic** part is the contract. A cycle of N produces N diagnostics and each is
-found by a walk of N steps, so N² is what the answer costs; the reference pays it too. What
-must not be paid on top of it is a dictionary lookup per step and a stack frame per level —
-the first version was recursive over string names, which is the 99-second row, and 6 400
-frames deep besides. Node indices, an explicit stack and a boolean path array make the same
-walk 94× cheaper and bound the depth by the node count instead of by the machine stack.
-
-The **exponential** part is not ours to fix. On a converging graph where every node reaches
-the cycle, every distinct path ends in a push, so the DIAGNOSTICS are exponential in the
-document: 507 bytes of `#set` lines produce 2 097 152 `variable.circular-reference` errors.
-`@spintax/core` produces exactly the same count on the same input — 512, 8 192, 131 072 and
-2 097 152 at 8, 12, 16 and 20 levels, verified 2026-08-06 — which is the strongest evidence
-the walk is a faithful port, and also a family-wide property worth knowing before feeding a
-validator an untrusted document. A walk cannot be cheaper than the output it must produce;
-the only honest fix would be a family decision to cap or deduplicate the diagnostics.
+**One thing worth keeping on the record.** The last line of this section, before the reversal,
+read: *"the only honest fix would be a family decision to cap or deduplicate the diagnostics."*
+That is what the family did. The measurement that made per-path look mandatory — the corpus
+compares the multiset of codes — was true, and the conclusion drawn from it was still
+temporary.
 
 ### 5.4 What makes a permutation `<config>`
 

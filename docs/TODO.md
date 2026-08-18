@@ -24,7 +24,13 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       the comment or graph work — and codes plus severity are what §3 makes the contract, so
       no verdict moves. Worth closing anyway: an editor that lists diagnostics in engine
       order shows them in a different order than the reference would, and the corpus does not
-      gate order.
+      gate order. Filed upstream as
+      [spintax-js#70](https://github.com/investblog/spintax-js/issues/70), where it turned out
+      to be a FOUR-way split rather than a two-way one: this engine leads with the include
+      diagnostic, `@spintax/core` appends includes last, the Python port sorts by source
+      position, and both PHP engines return two separate lists and cannot express an order at
+      all. The open question there is whether order is contract at all; the current answer is
+      that it is not. Nothing to change here until that is settled.
 
 - [ ] **Deeply nested conditionals in a plural count slot are quadratic when the branch is
       TAKEN.** `RecognizeConditional` finds the separator by scanning the body, so N nested
@@ -36,6 +42,10 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       separator scan's clamped, type-agnostic bracket counter precomputed, and a second
       reading of that rule is what the one-recognizer discipline exists to prevent. Both
       branches are now pinned in `TestPluralFormCounting`; spec §5.6 carries the numbers.
+      Filed upstream as [spintax-js#71](https://github.com/investblog/spintax-js/issues/71)
+      and reproduced on the reference — 238 / 822 / 2437 ms at 2k / 4k / 8k levels against
+      this port's 54 / 210 / 913 — with the reading of the cause confirmed and the same
+      decision taken there.
       Found by Codex review, which also caught that the first version of that section
       claimed linearity while measuring only the branch that cannot exhibit the cost.
 
@@ -60,6 +70,23 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **Re-aligned to per-NAME circular-reference emission** (2026-08-18, engine issue #2 from
+      [spintax-js#59](https://github.com/investblog/spintax-js/issues/59)). The family reversed
+      the shape this port had deliberately reproduced eleven days earlier: one diagnostic per
+      NAME that takes part in, or leads to, a cycle, not one per PATH. Per-path is exponential
+      in a converging graph and re-walking every route IS the emission, so it could not be
+      kept and bounded — 547 bytes took the reference deployment out with HTTP 503. Measured
+      here before, on the corpus's own `validate/cycle-diamond-terminates` (507 bytes,
+      twenty definitions over a two-cycle): **2 097 152 diagnostics in 7 949 ms**, and the
+      corpus could not see it, because expected diagnostics are matched as a SUBSET and that
+      case gates only that the engine answers. After: 22, in about a millisecond; a cycle of
+      51 200 went 82 222 ms to 2 071 ms. `MarkCyclic` already
+      computed the per-name set as a prune, so the change deletes the walk and emits from it;
+      the node-index apparatus went with it. Verified by differential over 800 generated
+      definition graphs against `@spintax/core` 0.6.0: 0 differences, control 91. The two
+      canaries that pinned the old counts were rewritten IN PLACE with the reversal in their
+      comments. Spec §5.3.
 
 - [x] **The render-side expansion bomb bounded** (2026-08-18,
       [spintax-js#69](https://github.com/investblog/spintax-js/issues/69)). Sixty-two
@@ -98,7 +125,7 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       one that is right here.
 
 - [x] **Caught up with the family's two plural fixes** (2026-08-18), corpus
-      `PASS=253 FAIL=0 SKIP=4`, 541 local checks in both builds.
+      `PASS=254 FAIL=0 SKIP=4`, 542 local checks in both builds.
       [spintax-js#66](https://github.com/investblog/spintax-js/issues/66): the form count is
       now taken on the list the renderer will split -- definition values substituted first,
       every reference per pass -- and only where it is provably invariant; a bracket, a
@@ -200,8 +227,9 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
       **The faithful cycle walk was recursive over strings, and that is a defect.** The
       output was right and the cost was not: one cycle of 6 400 definitions took **99
-      seconds** and 6 400 stack frames, where the walk it replaced took 113 ms. It is now
-      iterative over node indices with an explicit stack — 1 052 ms for the same document,
+      seconds** and 6 400 stack frames, where the walk it replaced took 113 ms. It was made
+      iterative over node indices with an explicit stack (and deleted outright on 2026-08-18
+      with the move to per-name emission -- see the top of this list) — 1 052 ms for the same document,
       25 600 now finishes at all, and depth is bounded by the node count instead of by the
       machine stack. The quadratic part is the contract (N diagnostics × an N-step walk, and
       `@spintax/core` pays 505 ms where this port pays 14 on a cycle of 400); the hashing and
@@ -248,11 +276,13 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       twice, this port reported nothing). The taint had the same shape: a middle definition
       holding an enumeration tainted a name whose surviving value is a literal.
 
-      The COUNT was wrong too, and that was not in the backlog at all. The reference does
-      not deduplicate references and returns from only the current frame, so `#set %a% =
-      %b% %b%` in a cycle reports three times where this port reported once. The walk is
-      now the reference's own, kept from exploding by pruning at names that reach no cycle
-      — a prune that cannot change the output.
+      The COUNT was wrong too, and that was not in the backlog at all. The reference did
+      not deduplicate references and returned from only the current frame, so `#set %a% =
+      %b% %b%` in a cycle reported three times where this port reported once. The walk was
+      made the reference's own, kept from exploding by pruning at names that reach no cycle.
+      **That contract was reversed on 2026-08-18** — one diagnostic per NAME, spintax-js#59 —
+      and the walk is gone; the prune became the emitter. See the entry at the top of this
+      list.
 
       **The permutation config extractors.** `MINSIZE_RE` and friends require the `=`, take
       the full ASCII `\s` around it, and are regexes, so a failed candidate is retried at

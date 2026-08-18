@@ -1708,11 +1708,14 @@ begin
 end;
 
 { 2. Definitions are DEDUPLICATED BY NAME, last one winning, for the self-reference test,
-     the cycle walk and the plural taint alike -- the reference builds a Map and overwrites.
+     the cycle detection and the plural taint alike -- the reference builds a Map and
+     overwrites.
      This port used every occurrence and resolved a name to the FIRST, which diverged in
      both directions: it invented diagnostics the reference does not give AND missed ones it
-     does. The count matters too: the reference does not deduplicate REFERENCES and returns
-     from only the current frame, so one value naming another twice reports twice. }
+     does. The COUNT used to matter here too -- the reference did not deduplicate REFERENCES
+     and returned from the current frame only, so one value naming another twice reported
+     twice on top of its own. That was reversed on 2026-08-18 (spintax-js#59): one diagnostic
+     per NAME. The check below keeps the old number in its comment. }
 procedure TestDefinitionDedup;
 begin
   { the shape the backlog reported: only the duplicate survives }
@@ -1730,11 +1733,16 @@ begin
   Check('dedup/cycle-made-by-last-def',
         DiagCodes('#set %a% = plain'#10'#set %a% = %b%'#10'#set %b% = %a%', 'en'),
         'definition.duplicate-name,variable.circular-reference,variable.circular-reference');
-  { a value naming the same variable twice drives the walk twice, so the count is three
-    and not two -- references are not deduplicated and the return leaves one frame }
-  Check('dedup/repeated-reference-counts-twice',
+  { THE REVERSAL, kept here rather than quietly edited. This pinned THREE until
+    2026-08-18: the reference's walk did not deduplicate references and returned from the
+    current frame only, so a value naming the same cyclic variable twice reported twice on
+    top of its own diagnostic, and this port reproduced that count on purpose. The family
+    dropped it in @spintax/core 0.6.0 (spintax-js#59) -- one diagnostic per NAME -- because
+    per-path emission is exponential in a converging graph and re-walking every route IS
+    the emission. Two now: one for %a%, one for %b%. }
+  Check('dedup/repeated-reference-counts-once-per-name',
         DiagCodes('#set %a% = %b% %b%'#10'#set %b% = %a%', 'en'),
-        'variable.circular-reference,variable.circular-reference,variable.circular-reference');
+        'variable.circular-reference,variable.circular-reference');
   { the plural taint reads the same map: a middle definition holding an enumeration does
     not taint a name whose surviving value is a literal }
   Check('dedup/taint-uses-the-surviving-value',
@@ -1954,18 +1962,24 @@ begin
   TestGraphStress;
 end;
 
-{ The two shapes the walk is worst on, both built here rather than described, because the
-  first version of the faithful walk was recursive over strings and neither shape was in
+{ The two shapes the cycle pass is worst on, both built here rather than described, because
+  the first version of the faithful walk was recursive over strings and neither shape was in
   the suite: a cycle of 6 400 took 99 SECONDS and 6 400 stack frames.
 
-  Both counts are the reference's, measured on 2026-08-06: a cycle of N gives N, and the
-  converging DAG of 8 levels gives 512 -- @spintax/core answers 512, 8 192, 131 072 and
-  2 097 152 at 8, 12, 16 and 20 levels, from a document that never exceeds 507 bytes. The
-  diagnostics ARE exponential in that shape, in the reference too; the walk cannot be
-  cheaper than its own output. What must stay bounded is everything else, which is why the
-  sizes here are large enough to time out or overflow a walk that regresses. }
+  THE SECOND COUNT REVERSED on 2026-08-18 and the old one is left in this comment on
+  purpose. Both were the reference's, measured 2026-08-06: a cycle of N gave N, and the
+  converging DAG gave 512 / 8 192 / 131 072 / 2 097 152 at 8 / 12 / 16 / 20 levels from a
+  document never exceeding 507 bytes. That exponential was the CONTRACT then -- the walk
+  cannot be cheaper than its own output -- and it is what the family dropped in
+  @spintax/core 0.6.0 (spintax-js#59): one diagnostic per NAME, because 547 bytes took the
+  live /validate-template out with HTTP 503 and no bound can be put on an emission that is
+  itself the re-walking of every route. Measured here before the change: 2 097 152
+  diagnostics in 7 949 ms at 20 levels, and 22 in about a millisecond after.
+
+  The cycle-of-N count did NOT move: one per name is what it always gave there. The sizes
+  stay large enough to time out or overflow a walk that regresses. }
 procedure TestGraphStress;
-const CYCLE_N = 2000; DAG_LEVELS = 8;
+const CYCLE_N = 2000; DAG_LEVELS = 8; DEEP_LEVELS = 20;
 var i: Integer; doc: string;
 begin
   doc := '';
@@ -1974,14 +1988,33 @@ begin
   Check('graph/long-cycle-reports-one-per-definition',
         IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')), IntToStr(CYCLE_N));
 
-  { every node reaches the cycle, so `reaches` prunes nothing and the walk explores every
-    path -- the shape that is exponential, and the one an unmeasured "linear" claim missed }
+  { every node reaches the cycle, so `reaches` prunes nothing -- the shape whose ROUTES are
+    exponential, and the one an unmeasured "linear" claim missed. Per name it is one
+    diagnostic for each of c1, c2 and the eight DAG levels. }
   doc := '#set %c1% = %c2%'#10'#set %c2% = %c1%'#10;
   for i := DAG_LEVELS downto 1 do
     if i = DAG_LEVELS then doc := doc + Format('#set %%d%d%% = %%c1%% %%c2%%'#10, [i])
     else doc := doc + Format('#set %%d%d%% = %%d%d%% %%d%d%%'#10, [i, i + 1, i + 1]);
-  Check('graph/converging-dag-counts-every-path',
-        IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')), '512');
+  Check('graph/converging-dag-counts-every-name',
+        IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')),
+        IntToStr(DAG_LEVELS + 2));
+
+  { The corpus fixture `validate/cycle-diamond-terminates` itself, built character for
+    character -- 507 bytes, d0..d19 over a two-cycle, %d19% as the body -- because that case
+    can only gate that the engine ANSWERS: expected diagnostics are matched as a SUBSET
+    there. The COUNT is gated here, which is what the family asked each engine to do for
+    itself.
+
+    It is the size at which per-path emission was not merely slow but unusable: 2 097 152
+    diagnostics in 7 949 ms on this engine, HTTP 503 from the reference deployment.
+    Twenty-two names, so twenty-two diagnostics, in about a millisecond. }
+  doc := '#set %c1% = %c2%'#10'#set %c2% = %c1%'#10'#set %d0% = %c1% %c1%'#10;
+  for i := 1 to DEEP_LEVELS - 1 do
+    doc := doc + Format('#set %%d%d%% = %%d%d%% %%d%d%%'#10, [i, i - 1, i - 1]);
+  doc := doc + '%d' + IntToStr(DEEP_LEVELS - 1) + '%';
+  Check('graph/deep-diamond-is-one-per-name-not-one-per-route',
+        IntToStr(DiagCount(doc, 'en', 'variable.circular-reference')),
+        IntToStr(DEEP_LEVELS + 2));
 end;
 
 procedure TestUnterminatedComment;

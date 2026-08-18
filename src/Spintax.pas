@@ -2254,9 +2254,12 @@ end;
   they did through IndexOf. Only the document-wide scans, where k grows with the input,
   carry a dictionary of their own. }
 { Every %name% in order, WITH multiplicity -- DirectReferences deduplicates, and the
-  reference's cycle walk iterates `value.matchAll(/%(\w+)%/gu)`, which does not. A value
-  naming the same variable twice therefore drives that walk twice, and the count of
-  diagnostics depends on it. }
+  reference iterates `value.matchAll(/%(\w+)%/gu)`, which does not.
+
+  It was written for the per-path cycle walk, where a value naming the same variable twice
+  drove the walk twice and the diagnostic COUNT depended on it. That walk is gone
+  (spintax-js#59, one diagnostic per name). What still needs multiplicity is the form-count
+  expansion, which substitutes every reference per pass exactly as the renderer does. }
 procedure RawReferences(const text: string; target: TStringList);
 var i, j: Integer; nm: string;
 begin
@@ -4832,101 +4835,14 @@ begin
   end;
 end;
 
-{ The reference's cycle walk, reproduced exactly, because its OUTPUT COUNT is part of the
-  contract the corpus gates and is not simply "one per name that reaches a cycle".
-
-  Its shape, in prose: for each reference in the current name's value, in order -- skip a
-  reference to the name itself, which is variable.self-reference; if the reference is
-  already on the path, emit one diagnostic and RETURN; otherwise, if it names a definition,
-  recurse with it appended to the path.
-
-  Two details drive the count. References are NOT deduplicated -- the reference iterates the
-  raw matches -- so a value naming the same variable twice walks it twice. And the return
-  leaves only the CURRENT frame, so an outer frame keeps iterating after an inner one has
-  reported; one start can therefore emit several diagnostics, all anchored at the START
-  definition.
-
-  It carries no memo, so the cost is the walk's: one start per definition that can reach a
-  cycle, each descending until it meets its own path. For a document that is one cycle of N
-  that is N diagnostics of N steps each -- quadratic, and quadratic is what the contract
-  costs, since every one of those diagnostics is output. The two things that must NOT be
-  paid on top of it are hashing and stack frames, so the walk below is over integer node
-  indices with an explicit stack: no dictionary lookup per step, and depth bounded by the
-  node count rather than by the machine stack. Written recursively over strings first, it
-  took 99 SECONDS on a cycle of 6 400 (see the table in the spec).
-
-  The one safe prune is `reaches`: a name that can reach no cycle at all can push nothing
-  from any path, so the descent stops there. That keeps an ordinary document linear and
-  leaves the counting untouched.
-
-  `refIdx[i]` is node i's raw references in order, each mapped to a node index or -1 for a
-  name that is not a definition -- which cannot be on the path and cannot be descended, so
-  it is skipped exactly as the reference's two failed lookups skip it. }
-procedure DetectCyclesRef(refIdx: TIntBucketList; names: TStringList;
-  const reach: array of Boolean; posOf: TDictionary<string, Integer>;
-  res: TSpDiagList; const src: string; map: TList<Integer>; var cur: TSourceCursor);
-var n, start, top, node, r, anchor: Integer;
-    onPath: array of Boolean;
-    stkNode, stkPos: array of Integer;
-    refs: TIntList;
-begin
-  n := names.Count;
-  SetLength(onPath, n);
-  { the path holds distinct nodes, so it can never be deeper than the node count }
-  SetLength(stkNode, n + 1);
-  SetLength(stkPos, n + 1);
-  for start := 0 to n - 1 do
-  begin
-    if not reach[start] then Continue;
-    anchor := posOf[names[start]];
-    top := 0;
-    stkNode[0] := start; stkPos[0] := 0;
-    onPath[start] := True;
-    while top >= 0 do
-    begin
-      node := stkNode[top];
-      refs := refIdx[node];
-      if stkPos[top] >= refs.Count then
-      begin
-        onPath[node] := False;                { frame exhausted: pop, unmarking the path }
-        Dec(top);
-        Continue;
-      end;
-      r := refs[stkPos[top]];
-      Inc(stkPos[top]);
-      if (r < 0) or (r = node) then Continue; { undefined name / a self-loop, which is
-                                                variable.self-reference instead }
-      if onPath[r] then
-      begin
-        AddDiagAtOrdered(res, 'variable.circular-reference', 'error', src, map,
-                         anchor, anchor + 4, cur);
-        onPath[node] := False;                { the reference returns from THIS frame only,
-                                                so the frame below it keeps iterating }
-        Dec(top);
-        Continue;
-      end;
-      if reach[r] then
-      begin
-        onPath[r] := True;
-        Inc(top);
-        stkNode[top] := r; stkPos[top] := 0;
-      end;
-    end;
-  end;
-end;
-
 procedure CheckVariableRefsV(const text, src: string; map: TList<Integer>;
   KnownIncludes: TStringList; res: TSpDiagList);
-var kinds, defNames, defValues, names: TStringList; i, k, at: Integer;
+var kinds, defNames, defValues, names: TStringList; i, at: Integer;
     poss: TList<Integer>;
     valueOf: TStrMap;
     posOf: TDictionary<string, Integer>;
     reaches: TDictionary<string, Boolean>;
-    nameIdx: TDictionary<string, Integer>;
-    refsOf, rawRefs: TObjectList<TStringList>;
-    refIdx: TIntBucketList;
-    ints: TIntList;
-    reachArr: array of Boolean;
+    refsOf: TObjectList<TStringList>;
     refs: TStringList;
     curSelf, curCirc: TSourceCursor;
 begin
@@ -4941,9 +4857,9 @@ begin
     CollectOccurrences(text, kinds, defNames, defValues, poss);
 
     { DEDUPLICATE BY NAME, LAST DEFINITION WINS. The reference builds a Map and sets each
-      name in document order, so a repeated name keeps only its LAST value -- and both the
-      self-reference test and the cycle walk run over that map, one entry per NAME rather
-      than one per occurrence.
+      name in document order, so a repeated name keeps only its LAST value -- and the
+      self-reference test, the cycle detection and the plural taint all read that map, one
+      entry per NAME rather than one per occurrence.
 
       This port used every occurrence and resolved a name to the FIRST of them, which
       diverged in both directions. Measured against @spintax/core on 2026-08-06:
@@ -4984,31 +4900,32 @@ begin
         AddDiagAtOrdered(res, 'variable.self-reference', 'error', src, map,
                          at, at + 4, curSelf);
       end;
-    { circular -- the reference's own walk, pruned by the global reachability set and run
-      over node indices (see DetectCyclesRef for why the strings had to go) }
+    { ONE diagnostic per NAME that takes part in, or leads to, a cycle -- the set MarkCyclic
+      already computes, emitted in first-seen order at the surviving definition.
+
+      This engine emitted one per PATH until 2026-08-18, deliberately: the reference's walk
+      did not deduplicate references and returned from the current frame only, so
+      `#set %a% = %b% %b%` inside a cycle reported three times, and the count was reproduced
+      here rather than reasoned about. The family reversed that decision in
+      @spintax/core 0.6.0 (spintax-js#59), because the number of ROUTES through a converging
+      graph is exponential in its depth and re-walking every route IS the emission, so it
+      could not be kept and bounded. Measured here before the change, on the corpus's own
+      `validate/cycle-diamond-terminates` -- 507 bytes, twenty definitions feeding a
+      two-cycle -- 2 097 152 diagnostics in 7 949 ms, against 22 in about a millisecond now.
+      The corpus could not see it: expected diagnostics are matched as a SUBSET, so that case
+      gates only that the engine answers.
+
+      Nothing else moves: the set of names is what it always was, the anchors are unchanged,
+      and only duplicates disappear. The whole node-index apparatus went with the walk -- it
+      existed to make the per-path descent affordable. }
     MarkCyclic(names, refsOf, reaches);
-    nameIdx := TDictionary<string, Integer>.Create;
-    rawRefs := TObjectList<TStringList>.Create(True);
-    refIdx := TIntBucketList.Create(True);
-    try
-      for i := 0 to names.Count - 1 do nameIdx.Add(names[i], i);
-      SetLength(reachArr, names.Count);
-      for i := 0 to names.Count - 1 do
-        reachArr[i] := reaches.ContainsKey(names[i]);
-      for i := 0 to names.Count - 1 do
+    for i := 0 to names.Count - 1 do
+      if reaches.ContainsKey(names[i]) then
       begin
-        refs := TStringList.Create;
-        rawRefs.Add(refs);
-        RawReferences(valueOf[names[i]], refs);
-        ints := TIntList.Create;
-        refIdx.Add(ints);
-        for k := 0 to refs.Count - 1 do
-          if nameIdx.TryGetValue(refs[k], at) then ints.Add(at) else ints.Add(-1);
+        at := posOf[names[i]];
+        AddDiagAtOrdered(res, 'variable.circular-reference', 'error', src, map,
+                         at, at + 4, curCirc);
       end;
-      DetectCyclesRef(refIdx, names, reachArr, posOf, res, src, map, curCirc);
-    finally
-      nameIdx.Free; rawRefs.Free; refIdx.Free;
-    end;
     // (undefined-variable warnings are emitted in SpValidate against the body scan)
   finally
     kinds.Free; defNames.Free; defValues.Free; poss.Free;
