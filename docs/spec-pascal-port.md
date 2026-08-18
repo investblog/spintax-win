@@ -935,6 +935,80 @@ differences (12 cases whose reference output moves between six seeds are skipped
 selection is a §3 non-goal). The same harness against the previous commit reports 2328 and
 931 differences, which is the control run that makes the zero mean something.
 
+### 5.8 The render-side expansion bomb, and a budget on what expansion inserts
+
+Adopted 2026-08-18 from [`spintax-js#69`](https://github.com/investblog/spintax-js/issues/69),
+the render-side twin of the counting bomb in §5.5. Sixty-two characters:
+
+```
+#set %a% = %b% %b%
+#set %b% = %a% %a%
+%a%
+```
+
+Every expansion replaces one reference with two, so the text doubles and `MAX_VARIABLE_DEPTH`
+of 50 permits 2^50. The cycle guard never fires: an acyclic chain of doubling definitions does
+the same thing. Measured on this engine before the fix — a plural naming `%a%` in its forms
+**aborted with `EOutOfMemory`**, an exception escaping `SpRender`, which §9.2 says never
+happens on content; a bare reference and one inside a permutation **ran past 60 s**. Live in
+every engine of the family, and old — the issue confirms it against published `@spintax/core`
+0.3.4, so it predates this week's work.
+
+It is not a construct that is unsafe. `plain text` and `{?a?…}` are fine — a conditional reads
+truthiness and never expands the value — while `%a%`, `[%a%|z]` and either plural slot all
+reach it. The unsafe thing is **any reference whose value gets expanded**, which is the
+general variable-resolution path.
+
+`SP_RENDER_EXPANSION_BUDGET` is what expansion may INSERT over one `SpRender` call, children
+of an `#include` included: one budget per call, not per document, or the include depth would
+multiply it. It is charged per substitution and checked **before** the substitution happens,
+because one substitution can be the whole explosion — the same lesson §5.5 records for the
+counting path. Both sites are charged: `ResolveVariable` (the general path) and
+`ExpandVarsOnly` (the plural slots).
+
+**When the budget is gone, the reference is left LITERAL.** That is already what this engine
+emits for a name it does not know, so no new output shape enters the language: a plural whose
+count did not resolve erases exactly as it always has, and a host gets text instead of a
+crash. Measured after: every shape answers in under 350 ms, the bomb producing ~600 KB of
+half-expanded text ending in literal `%a%` / `%b%`.
+
+**The truncated output is deliberately NOT parity-gated**, and the constant is settled at
+1 MB — the family fixed both in `@spintax/core` 0.5.2 while this was being written. The
+conformance README states it: the engines expand by different mechanisms, a per-reference tree
+walk here and in the reference against a whole-text fixpoint in both PHP engines, so they stop
+in different places and produce different byte counts for the same bomb. Making those agree
+would mean rewriting one engine's traversal for input no author writes. **The contract is that
+render terminates, stays lenient, and leaves what it could not afford as a literal `%name%`**;
+each engine pins its own bound in its own suite.
+
+**A value carrying no construct is not charged at all.** It is substituted and never expanded
+again, so it cannot be part of an explosion — and charging it truncated ordinary output: a
+plain 100 KB `#set` referenced twenty times, and ten `#def` hops over one literal, which is
+100 KB of finished text with no recursion in it. The first cut of this budget charged before
+that check and got both wrong; the reference orders them the other way. Measured after,
+byte-for-byte against `@spintax/core` 0.5.2: **2 048 021** and **102 402** characters, no
+reference left literal in either.
+
+That ordering, plus refusing on an EMPTY purse rather than on one the next substitution would
+overdraw, puts this engine at the same stopping point as the reference on the bomb itself
+— 1 198 225 characters for `%a%`, to the byte. Worth knowing, and not a contract: the
+README's own measurement of the spread across engines is 1 198 223 against 599 191.
+
+`TestRenderExpansionBudget` asserts the CONTRACT, plus this engine's own bound: every shape
+from the issue's table answers, a refused reference stays literal, an unresolved count still
+erases, a plain value is never charged, and the budget is **per render**, not cumulative, so
+the second render of a compiled template matches the first — the shape this could most easily
+have got wrong, since a host renders a compiled template in a loop and a carried-over counter
+would leave only the first render correct.
+
+One purse covers the whole call, `#include` children and all. A budget created per child
+document bounds each subtree and bounds nothing overall: upstream measured fifty include lines
+over one 62-character bomb turning 690 bytes into **57 MB**. Five includes of the same bomb
+cost about one budget here, not five. That check was added because a review pointed out that
+nothing else in the suite would have noticed a child resetting the counter — and it was
+confirmed by building an engine that does reset it, where the check fails and nothing else in
+the file does.
+
 ## 6. Trust model
 
 `SpNeutralize` is a utility the **host** applies to data-derived (T2) input. The engine

@@ -1151,6 +1151,156 @@ begin
   Check('locale-missing/render-with-locale-resolves', RenderIn('{plural 3: a|b|c}', 'ru'), 'b');
 end;
 
+{ The render-side expansion bomb: 62 characters that killed the process
+  ([spintax-js#69](https://github.com/investblog/spintax-js/issues/69)).
+
+      #set %a% = %b% %b%
+      #set %b% = %a% %a%
+      %a%
+
+  Every expansion replaces one reference with two, so the text doubles and the depth cap of
+  50 permits 2^50. Measured here BEFORE the budget, on this engine: a plural naming %a% in
+  its forms aborted with EOutOfMemory -- an exception escaping SpRender, which spec sec.9.2
+  says never happens on content -- and a bare reference, or one inside a permutation, ran
+  past 60 s without answering. The cycle guard never fires: an acyclic chain of doubling
+  definitions does the same. Live in every engine of the family, and old, not from this
+  week.
+
+  What is asserted here is the CONTRACT: every shape answers, and a reference the budget
+  refuses is left LITERAL, which is already what an unknown name renders as. The family
+  fixed the rule at 1 MB and made the truncated OUTPUT deliberately not parity-gated -- the
+  engines expand by different mechanisms and stop in different places -- so each pins its
+  own bound in its own suite, which is what the length check below is for. No fixture covers
+  any of this; the corpus cannot carry a case that crashes the runner. }
+function BombRender(const body, locale: string): string;
+var r: string;
+begin
+  r := RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10 + body, locale);
+  if Length(r) <= 4 * 1024 * 1024 then Result := 'bounded' else Result := 'UNBOUNDED';
+  if (Pos('%a%', r) > 0) or (Pos('%b%', r) > 0) then Result := Result + ', refs left literal'
+  else Result := Result + ', no refs left';
+end;
+
+{ A resolver that answers every #include with the bomb, for the one-versus-many check. }
+type
+  TBombResolver = class(TSpIncludeResolver)
+  public
+    function Resolve(const Ref: string; out Text: string): Boolean; override;
+  end;
+
+function TBombResolver.Resolve(const Ref: string; out Text: string): Boolean;
+begin
+  Text := '#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%';
+  Result := Ref = 'bomb';
+end;
+
+function RenderWithIncludes(const tmpl: string): string;
+var ctx: TSpContext; res: TBombResolver;
+begin
+  res := TBombResolver.Create;
+  ctx := Default(TSpContext);
+  ctx.Locale := 'en'; ctx.PostProcess := False;
+  ctx.Rng := TFirstRng.Create; ctx.IncludeResolver := res;
+  try Result := SpRender(tmpl, ctx); finally ctx.Rng.Free; res.Free; end;
+end;
+
+procedure TestRenderExpansionBudget;
+var tpl: TSpTemplate; ctx: TSpContext; first, deep, tail: string; i: Integer;
+begin
+  { Defining the pair is harmless; so is testing it, because a conditional reads
+    truthiness and never expands the value. Both measured on the reference too. }
+  Check('bomb/defining-the-pair-is-harmless',
+        BombRender('plain text', ''), 'bounded, no refs left');
+  Check('bomb/a-conditional-never-expands',
+        RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'{?a?yes|no}', ''),
+        #10#10'yes');
+
+  { It is not a construct that is unsafe -- it is ANY reference that makes the value
+    expand. One from the general variable path, one from inside a permutation. }
+  Check('bomb/a-bare-reference-is-bounded',    BombRender('%a%', ''),     'bounded, refs left literal');
+  Check('bomb/inside-a-permutation-is-bounded', BombRender('[%a%|z]', ''), 'bounded, refs left literal');
+
+  { Through #def, which is a DIFFERENT path: a definition is rolled once per render, before
+    the body is walked, and the roll renders its value. Measured against the previous commit
+    -- this shape ran past 90 s there and answers in 159 ms here. }
+  Check('bomb/through-a-def-roll-is-bounded',
+        BoolToStr(Length(RenderIn('#def %a% = %b% %b%'#10'#def %b% = %a% %a%'#10'%a%', ''))
+                  <= 4 * 1024 * 1024, True), 'True');
+
+  { The count slot resolves to text rather than a number, so the block erases -- which is
+    what it has always done for a count that did not resolve. No new output shape. }
+  Check('bomb/an-unresolved-count-still-erases',
+        RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'{plural %a%: one|two}', 'en'),
+        #10#10);
+
+  { A value that carries no construct is substituted and never expanded again, so it CANNOT
+    be part of an explosion and is not charged -- the reference orders its checks the same
+    way. Charging it made these two ordinary shapes truncate: 2 MB of output from a plain
+    100 KB #set, and ten #def hops over one literal, which is 100 KB of finished text and no
+    recursion at all. Both measured byte-for-byte against @spintax/core 0.5.2 on
+    2026-08-18: 2 048 021 and 102 402 characters, no reference left literal in either.
+    Codex review found this; the first cut of the budget got it wrong. }
+  deep := StringOfChar('w', 100 * 1024);
+  tail := '';
+  for i := 1 to 20 do tail := tail + '%big% ';
+  Check('bomb/a-plain-value-is-not-charged',
+        BoolToStr(Pos('%big%', RenderIn('#set %big% = ' + deep + #10 + tail, '')) = 0, True),
+        'True');
+  tail := '#set %v0% = ' + deep + #10;
+  for i := 1 to 10 do tail := tail + '#def %v' + IntToStr(i) + '% = %v' + IntToStr(i - 1) + '%'#10;
+  Check('bomb/a-plain-value-through-ten-def-hops',
+        IntToStr(Length(RenderIn(tail + '%v10%', ''))), '102402');
+
+  { This engine's OWN bound, pinned here because the family says the truncated output is
+    deliberately not parity-gated and no fixture carries it: the engines expand by different
+    mechanisms and stop in different places, so each pins its own. Ours happens to agree
+    with the reference to the byte on this shape, which is worth knowing and is not a
+    contract -- what IS the contract is that the render terminates, stays lenient, and
+    leaves what it could not afford as literal. }
+  Check('bomb/this-engine-stops-where-it-says-it-does',
+        IntToStr(Length(RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', ''))),
+        '1198225');
+
+  { CONTROL, and the point of the whole design: an ordinary template never meets the
+    budget, so nothing that renders today renders differently. }
+  Check('bomb/an-ordinary-template-is-untouched',
+        RenderIn('#set %x% = hello'#10'#def %y% = world'#10'%x% %y% %x%', ''),
+        #10#10'hello world hello');
+
+  { ONE purse for the whole call, #include children and all. A budget created per child
+    document bounds each subtree and bounds nothing overall -- upstream measured fifty
+    include lines over one 62-character bomb turning 690 bytes into 57 MB. Five includes of
+    the same bomb must therefore cost about ONE budget, not five: the first spends it and
+    the rest render their references literal. The implementation shares a pointer, and
+    nothing else in this file would notice if a child reset it. Codex review, 2026-08-18. }
+  deep := RenderWithIncludes('#include "bomb"'#10);
+  tail := RenderWithIncludes('#include "bomb"'#10'#include "bomb"'#10'#include "bomb"'#10 +
+                             '#include "bomb"'#10'#include "bomb"'#10);
+  Check('bomb/includes-share-one-budget',
+        BoolToStr((Length(tail) > 0) and (Length(tail) < Length(deep) + 4096), True), 'True');
+
+  { The budget is per RENDER, not per process and not per compiled template -- a counter
+    that carried over would make the second render of one template differ from the first,
+    which is the worst shape this could have taken: a host renders a compiled template in a
+    loop, and only the first one would be right. Both entry points share RenderTop, which
+    owns the counter, and this asserts that they do. }
+  tpl := SpCompile('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%');
+  try
+    ctx := Default(TSpContext);
+    ctx.Locale := 'en'; ctx.PostProcess := False; ctx.Rng := TFirstRng.Create;
+    try
+      first := SpRenderCompiled(tpl, ctx);
+      Check('bomb/budget-is-per-render-not-cumulative-compiled',
+            BoolToStr((SpRenderCompiled(tpl, ctx) = first) and
+                      (SpRenderCompiled(tpl, ctx) = first), True), 'True');
+    finally ctx.Rng.Free; end;
+  finally tpl.Free; end;
+  Check('bomb/budget-is-per-render-not-cumulative-sprender',
+        BoolToStr(RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', '') =
+                  RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', ''), True),
+        'True');
+end;
+
 { Conditional truthiness over the FULL whitespace class.
 
   Conditional truthiness is parity-REQUIRED (spec sec.3), and every other engine decides it
@@ -2013,6 +2163,7 @@ begin
   TestPluralLocaleMissing;
   TestPluralFormCounting;
   TestConditionalTruthiness;
+  TestRenderExpansionBudget;
   TestIncludes;
   TestIncludeAnchor;
   TestIncludeResolver;

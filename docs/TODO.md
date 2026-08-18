@@ -61,6 +61,26 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
 ## Done
 
+- [x] **The render-side expansion bomb bounded** (2026-08-18,
+      [spintax-js#69](https://github.com/investblog/spintax-js/issues/69)). Sixty-two
+      characters -- `#set %a% = %b% %b%` over `#set %b% = %a% %a%`, then any reference that
+      makes the value expand -- killed the process: `EOutOfMemory` out of `SpRender` on a
+      plural naming it, over 60 s with no answer on a bare reference or one inside a
+      permutation. Old, not from this week; live in every engine of the family. Now bounded
+      by `SP_RENDER_EXPANSION_BUDGET`, charged per substitution and checked BEFORE it, one
+      budget per `SpRender` call including `#include` children; out of budget a reference is
+      left LITERAL, which is what an unknown name already renders as, so no new output shape
+      enters the language. Every shape answers in well under a second. Spec §5.8. The family
+      settled the rule in `@spintax/core` 0.5.2 the same day: 1 MB, and the truncated output
+      is **deliberately not parity-gated** -- the engines expand by different mechanisms and
+      stop in different places, so each pins its own bound in its own suite. Two things the
+      first cut here got wrong, both Codex-review findings: a value carrying no construct
+      must not be charged at all (it cannot explode, and charging it truncated 2 MB of
+      ordinary output and a ten-hop `#def` chain), and the refusal is on an EMPTY purse
+      rather than on one the next substitution would overdraw. With both corrected this
+      engine stops at the same byte as the reference on the bomb, which is a fact rather
+      than a contract.
+
 - [x] **Conditional truthiness over the full whitespace class** (2026-08-18, found by Codex
       review of the two adoptions below). `{?...}` truthiness is parity-REQUIRED by spec §3,
       and every other engine decides it with `/\S/u`; this port tested six ASCII characters
@@ -73,7 +93,7 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       one that is right here.
 
 - [x] **Caught up with the family's two plural fixes** (2026-08-18), corpus
-      `PASS=253 FAIL=0 SKIP=4`, 528 local checks in both builds.
+      `PASS=253 FAIL=0 SKIP=4`, 541 local checks in both builds.
       [spintax-js#66](https://github.com/investblog/spintax-js/issues/66): the form count is
       now taken on the list the renderer will split -- definition values substituted first,
       every reference per pass -- and only where it is provably invariant; a bracket, a

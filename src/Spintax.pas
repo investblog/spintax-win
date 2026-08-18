@@ -271,6 +271,32 @@ uses
 
 const
   MAX_VARIABLE_DEPTH = 50;
+
+  { How many code units variable expansion may INSERT over one SpRender call.
+
+    Without it a 62-character template kills the process, and it always has --
+    `#set %a% = %b% %b%` over `#set %b% = %a% %a%` doubles the text at every expansion, so
+    the depth cap of 50 permits 2^50. Measured here: a plural naming %a% in its forms aborts with
+    EOutOfMemory (an exception escaping SpRender, which spec sec.9.2 says never happens on
+    content) and a bare reference to that pair runs past a minute. The cycle guard never fires, because an
+    acyclic chain of doubling definitions does the same thing. Live in every engine of the
+    family, filed as spintax-js#69 -- the render-side twin of the counting bomb.
+
+    A budget on what expansion ADDS, not on template size: 62 bytes is the bomb and a 65 KB
+    template is ordinary. Charged per substitution and checked BEFORE it happens, because
+    one substitution can be the whole explosion. When it is gone a reference is left
+    LITERAL, which is already this engine's answer for a name it does not know, so no new
+    output shape enters the language: a plural whose count did not resolve erases exactly as
+    it always has, and the host gets text rather than a crash.
+
+    The exact truncated output is DELIBERATELY not parity-gated and no fixture carries it:
+    the engines expand by different mechanisms -- a per-reference tree walk here and in the
+    reference, a whole-text fixpoint in both PHP engines -- so they stop in different places
+    on the same bomb, and making them agree would mean rewriting one engine's traversal for
+    input nobody writes. The conformance README says so; each engine pins its own bound in
+    its own suite instead. What IS the contract: render terminates, stays lenient, and
+    leaves what it could not afford as a literal %name%. }
+  SP_RENDER_EXPANSION_BUDGET = 1024 * 1024;
   PHP_WS = [' ', #9, #10, #13, #0, #11];
 
 { Unicode tables for the post-process stage, generated from the reference's own Unicode
@@ -1740,6 +1766,10 @@ type
     Locale: string;
     Depth: Integer;
     Rng: TSpRng;
+    { What variable expansion may still INSERT, for the whole render call including any
+      #include children -- see SP_RENDER_EXPANSION_BUDGET. A pointer because TRenderOpts is
+      copied at every nesting step and the count has to be shared, not forked. }
+    Budget: PInteger;
   end;
 
 function RenderNodes(nodes: TNodeList; const opts: TRenderOpts): string; forward;
@@ -1750,6 +1780,26 @@ begin
   for i := 1 to Length(s) do
     if (s[i] = '{') or (s[i] = '[') or (s[i] = '%') then Exit(True);
   Result := False;
+end;
+
+{ Take `cost` code units out of the render's expansion budget, or refuse.
+
+  Refusing is not an error: the caller leaves the reference LITERAL, which is what this
+  engine already emits for a name it does not know. `opts` is const and the counter is
+  behind a pointer, because every nesting step copies the record and the count is shared.
+  A nil budget means no accounting at all, so a caller that predates this cannot change
+  behaviour by not knowing about it. }
+function TakeBudget(const opts: TRenderOpts; cost: Integer): Boolean;
+begin
+  if opts.Budget = nil then Exit(True);
+  { Refuse when the purse is EMPTY, not when the next substitution would overdraw it: the
+    reference charges after allowing the substitution and stops before the following one, so
+    the last one through may take the count negative. Matching it costs nothing and keeps
+    the two engines stopping in the same place, even though the conformance README says the
+    truncated output is deliberately not asserted. }
+  if opts.Budget^ <= 0 then Exit(False);
+  Dec(opts.Budget^, cost);
+  Result := True;
 end;
 
 function ExpandVarsOnly(const text: string; const opts: TRenderOpts): string;
@@ -1774,10 +1824,15 @@ begin
         while (j <= Length(outp)) and IsAsciiWord(outp[j]) do begin nm := nm + outp[j]; Inc(j); end;
         if (nm <> '') and (j <= Length(outp)) and (outp[j] = '%') then
         begin
+          { Budget first: this loop is the one that doubles. Refused, the reference falls
+            through to the literal path below and the pass stops changing anything. Nested
+            rather than `and`-ed, because TakeBudget has a side effect and this must not
+            depend on which operands a compiler evaluates. }
           if opts.Vars.TryGetValue(LowerAscii(nm), val) then
-          begin
-            res.AppendStr(val); changed := True; i := j + 1; Continue;
-          end;
+            if TakeBudget(opts, Length(val)) then
+            begin
+              res.AppendStr(val); changed := True; i := j + 1; Continue;
+            end;
         end;
       end;
       res.AppendChar(outp[i]); Inc(i);
@@ -1792,7 +1847,16 @@ function ResolveVariable(const name: string; const opts: TRenderOpts): string;
 var val: string; sub: TNodeList; subOpts: TRenderOpts;
 begin
   if not opts.Vars.TryGetValue(LowerAscii(name), val) then Exit('%' + name + '%');
+  { The plain paths first, and they are NOT charged -- a value carrying no construct, or one
+    at the depth cap, is substituted and never expanded again, so it cannot be part of an
+    explosion. Charging it made ten chained #def hops over one 100 KB literal cost ten times
+    its length and then refuse the reference that was the actual output. The reference
+    orders these the same way; Codex review, 2026-08-18. }
   if (opts.Depth >= MAX_VARIABLE_DEPTH) or (not HasConstructChar(val)) then Exit(val);
+  { Charged before the recursive expansion, because one substitution can be the whole
+    explosion: each level of `#set %a% = %b% %b%` doubles, and the depth cap alone permits
+    2^50. Out of budget, the reference stays as written -- the answer an unknown name gets. }
+  if not TakeBudget(opts, Length(val)) then Exit('%' + name + '%');
   sub := ParseSequence(val);
   try
     subOpts := opts; subOpts.Depth := opts.Depth + 1;
@@ -3356,7 +3420,7 @@ end;
 
 function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
   Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer;
-  Stack: TStringList): string; forward;
+  Stack: TStringList; Budget: PInteger): string; forward;
 
 { The reference's resolveIncludes, run over RENDERED text: every #include line becomes the
   child's OUTPUT, so a `{`, `|` or `%` the child produced is never re-parsed by the parent
@@ -3368,7 +3432,8 @@ function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Loca
   inserted, since the child resolved its own includes. Matches can end past their own line
   (spec §5.1), which is why the walk advances by match end rather than by line. }
 function ResolveIncludes(const text: string; RuntimeVars: TStrMap; const Locale: string;
-  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList;
+  Budget: PInteger): string;
 var n, pos_, lineStart, termLen, matchEnd, refStart, refEnd: Integer;
     ref, childSrc, child: string;
 begin
@@ -3388,7 +3453,8 @@ begin
       begin
         Stack.Add(ref);
         try
-          child := RenderDocument(childSrc, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+          child := RenderDocument(childSrc, RuntimeVars, Locale, Rng, Resolver, MaxDepth,
+                                  Stack, Budget);
         finally
           Stack.Delete(Stack.Count - 1);
         end;
@@ -3411,7 +3477,8 @@ end;
 { The half of a render that depends on the host: variables, the #def roll, the tree walk
   and the includes. Everything it reads from the template was prepared by TTemplateImpl. }
 function RenderCompiled(impl: TTemplateImpl; RuntimeVars: TStrMap; const Locale: string;
-  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList;
+  Budget: PInteger): string;
 var vars, aliases: TStrMap;
     opts: TRenderOpts;
     pair: TPair<string, string>;
@@ -3434,6 +3501,7 @@ begin
     opts.Locale := Locale;
     opts.Depth := 0;
     opts.Rng := Rng;
+    opts.Budget := Budget;
 
     // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
     // outranks it (never rolled). The order must not come from hash enumeration —
@@ -3471,7 +3539,8 @@ begin
     Result := RenderNodes(impl.Body, opts);
 
     if Resolver <> nil then
-      Result := ResolveIncludes(Result, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+      Result := ResolveIncludes(Result, RuntimeVars, Locale, Rng, Resolver, MaxDepth,
+                                Stack, Budget);
   finally
     vars.Free; outranked.Free;
   end;
@@ -3480,12 +3549,13 @@ end;
 { One-shot: compile, render, discard. This is what an #include child takes, and what
   SpRender takes, so the two paths cannot drift apart. }
 function RenderDocument(const Template: string; RuntimeVars: TStrMap; const Locale: string;
-  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList): string;
+  Rng: TSpRng; Resolver: TSpIncludeResolver; MaxDepth: Integer; Stack: TStringList;
+  Budget: PInteger): string;
 var impl: TTemplateImpl;
 begin
   impl := TTemplateImpl.Create(Template);
   try
-    Result := RenderCompiled(impl, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack);
+    Result := RenderCompiled(impl, RuntimeVars, Locale, Rng, Resolver, MaxDepth, Stack, Budget);
   finally
     impl.Free;
   end;
@@ -3497,9 +3567,13 @@ end;
 function RenderTop(impl: TTemplateImpl; const Template: string;
   const Ctx: TSpContext): string;
 var ownedRng: TSpRng; rng: TSpRng; stack: TStringList; depth: Integer; outp: string;
+    budget: Integer;
 begin
   { Owned only when the caller supplied none; the caller's own Rng is never freed here. }
   if Ctx.Rng = nil then ownedRng := MakeDefaultRng else ownedRng := nil;
+  { ONE budget for the whole call, children included: an #include is part of this render,
+    not a fresh one, and a per-document budget would multiply by the include depth. }
+  budget := SP_RENDER_EXPANSION_BUDGET;
   stack := TStringList.Create;
   try
     if ownedRng <> nil then rng := ownedRng else rng := Ctx.Rng;
@@ -3508,10 +3582,10 @@ begin
 
     if impl <> nil then
       outp := RenderCompiled(impl, Ctx.Vars, Ctx.Locale, rng,
-                             Ctx.IncludeResolver, depth, stack)
+                             Ctx.IncludeResolver, depth, stack, @budget)
     else
       outp := RenderDocument(Template, Ctx.Vars, Ctx.Locale, rng,
-                             Ctx.IncludeResolver, depth, stack);
+                             Ctx.IncludeResolver, depth, stack, @budget);
 
     { Once, over the whole assembled document -- parent and every child it pulled in. The
       cosmetic pipeline therefore sees across the seam, and a sentinel a child emitted is
