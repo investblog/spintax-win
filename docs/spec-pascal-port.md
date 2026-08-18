@@ -1002,12 +1002,32 @@ have got wrong, since a host renders a compiled template in a loop and a carried
 would leave only the first render correct.
 
 One purse covers the whole call, `#include` children and all. A budget created per child
-document bounds each subtree and bounds nothing overall: upstream measured fifty include lines
-over one 62-character bomb turning 690 bytes into **57 MB**. Five includes of the same bomb
-cost about one budget here, not five. That check was added because a review pointed out that
-nothing else in the suite would have noticed a child resetting the counter — and it was
-confirmed by building an engine that does reset it, where the check fails and nothing else in
-the file does.
+document bounds each subtree and bounds nothing overall: the reference shipped exactly that in
+0.5.2 and fixed it in **0.5.3** — fifty include lines over one 62-character body turned 690
+bytes into **57 MB**, growing linearly with the include count. This port shared the purse from
+the first cut, so 0.5.3 needed no change here; the check exists because a review pointed out
+that nothing else in the suite would have noticed a child resetting the counter, and it was
+confirmed by building an engine that does reset it, where that check fails and nothing else in
+the file does. Measured flat: 1, 50, 200 and 500 include lines over the same body give
+1 198 225 / 1 198 519 / 1 199 419 / 1 201 219 characters, the growth being the include lines'
+own text.
+
+**Where this engine sits, measured 2026-08-18** against `@spintax/core` 0.5.3, now that the
+family's remaining question is volume and time rather than survival:
+
+| shape | this port | reference |
+|---|---|---|
+| `#set` bomb, `%a%` | 448 ms, 1 198 225 chars | 104 ms, 1 198 225 chars |
+| `#def` bomb | 872 ms, 3 353 865 chars | 161 ms, 3 353 865 chars |
+| 200 `#include` lines over one bomb | 464 ms, 1 199 419 chars | ~210 ms, ~1.14 MB |
+
+The volume is **identical to the byte** on every shape the two engines share, which is worth
+recording precisely because the corpus deliberately does not assert it. The time is 3–5× the
+reference and roughly a sixth of the Python port's, which the family measured at ~5 s for the
+same budget. It is linear in output, not super-linear — a terminating doubling chain costs
+**~1.2 ms per KB** flat from 32 KB to 190 KB — so the constant is allocation and copying, where
+a JavaScript engine has ropes and this one has strings. §3 does not ask performance to match,
+and nothing here is a bound that fails to hold.
 
 ## 6. Trust model
 

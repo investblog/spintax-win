@@ -79,7 +79,12 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       ordinary output and a ten-hop `#def` chain), and the refusal is on an EMPTY purse
       rather than on one the next substitution would overdraw. With both corrected this
       engine stops at the same byte as the reference on the bomb, which is a fact rather
-      than a contract.
+      than a contract. The family's 0.5.3 -- the budget travelling on the call rather than on
+      each rendered template -- needed no change here, since this port shared the purse from
+      the first cut; measured flat at 1, 50, 200 and 500 include lines. What remains across
+      the family is volume and time, not survival, and this engine's numbers are in §5.8:
+      identical output to the byte, 3-5x the reference's time, linear in output at ~1.2 ms
+      per KB.
 
 - [x] **Conditional truthiness over the full whitespace class** (2026-08-18, found by Codex
       review of the two adoptions below). `{?...}` truthiness is parity-REQUIRED by spec §3,
