@@ -1125,22 +1125,21 @@ begin
                    'plural.locale-missing'),
         'warning @2:1..2:9; warning @3:3..3:11');
 
-  { The validator counts the pipes it can SEE; the renderer counts them after expanding
-    variables. So a form list grown or shrunk by a %def% reference is judged on the wrong
-    number, in both directions. Not this port's divergence and not new here -- the reference
-    does exactly the same, and `plural.arity` has carried it since it was written, where it
-    is worse: it calls INVALID a template that renders correctly. Both shapes measured in
-    both engines on 2026-08-18 and pinned as they are, so that a family fix is visible here
-    as a failure rather than as silence. }
-  Check('locale-missing/expanded-forms-false-negative',
-        DiagsIn('#def %tail% = few|many'#10'{plural 2: one|%tail%}', ''), 'valid: ');
-  Check('locale-missing/expanded-forms-false-negative renders unresolved',
+  { The two shapes that made the raw count wrong, now counted the way the renderer counts:
+    variables expanded first, then split. They were pinned here on 2026-08-18 with the
+    OPPOSITE expectations and a comment saying a family fix should surface as a failure
+    rather than as silence -- which is exactly what happened when spintax-js#66 landed a day
+    later. The render checks beside each verdict are the point: the verdict now agrees with
+    what the engine does with the same template, and it did not before. }
+  Check('locale-missing/expanded-forms-grown-by-a-def',
+        DiagsIn('#def %tail% = few|many'#10'{plural 2: one|%tail%}', ''),
+        'valid: plural.locale-missing/warning');
+  Check('locale-missing/expanded-forms-grown-by-a-def renders unresolved',
         RenderIn('#def %tail% = few|many'#10'{plural 2: one|%tail%}', ''),
         #10 + FullwidthBrace(True) + 'plural 2: one|few|many' + FullwidthBrace(False));
-  Check('locale-missing/expanded-forms-false-positive',
-        DiagsIn('#def %forms% = one|many'#10'{plural 2: %forms%}', ''),
-        'valid: plural.locale-missing/warning');
-  Check('locale-missing/expanded-forms-false-positive renders fine',
+  Check('locale-missing/expanded-forms-whole-list-in-a-def',
+        DiagsIn('#def %forms% = one|many'#10'{plural 2: %forms%}', ''), 'valid: ');
+  Check('locale-missing/expanded-forms-whole-list-in-a-def renders fine',
         RenderIn('#def %forms% = one|many'#10'{plural 2: %forms%}', ''), #10'many');
 
   { The claim in the warning, checked against the ENGINE rather than asserted: the block
@@ -1150,6 +1149,209 @@ begin
   Check('locale-missing/render-leaves-it-unresolved', RenderIn('{plural 3: a|b|c}', ''),
         FullwidthBrace(True) + 'plural 3: a|b|c' + FullwidthBrace(False));
   Check('locale-missing/render-with-locale-resolves', RenderIn('{plural 3: a|b|c}', 'ru'), 'b');
+end;
+
+{ Conditional truthiness over the FULL whitespace class.
+
+  Conditional truthiness is parity-REQUIRED (spec sec.3), and every other engine decides it
+  with `/\S/u`. This port tested six ASCII characters byte by byte, so a variable holding
+  one Unicode space rendered the OTHER branch. No corpus fixture carries a Unicode space,
+  and none of the 500 checks beside this one did either; found by Codex review of the
+  count-slot work, which had just given the predicate a second caller.
+
+  Every line below is the reference's own answer, measured 2026-08-18 case for case. The
+  three at the end are the negative controls that keep the class from being widened into
+  "anything non-ASCII": all three are non-space to the reference. }
+procedure TestConditionalTruthiness;
+  function Cp(c: LongWord): string;
+  begin
+    Result := SpCodePointToStr(c);
+  end;
+  function Branch(const value: string): string;
+  begin
+    Result := RenderIn('#set %flag% = ' + value + #10'{?flag?THEN|ELSE}', '');
+  end;
+begin
+  Check('truthy/plain-text',      Branch('x'),        #10'THEN');
+  Check('truthy/ascii-space',     Branch(' '),        #10'ELSE');
+  Check('truthy/tab',             Branch(#9),         #10'ELSE');
+  Check('truthy/vertical-tab',    Branch(#11),        #10'ELSE');
+  Check('truthy/form-feed',       Branch(#12),        #10'ELSE');
+  { The half this port had wrong: all of these are whitespace to `/\S/u`. }
+  Check('truthy/nbsp',            Branch(Cp($00A0)),  #10'ELSE');
+  Check('truthy/ogham-space',     Branch(Cp($1680)),  #10'ELSE');
+  Check('truthy/en-quad',         Branch(Cp($2000)),  #10'ELSE');
+  Check('truthy/hair-space',      Branch(Cp($200A)),  #10'ELSE');
+  { U+2028 and U+2029 are in the class but never reach a #set VALUE: they end the directive
+    line in both engines, so the value is empty and the separator survives as text. Pinned
+    because the first measurement of them here was taken through a trim() that ate the
+    separator, and the wrong expectation went into this file before the suite rejected it.
+    The trailing `x` is what tells the two readings apart -- if the value ran to the end of
+    the line it would hold an 'x' and the branch would be THEN. }
+  Check('truthy/line-separator',  Branch(Cp($2028)),  Cp($2028) + #10'ELSE');
+  Check('truthy/para-separator',  Branch(Cp($2029)),  Cp($2029) + #10'ELSE');
+  Check('truthy/line-separator-ends-the-value',
+        Branch(Cp($2028) + 'x'), Cp($2028) + 'x'#10'ELSE');
+  Check('truthy/narrow-nbsp',     Branch(Cp($202F)),  #10'ELSE');
+  Check('truthy/medium-math',     Branch(Cp($205F)),  #10'ELSE');
+  Check('truthy/ideographic',     Branch(Cp($3000)),  #10'ELSE');
+  Check('truthy/bom',             Branch(Cp($FEFF)),  #10'ELSE');
+  { Negative controls: NOT whitespace, so the variable is truthy. A class widened to
+    "non-ASCII" would fail all three. }
+  Check('truthy/zero-width-space', Branch(Cp($200B)), #10'THEN');
+  Check('truthy/next-line',        Branch(Cp($0085)), #10'THEN');
+  Check('truthy/hangul-filler',    Branch(Cp($3164)), #10'THEN');
+  { A space among real text is still text, and inversion still inverts. }
+  Check('truthy/space-then-text',  Branch(Cp($00A0) + 'x'), #10'THEN');
+  Check('truthy/inverted-nbsp',
+        RenderIn('#set %flag% = ' + Cp($00A0) + #10'{?!flag?THEN|ELSE}', ''), #10'THEN');
+  { And the count slot decides the same way, which is the caller that found this. }
+  Check('truthy/count-slot-nbsp',
+        RenderIn('#set %flag% = ' + Cp($00A0) + #10'#set %n% = {?flag?1|2}'#10 +
+                 '{plural %n%: one|two}', 'en'), #10#10'two');
+end;
+
+{ Counting the form list the way the RENDERER will split it (spintax-js#66), and resolving
+  a conditional in the COUNT slot (spintax-js#67). The corpus carries 12 + 8 fixtures for
+  the two, all passing; what follows is only what no fixture can say.
+
+  Three things it cannot: the corpus schema has no knownVariables field, so the rule that a
+  host-declared name outranks a definition of the same name is gated nowhere else; nothing
+  in the schema distinguishes which of two definitions of one name survives; and no fixture
+  builds an input big enough to tell an iterative pass from a recursive one.
+
+  Measured on 2026-08-18, this engine, each line built and run before it was written down. }
+procedure TestPluralFormCounting;
+var deep, tail: string; i: Integer; tpl: TSpTemplate; ctx: TSpContext;
+begin
+  { The count is taken on the value the host may REPLACE, so a declared name makes it
+    unknowable however the template defines it. The line below it is the control: without
+    the declaration the very same template is judged, and judged invalid. }
+  Check('formcount/host-name-outranks-a-def',
+        Diags('#def %x% = a|b'#10'{plural 1: one|%x%}', ['x']), '');
+  Check('formcount/same-template-without-the-host-name',
+        Diags('#def %x% = a|b'#10'{plural 1: one|%x%}', []), 'plural.arity/error');
+
+  { Two definitions of one name: the LAST value is the one every reader sees, because the
+    reference's extractDirectives returns maps. Here that is the difference between a
+    verdict and none -- `one|a|b|c` is four forms where ru wants three, while the first
+    value alone would have been exactly right. This port used to walk every occurrence and
+    resolve to the FIRST, which invented diagnostics the family does not give and lost
+    others it does. }
+  Check('formcount/last-definition-is-the-one-counted',
+        DiagsIn('#def %f% = a|b'#10'#def %f% = a|b|c'#10'{plural 1: one|%f%}', 'ru'),
+        'invalid: definition.duplicate-name/error plural.arity/error');
+  Check('formcount/first-definition-alone-would-be-valid',
+        DiagsIn('#def %f% = a|b'#10'{plural 1: one|%f%}', 'ru'), 'valid: ');
+
+  { A cycle in the form list exhausts the expansion budget, and the budget is a retreat:
+    no count, therefore no count-based verdict. The circular-reference errors are the
+    validator's own, reported by the definition graph and unrelated to the plural. }
+  Check('formcount/a-cycle-files-no-plural-verdict',
+        DiagsIn('#set %a% = %b%'#10'#set %b% = %a%'#10'{plural 1: one|%a%}', 'en'),
+        'invalid: variable.circular-reference/error variable.circular-reference/error');
+
+  { The count slot resolves conditionals before the numeric test. A `{?` that is NOT a
+    conditional is left exactly as written -- to the parser it is an enumeration, and
+    enumerations resolve after plurals -- so the block is still erased. }
+  Check('formcount/malformed-conditional-still-erases',
+        RenderIn('#set %n% = {?1|2}'#10'{plural %n%: one|two}', 'en'), #10);
+
+  { The same resolution on the compiled path: SpCompile parses once and SpRenderCompiled
+    walks the same plural node, so this cannot diverge -- which is worth one assertion,
+    because it is the path a host renders in a loop. }
+  tpl := SpCompile('#set %flag% ='#10'#set %n% = {?flag?1|2}'#10'{plural %n%: one|two}');
+  try
+    ctx := Default(TSpContext);
+    ctx.Locale := 'en'; ctx.PostProcess := False; ctx.Rng := TFirstRng.Create;
+    try
+      Check('formcount/compiled-resolves-the-count-slot', SpRenderCompiled(tpl, ctx),
+            #10#10'two');
+    finally ctx.Rng.Free; end;
+  finally tpl.Free; end;
+
+  { 20 000 nested conditionals in one count slot, and it must not recurse: the reference
+    measured a RangeError at ~9000 levels before its pass was made iterative, and SpRender
+    must not fail on content. 6 ms here.
+
+    The SECOND of these is the control, and it is why the pair exists. With the flag empty
+    the else branch is three characters and the nested chain is never walked -- so the
+    first line alone measures the cheap half and says nothing about the other. Truthy, the
+    same shape is QUADRATIC (2000 levels 54 ms, 4000 210 ms, 8000 913 ms), because the
+    separator scan re-reads the body at every level. The reference is quadratic too and
+    slower (393 / 1426 / 4510 ms), and upstream calls bounding such input a host job, so
+    this is pinned as behaviour and recorded in spec sec.5.6 as a cost -- not fixed here.
+    Found by Codex review, 2026-08-18; 2000 levels keeps the suite fast. }
+  deep := ''; tail := '';
+  for i := 1 to 20000 do begin deep := deep + '{?flag?'; tail := tail + '|9}'; end;
+  Check('formcount/deep-nesting-resolves-without-recursing',
+        RenderIn('#set %flag% ='#10'#set %n% = ' + deep + '2' + tail + #10 +
+                 '{plural %n%: one|two}', 'en'), #10#10'two');
+  deep := ''; tail := '';
+  for i := 1 to 2000 do begin deep := deep + '{?flag?'; tail := tail + '|9}'; end;
+  Check('formcount/deep-nesting-taken-branch-also-resolves',
+        RenderIn('#set %flag% = y'#10'#set %n% = ' + deep + '2' + tail + #10 +
+                 '{plural %n%: one|two}', 'en'), #10#10'two');
+
+  { The expansion budget decides a VERDICT, so both halves of how it is measured matter, and
+    each of these three lines is a shape that got one of them wrong.
+
+    It bounds GROWTH, not total length: a form list of 65 KB of ordinary text is plainly two
+    forms and earns plural.arity under ru. A total-length ceiling called it unknowable and
+    returned valid -- ported here from upstream's work in progress, and corrected when
+    upstream's own review caught it. No corpus fixture has it. }
+  deep := StringOfChar('a', 65 * 1024);
+  Check('formcount/a-long-plain-form-list-is-still-counted',
+        DiagsIn('{plural 2: one|' + deep + '}', 'ru'), 'invalid: plural.arity/error');
+
+  { And it is counted in UTF-16 code units, the way the reference counts. 40 000 Cyrillic
+    code points are 80 KB of UTF-8 and 40 000 units: inside the reference's budget, outside
+    a byte-counted one. Measured against @spintax/core, 2026-08-18 -- it reports
+    plural.arity here, and a byte count made this port silent. The only assertion in this
+    file that can tell the two units apart. }
+  deep := SpCodePointToStr($0430);
+  while Length(deep) < 80000 do deep := deep + deep;
+  deep := Copy(deep, 1, 80000);
+  Check('formcount/ceiling-counts-units-not-bytes',
+        DiagsIn('#def %x% = ' + deep + #10'{plural 1: %x%}', 'en'),
+        'invalid: plural.arity/error');
+
+  { One pass can explode before anything is measured: %a% holding 20 000 refs to %b%, and
+    %b% holding 5 000 refs to %c%, is 60 KB after pass 1 -- within budget, so the walk
+    continues -- and pass 2 asks for 20 000 x 5 000 references, 300 MB, out of a 75 KB
+    template. Acyclic, so nothing else catches it; the corpus's two explosion cases both
+    double per pass and are stopped by measuring after the pass. 3.5 s here before the
+    budget was enforced DURING the pass, and on a 32-bit build the next size up is an
+    out-of-memory crash. Codex review, 2026-08-18. }
+  deep := '%b%';
+  while Length(deep) < 60000 do deep := deep + deep;
+  deep := Copy(deep, 1, 60000);
+  tail := '%c%';
+  while Length(tail) < 15000 do tail := tail + tail;
+  tail := Copy(tail, 1, 15000);
+  Check('formcount/one-pass-explosion-is-bounded',
+        DiagsIn('#set %a% = ' + deep + #10'#set %b% = ' + tail + #10'#set %c% = z'#10 +
+                '{plural 2: one|%a%}', 'en'), 'valid: ');
+
+  { A 9000-link acyclic #set chain named from a form list -- a 205 KB template, and the
+    exact size at which the reference's own walk threw RangeError before it was made
+    iterative (the Python port died at ~1000). This port's walk was built iterative, and the
+    chain outruns the 51-pass budget, so the answer is silence rather than a crash: 289 ms,
+    no diagnostic. The corpus has the two explosion cases; nothing in it has a chain this
+    long, and a recursive walk would pass every one of those and die here. }
+  deep := '';
+  for i := 1 to 9000 do deep := deep + '#set %v' + IntToStr(i) + '% = %v' + IntToStr(i + 1) + '%'#10;
+  Check('formcount/long-chain-answers-instead-of-overflowing',
+        DiagsIn(deep + '#set %v9001% = t'#10'{plural 2: one|%v1%}', 'en'), 'valid: ');
+
+  { An UNBALANCED count slot is legal input: only the whole plural block has to balance,
+    and the slot is cut at the first ':'. Matching every brace in one pass is what keeps
+    that cheap -- searching for the matching close per '{?' rescans to the end of the
+    string each time it fails, which the reference measured at 3 seconds on 78 KB. 40 000
+    unmatched openers cost 1 ms here; the slot is not numeric, so the block is erased. }
+  Check('formcount/unbalanced-count-slot-is-cheap-and-erases',
+        RenderIn('#set %flag% ='#10'#set %n% = ' + StringOfChar('{', 40000) +
+                 '{?flag?1|2}'#10'{plural %n%: one|two}', 'en'), #10#10);
 end;
 
 function DiagPos(const tmpl, locale, code: string; const knownInc: array of string): string;
@@ -1809,6 +2011,8 @@ begin
   TestPermutationConfig;
   TestPluralFallbacks;
   TestPluralLocaleMissing;
+  TestPluralFormCounting;
+  TestConditionalTruthiness;
   TestIncludes;
   TestIncludeAnchor;
   TestIncludeResolver;

@@ -26,6 +26,32 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       order shows them in a different order than the reference would, and the corpus does not
       gate order.
 
+- [ ] **Deeply nested conditionals in a plural count slot are quadratic when the branch is
+      TAKEN.** `RecognizeConditional` finds the separator by scanning the body, so N nested
+      truthy conditionals scan N + (N−1) + … characters: 2000 levels 54 ms, 4000 210 ms,
+      8000 913 ms (2026-08-18). The reference shares it and is slower (393 / 1426 / 4510 ms),
+      and upstream's own #67 commit says deep balanced nesting stays super-linear in every
+      engine and that bounding input is a host job — the reference deployment caps a template
+      at 8192 characters. Recorded rather than fixed: an exact fast version needs the
+      separator scan's clamped, type-agnostic bracket counter precomputed, and a second
+      reading of that rule is what the one-recognizer discipline exists to prevent. Both
+      branches are now pinned in `TestPluralFormCounting`; spec §5.6 carries the numbers.
+      Found by Codex review, which also caught that the first version of that section
+      claimed linearity while measuring only the branch that cannot exhibit the cost.
+
+- [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
+      in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
+      `#set %a% = {x|y}` + `#set %b% = {x|y}` + `{plural %a% %b%: one|two}` gives
+      `["plural.count-macro","plural.count-macro"]` from `@spintax/core` and one diagnostic
+      here — this loop `Break`s at the first tainted name, the reference's does not. Both
+      anchor at the same span, so the second is a duplicate at identical coordinates, and
+      the verdict is `invalid` either way. Not corpus-gated: expected diagnostics are matched
+      as a SUBSET, so one where two are expected passes. Pre-existing, unrelated to the
+      count-expansion work, and the same shape as the lesson AGENTS.md already records about
+      `detectCycle` — a diagnostic COUNT can be a property of the walk. Removing the `Break`
+      is the fix; it needs the two-cursor claim in §5.5 re-checked, since `count-macro` would
+      no longer fire at most once per block.
+
 - [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
       tests only whether a variable is SET, so the dialect converter below expresses an
       n-way correlated choice as n−1 definitions and a chain of n−1 nested conditionals per
@@ -34,6 +60,40 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **Conditional truthiness over the full whitespace class** (2026-08-18, found by Codex
+      review of the two adoptions below). `{?...}` truthiness is parity-REQUIRED by spec §3,
+      and every other engine decides it with `/\S/u`; this port tested six ASCII characters
+      byte by byte, so a variable holding one U+00A0 was truthy here and falsy everywhere
+      else and the wrong branch rendered. `IsJsSpaceCp` enumerates the class and
+      `ConditionalTakesThen` walks code points. No fixture carries a Unicode space and
+      neither did any of the 500 local checks; 22 now do, measured against the reference,
+      with U+200B / U+0085 / U+3164 as the controls that keep the class from widening into
+      "non-ASCII". Spec §5.7. Worth reporting upstream only as a note — the reference is the
+      one that is right here.
+
+- [x] **Caught up with the family's two plural fixes** (2026-08-18), corpus
+      `PASS=253 FAIL=0 SKIP=4`, 528 local checks in both builds.
+      [spintax-js#66](https://github.com/investblog/spintax-js/issues/66): the form count is
+      now taken on the list the renderer will split -- definition values substituted first,
+      every reference per pass -- and only where it is provably invariant; a bracket, a
+      `KnownVariables` name, an undefined reference or a chain past 51 passes files no
+      count-based verdict at all -- and at most 64 KB of expansion, the ceiling upstream
+      added mid-adoption after a 62-character memory bomb (`#set %a% = %b% %b%` over
+      `#set %b% = %a% %a%`, doubling every pass) crashed every engine in the family
+      including this one. Three things about that budget are verdicts, and each was wrong
+      here once: it bounds GROWTH rather than total length (a 65 KB plain form list is still
+      two forms -- ported from upstream's work in progress before their own review caught
+      it); it is counted in UTF-16 units, because a byte count made 40 000 Cyrillic
+      characters a different verdict here than in the reference; and it is enforced DURING a
+      pass, because one pass can build 300 MB out of a 75 KB acyclic template before any
+      check runs, 3.5 s to 35 ms. The last two were Codex-review findings. This engine is where the original bug was found, a day earlier,
+      while adopting `plural.locale-missing`; the two checks that pinned the wrong answers
+      were written to fail when the family fixed it, and they did.
+      [spintax-js#67](https://github.com/investblog/spintax-js/issues/67): a conditional in
+      the COUNT slot now resolves before the numeric test, so a valid template is no longer
+      silently erased -- textually, over spans, never rendered, because enumerations resolve
+      after plurals. Spec §5.5 and §5.6.
 
 - [x] **`plural.locale-missing` adopted, and it woke a latent quadratic** (2026-08-18).
       Issue #1, filed from [spintax-js#65](https://github.com/investblog/spintax-js/issues/65)

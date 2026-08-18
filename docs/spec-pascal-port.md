@@ -67,13 +67,14 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(235 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
-pinned from this port's divergences, and once more with `plural.locale-missing`, §5.5):
+(257 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
+pinned from this port's divergences, once more with `plural.locale-missing` (§5.5), and
+again the next day with the two plural fixes §5.5 and §5.6 describe):
 
 | fixture file | cases | passing |
 |---|---|---|
-| render-semantics | 72 | 72 |
-| validate | 55 | 55 |
+| render-semantics | 80 | 80 |
+| validate | 69 | 69 |
 | render-postprocess | 43 | 43 |
 | render-deterministic | 16 | 16 |
 | comments | 13 | 13 |
@@ -82,7 +83,7 @@ pinned from this port's divergences, and once more with `plural.locale-missing`,
 | render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 
-**`PASS=231 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=253 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -700,23 +701,103 @@ new check inherits that branch's `Continue` rather than inventing a second probl
 default arity is asked of the same table the renderer uses rather than written as `2`: the
 validator and the renderer disagreeing about that number is the whole of the bug.
 
-**One qualification, and it is the family's, not this port's.** The form count the validator
-uses is the pipes it can SEE; the renderer counts them after expanding `%variables%`. So a
-form list grown or shrunk by a reference is judged on the wrong number, in both directions —
-measured in both engines on 2026-08-18:
+**The qualification this section shipped with is now closed, by the family.** The form count
+the validator used was the pipes it could SEE, while the renderer counts them after expanding
+`%variables%` — so a form list grown or shrunk by a reference was judged on the wrong number,
+in both directions. Measured here on 2026-08-18, reported upstream, fixed in all five engines
+the next day as [`spintax-js#66`](https://github.com/investblog/spintax-js/issues/66):
 
-| template | validate | render |
+| template | validate, before | validate, now | render |
+|---|---|---|---|
+| `#def %tail% = few\|many` + `{plural 2: one\|%tail%}` | silent | `plural.locale-missing` | fullwidth fallback |
+| `#def %forms% = one\|many` + `{plural 2: %forms%}` | `plural.locale-missing` | silent | resolves fine |
+
+Both rows now agree with what the engine does with the same template, which is the whole
+point; under `locale=ru` the first row was a `plural.arity` **error** on a template that
+renders correctly. The two checks that pinned the old answers were written so that a family
+fix would surface here as a failure rather than as silence, and that is exactly how this
+arrived.
+
+`ExpandFormsForCounting` substitutes definition values into the form list and splits the
+result — every reference per pass, as the renderer's expansion does, for at most 51 passes
+**and at most 65 536 UTF-16 code units of GROWTH**. Passes alone do not bound the work:
+`#set %a% = %b% %b%` over `#set %b% = %a% %a%` doubles the text every pass, so 51 of them is
+2^51, and that 62-character template took `validate()` out with an out-of-memory crash in
+**every** engine of the family, this one included — it reached the corpus while this port was
+being caught up, as two new fixtures, one with a cycle to catch it and one without. The walk
+over the `#set` chain was built iterative here from the start, which is the other half of the
+same upstream fix; a 9000-link chain is pinned locally because the reference's recursive walk
+threw at exactly that size.
+
+The budget decides a verdict, so each of the following is one — and this port got all three
+wrong once before getting them right. Two were Codex-review findings here; the third was
+upstream's own review, which landed while this section was being written.
+
+**It bounds GROWTH, not total length.** A form list of 65 KB of ordinary text is plainly two
+forms and must keep earning `plural.arity` under `ru`. This port took the ceiling from
+upstream's work in progress, where it was still a cap on total length, and carried that
+regression for the length of one review round; no corpus fixture covers it. The budget is now
+`Utf16Len(formsRaw) + 65 536` — expansion that ADDS this much is a graph exploding, while a
+long form list is just long.
+
+**It is counted in UTF-16 code units, not bytes.** Exceeding it suppresses `plural.arity`, so
+the budget is a verdict, and under FPC `Length` is bytes: 40 000 Cyrillic characters are
+80 KB and 40 000 units, so a byte count left this port silent where the reference reports the
+error. `Utf16Len` counts what the reference's `.length` counts — every non-continuation byte
+is one unit, an astral lead is two — and under a UTF-16 compiler it is `Length` itself. The
+comment that used to sit on the constant called the difference "a safety bound rather than a
+verdict"; it was neither safe nor a non-verdict.
+
+**And it is enforced DURING a pass, because one pass can explode before anything is
+measured.** `#set %a%` holding 20 000 references to `%b%`, and `%b%` holding 5 000 to
+`%c%`, is 60 KB after pass one — within budget, so the walk continues — and pass two asks
+for 20 000 × 5 000 references: **300 MB out of a 75 KB template**, acyclic, so the cycle
+detector never sees it. Measured at 3.5 s here, and on a 32-bit build the next size up is an
+out-of-memory crash rather than a slow answer. The pass is therefore built by hand, counting
+units as it goes and stopping at the budget. 3.5 s → 35 ms. Upstream found and fixed the same
+thing the same day, independently.
+
+**Only where the count is provably invariant.** A value carrying any bracket suppresses the
+count-based verdicts rather than guessing: `{a|b}` really does always freeze to one form, but
+the false branch of `{?flag?a|b|c}` freezes as `b|c`, which is two, and the two cannot be told
+apart without evaluating the construct. Predicting the roll was tried first upstream and
+produced a fresh crop of false errors. Construct-free is a **sufficient** condition,
+deliberately not a necessary one. A name the host declares (`KnownVariables`), a reference the
+template does not define, and a chain past the budget suppress it too — the same retreat
+`plural.locale-missing` is built on: no verdict on a fact the caller never claimed.
+
+One case is not a prediction. A `#set` named **directly** in the form slot is substituted
+verbatim and is still spintax when the plural is decided, so its brackets keep earning
+`plural.nested-brackets` — and "direct" is a property of the PATH, not of one hop: `%a%` →
+`%b%` never crosses a `#def`, so the macro text arrives whole. Through a `#def` it is rolled
+first and earns nothing. A stray closing bracket counts as much as an opener, because
+`CheckBrackets` stays quiet when it balances against an opener elsewhere while every
+renderer's plural guard rejects all four.
+
+Two things here no fixture can express, so `TestPluralFormCounting` carries them: the corpus
+schema has no `knownVariables` field, and nothing in it distinguishes **which** of two
+definitions of one name survives — the maps keep the LAST, and that is the difference between
+a verdict and none.
+
+**What it costs, with the control run.** Expanding a form list is real work where the raw
+count was a pipe scan, so it was measured against the same documents on the previous commit,
+not asserted (2000 plural blocks each, 2026-08-18):
+
+| document | before | after |
 |---|---|---|
-| `#def %tail% = few\|many` + `{plural 2: one\|%tail%}` | silent | fullwidth fallback |
-| `#def %forms% = one\|many` + `{plural 2: %forms%}` | `plural.locale-missing` | resolves fine |
+| plain `a\|b\|c` blocks, no reference | 6 ms | 5 ms |
+| one `#def` holding a form list, named by every block | 8 ms | 4 ms |
+| a 20-link `#set` chain named by every block | 8 ms | 5 ms |
+| 2000 **distinct** slots over that chain | 38 ms | 156 ms |
 
-The reference does exactly the same, so this is a shared contract hole rather than a
-divergence, and it predates the warning: `plural.arity` has always had it, where the
-consequence is worse — with `locale=ru` the first row is a `plural.arity` **error** on a
-template that renders correctly. `TestPluralLocaleMissing` pins both rows as they are, so a
-family fix shows up here as a failing test rather than as silence. Fixing it properly means
-counting after expansion in the validator, which is a family change: reference and corpus
-first. Found by Codex review of the adoption commit.
+The count is memoized on the raw form slot, because the answer depends on nothing else once
+the document's definitions are read — and naming one `#def` from every block is exactly what
+a form list held in a definition is FOR, so that is the shape to make cheap. Per block it
+measured 140 ms against 5 ms on the third row. The last row is the honest worst case, where
+no two blocks share a slot and the cache never hits: linear in blocks × chain length, 4× the
+raw scan it replaced, on a document no generator has a reason to emit. The reference pays the
+same shape (its own pass loop is 51 replaces over the slot) about 2× faster in constant terms
+— §3 does not ask performance to match.
 
 **What the corpus can and cannot say.** `validate/plural-no-locale-arity-mismatch-warns`
 pins that the warning is emitted; expected diagnostics are matched as a **subset**, so the
@@ -745,6 +826,114 @@ arity / locale-missing are mutually exclusive. `TestPluralLocaleMissing` pins th
 COORDINATES and nothing else: the single-cursor version answered them correctly too, since a
 cursor asked for an offset it has passed restarts rather than lying. Only this measurement
 separates the two, which is why it is written down here.
+
+### 5.6 A conditional in the count slot, resolved before the numeric test
+
+Adopted 2026-08-18 from [`spintax-js#67`](https://github.com/investblog/spintax-js/issues/67).
+
+```
+#set %flag% =
+#set %n% = {?flag?1|2}
+start {plural %n%: one|two} end
+```
+
+rendered `start  end` here and in the TS reference — no fallback braces, no diagnostic,
+`SpValidate` returning nothing. Both PHP engines have always rendered `start two end`: they
+run the conditional stage over the whole document **before** plurals, so a plain number
+reaches the slot. This engine expanded `%variables%` into the raw slot and left constructs
+literal, so the conditional survived, failed the numeric test, and the block was **erased**.
+`plural.count-macro` exempts conditionals *because* they resolve before plurals — the
+validator was written to a renderer behaviour nobody had implemented.
+
+`ResolveCountConditionals` runs over the var-expanded count slot, before every check, which
+is what makes the lenient fallback's text comparable across engines: it prints the count as
+the plural stage saw it, resolved.
+
+**The branch is substituted, never rendered.** Enumerations and permutations resolve AFTER
+plurals, so a branch yielding `{a|b}` still reaches the numeric test intact and still erases
+the block, exactly as the plugin does; rendering it would spin it to `a` and invent a count
+no engine has. Four of the eight corpus fixtures are negative controls for precisely this —
+an enum in the count slot still erases, a branch resolving to text still erases, a resolved
+branch with text beside it still erases, because the slot is tested whole.
+
+The **form** slot is deliberately untouched. There the engines genuinely disagree, and
+picking a side is not a bug fix; `ExpandFormsForCounting` declines to judge a form list whose
+macro chain carries a conditional for the same reason (§5.5).
+
+**Iterative over spans, and that is a cost decision, not a style one.** The taken branch is a
+SPAN of the source, never a copy, and the untaken one is skipped, so the pass never copies a
+branch out. Recursing into the branch would die on deep input — the reference measured a
+`RangeError` at ~9000 levels, and `SpRender` must not fail on content. Searching for the
+matching brace per `{?` would be quadratic, and an **unbalanced count slot is legal input**:
+only the whole `{plural …}` block has to balance, and the slot is cut at the first `:`.
+`MatchBraces` pairs every brace in one pass instead. Measured here: 40 000 unmatched openers,
+**1 ms**; 20 000 nested conditionals whose branch is NOT taken, **6 ms**.
+
+**Deeply nested conditionals whose branch IS taken are quadratic, and this section first
+claimed otherwise.** `RecognizeConditional` finds the separator by scanning the body, so N
+nested truthy conditionals scan N + (N−1) + … characters. Measured 2026-08-18: 2000 levels
+**54 ms**, 4000 **210 ms**, 8000 **913 ms** — four times the cost for twice the depth. The
+first version of this text said "every character is visited at most once" and quoted only the
+6 ms above; that measurement was taken with the flag EMPTY, so the else branch was a handful
+of characters and the nested traversal never ran. A claim about a cost, measured on the one
+shape that cannot exhibit it — the same defect this port has recorded before, in the
+sentence right above the code that had it.
+
+The cost is the family's, not this port's: the reference scans the body per level too, and is
+slower — 2000 levels **393 ms**, 4000 **1426 ms**, 8000 **4510 ms**, measured the same day.
+Upstream's own commit for #67 says deep balanced nesting stays super-linear in every engine
+and that bounding input is a host job (§9.3); the reference deployment caps a template at
+8192 characters. So it is recorded here rather than fixed: an exact fast version needs the
+separator scan's clamped, type-agnostic bracket counter precomputed, and a second reading of
+that rule is what the ONE-recognizer discipline below exists to prevent. `TestPluralFormCounting`
+now carries BOTH branches at a size the suite can afford, so the shape cannot go unmeasured
+again.
+
+The conditional grammar stays in ONE recognizer. `RecognizeConditional` reports offsets and
+`TryParseConditional` materializes the branches from them; a second copy of those rules is
+how the family's #55–#57 syntax divergences happened.
+
+### 5.7 Conditional truthiness is decided over the FULL whitespace class
+
+`{?…}` truthiness is named in §3 as parity-REQUIRED. Every other engine in the family
+decides it with `/\S/u` — the TypeScript reference, both PHP engines (`is_truthy` is
+`preg_match('/\S/u', …)`) and the Python port, which writes the class out as `JS_SPACE`
+rather than trust Python's Unicode `\s`. This port tested six ASCII characters, **byte by
+byte**, so a variable holding one U+00A0 was truthy here and falsy everywhere else, and the
+other branch rendered.
+
+Fixed 2026-08-18: `IsJsSpaceCp` enumerates JavaScript's `\s` — `\t \n \v \f \r`, space,
+U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF — and
+`ConditionalTakesThen` walks the value as CODE POINTS through `SpCodePointAt`. A byte scan
+sees NBSP as `$C2 $A0`, neither of which is an ASCII space, which is exactly how the
+divergence survived. The ASCII half of the class is unchanged, so nothing that passed before
+moves.
+
+The class is enumerated, not taken from the RTL, for the reason the Unicode tables are
+baked: the answer must not depend on which Unicode version the host compiler shipped. U+200B,
+U+0085 and U+3164 are deliberately **outside** it — all three are non-space to the reference
+and make a variable truthy, and they are in `TestConditionalTruthiness` as the controls that
+stop the class drifting into "anything non-ASCII".
+
+**Why nothing caught it.** No corpus fixture carries a Unicode space, and neither did any of
+the 500 local checks. It surfaced when a Codex review of the §5.6 work noticed the count slot
+had given the predicate a second caller. The nearest thing to a justification for leaving it
+was a line in the agent charter calling the ASCII narrowing a family convention — true of the
+`#include` anchor, where the reference writes out `[ \t\n\r\f\x0B]` itself, and false here.
+A wrong justification is worse than wrong code, so that line now says which site it means.
+
+U+2028 and U+2029 are in the class but never reach a `#set` value: they end the directive
+line in both engines, so the value is empty and the separator survives as text. Both are
+pinned, along with a `…\u2028x` case that tells the two readings apart — the first
+measurement of them here was taken through a JavaScript `trim()` that ate the separator, and
+the wrong expectation reached the test file before the suite rejected it.
+
+**Measured by differential**, not only by cases: 6000 generated templates of definitions and
+plural blocks, the corpus generated ONCE and fed to both engines, Unicode spaces and their
+two non-space controls in the value pool. Zero validate differences and zero render
+differences (12 cases whose reference output moves between six seeds are skipped —
+selection is a §3 non-goal). The same harness against the previous commit reports 2328 and
+931 differences, which is the control run that makes the zero mean something.
 
 ## 6. Trust model
 

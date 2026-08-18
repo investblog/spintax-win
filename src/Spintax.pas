@@ -665,14 +665,19 @@ begin
   parts.Add(Copy(inner, start, Length(inner) - start + 1));
 end;
 
-{ First top-level '|' in a conditional body (single counter clamped at 0); 0 if none. }
-function FirstTopLevelPipe(const body: string): Integer;
+{ First top-level '|' in text[from .. upto), a single counter clamped at 0; 0 if none.
+
+  Ranged rather than taking the body as a string of its own, because the count-slot pass
+  below walks SPANS of the template: copying the branch out at every level of nesting is
+  what makes a deeply nested template quadratic, and that template arrives from a public
+  Worker in the family's reference deployment. }
+function FirstTopLevelPipe(const text: string; from, upto: Integer): Integer; overload;
 var depth, j: Integer; ch: Char;
 begin
   depth := 0;
-  for j := 1 to Length(body) do
+  for j := from to upto - 1 do
   begin
-    ch := body[j];
+    ch := text[j];
     if (ch = '{') or (ch = '[') then Inc(depth)
     else if (ch = '}') or (ch = ']') then
     begin
@@ -681,6 +686,53 @@ begin
     else if (ch = '|') and (depth = 0) then Exit(j);
   end;
   Result := 0;
+end;
+
+function FirstTopLevelPipe(const body: string): Integer; overload;
+begin
+  Result := FirstTopLevelPipe(body, 1, Length(body) + 1);
+end;
+
+{ A recognized conditional -- `{?name?then|else` -- as OFFSETS into the string it was found
+  in; no branch text is copied out. BodyStart is the first character past `?name?`, and
+  SepIndex the top-level '|', or 0 when the branch stands alone. }
+type
+  TCondHead = record
+    Name: string;
+    Inverted: Boolean;
+    BodyStart: Integer;
+    SepIndex: Integer;
+  end;
+
+{ Recognize `?VAR?then|else` / `?!VAR?then` in text[contentStart .. contentEnd) -- the span
+  between the braces, contentStart pointing at the leading '?' -- or False if malformed.
+
+  THE one place the conditional grammar lives. The renderer needs the branches unparsed as
+  well as parsed: the plural count slot resolves conditionals textually, without resolving
+  the enumerations a branch may carry. A second copy of these rules is exactly how the
+  family's #55-#57 syntax divergences happened, so TryParseConditional reads this too. }
+function RecognizeConditional(const text: string; contentStart, contentEnd: Integer;
+  out head: TCondHead): Boolean;
+var p, s: Integer;
+begin
+  Result := False;
+  head.Name := ''; head.Inverted := False; head.BodyStart := 0; head.SepIndex := 0;
+  p := contentStart + 1; // past the leading '?'
+  if (p <= Length(text)) and (text[p] = '!') then begin head.Inverted := True; Inc(p); end;
+
+  if (p > Length(text)) or (not CharInSet(text[p], ['A'..'Z', 'a'..'z', '_'])) then Exit;
+  s := p; Inc(p);
+  while (p <= Length(text)) and IsAsciiWord(text[p]) do Inc(p);
+  { the name may not run past the content: `{?ab` inside a span ending at 'a' is not a
+    conditional, however the text continues outside the span }
+  if p > contentEnd then Exit;
+  head.Name := Copy(text, s, p - s);
+
+  if (p > Length(text)) or (text[p] <> '?') then Exit; // required '?' after the name
+  Inc(p);
+  head.BodyStart := p;
+  head.SepIndex := FirstTopLevelPipe(text, p, contentEnd);
+  Result := True;
 end;
 
 { ─── a growable buffer ───────────────────────────────────────────────────────
@@ -1323,29 +1375,18 @@ begin
 end;
 
 function TryParseConditional(const content: string): TNode;
-var p, sep: Integer; inverted: Boolean; nm, body, thenRaw, elseRaw: string;
+var sep: Integer; head: TCondHead; body, thenRaw, elseRaw: string;
 begin
   Result := nil;
-  p := 2; // past leading '?'
-  inverted := False;
-  if (p <= Length(content)) and (content[p] = '!') then begin inverted := True; Inc(p); end;
-  nm := '';
-  if (p <= Length(content)) and (CharInSet(content[p], ['A'..'Z', 'a'..'z', '_'])) then
-  begin
-    nm := nm + content[p]; Inc(p);
-    while (p <= Length(content)) and IsAsciiWord(content[p]) do begin nm := nm + content[p]; Inc(p); end;
-  end
-  else Exit;
-  if (p > Length(content)) or (content[p] <> '?') then Exit;
-  Inc(p);
-  body := Copy(content, p, MaxInt);
-  sep := FirstTopLevelPipe(body);
+  if not RecognizeConditional(content, 1, Length(content) + 1, head) then Exit;
+  body := Copy(content, head.BodyStart, MaxInt);
+  if head.SepIndex = 0 then sep := 0 else sep := head.SepIndex - head.BodyStart + 1;
   if sep < 1 then begin thenRaw := body; elseRaw := ''; end
   else begin thenRaw := Copy(body, 1, sep - 1); elseRaw := Copy(body, sep + 1, MaxInt); end;
   Result := TNode.Create;
   Result.Kind := nkConditional;
-  Result.CondName := nm;
-  Result.CondInverted := inverted;
+  Result.CondName := head.Name;
+  Result.CondInverted := head.Inverted;
   Result.CondThen := ParseSequence(thenRaw);
   Result.CondElse := ParseSequence(elseRaw);
 end;
@@ -1761,15 +1802,58 @@ begin
   end;
 end;
 
-function RenderConditional(node: TNode; const opts: TRenderOpts): string;
-var val: string; baseTruthy, truthy: Boolean; i: Integer;
+{ JavaScript's `\s`, written out.
+
+  Every other engine in the family decides conditional truthiness with `/\S/u` -- the two
+  PHP ones, the Python port and the reference alike -- so a variable holding only U+00A0 is
+  FALSY to all of them. This port tested six ASCII characters, BYTE by byte, and called it
+  truthy: the other branch rendered. Spec sec.3 names conditional truthiness as
+  parity-REQUIRED, and no fixture carries a Unicode space, so nothing caught it until a
+  Codex review of the count-slot work pointed at the predicate the new pass had started
+  calling too.
+
+  Enumerated rather than taken from the RTL, for the same reason the Unicode tables are
+  baked: the answer must not depend on which Unicode version the host was built against.
+  U+200B, U+0085 and U+3164 are deliberately NOT here -- measured against the reference,
+  all three are non-space and make a variable truthy. }
+function IsJsSpaceCp(cp: LongWord): Boolean;
+begin
+  Result := (cp = $09) or (cp = $0A) or (cp = $0B) or (cp = $0C) or (cp = $0D) or (cp = $20)
+         or (cp = $A0) or (cp = $1680) or ((cp >= $2000) and (cp <= $200A))
+         or (cp = $2028) or (cp = $2029) or (cp = $202F) or (cp = $205F) or (cp = $3000)
+         or (cp = $FEFF);
+end;
+
+{ Truthy = the raw var value is set and holds a non-whitespace char (plugin is_truthy).
+  Split out from RenderConditional because the plural count slot decides the same branch
+  without rendering it.
+
+  Walked as CODE POINTS, not units: a byte scan sees NBSP as $C2 $A0, neither of which is
+  an ASCII space, and answers the opposite of the family. }
+function ConditionalTakesThen(const name: string; inverted: Boolean;
+  const opts: TRenderOpts): Boolean;
+var val: string; baseTruthy: Boolean; i, cpLen: Integer;
 begin
   baseTruthy := False;
-  if opts.Vars.TryGetValue(LowerAscii(node.CondName), val) then
-    for i := 1 to Length(val) do
-      if not (CharInSet(val[i], [' ', #9, #10, #13, #12, #11])) then begin baseTruthy := True; Break; end;
-  if node.CondInverted then truthy := not baseTruthy else truthy := baseTruthy;
-  if truthy then Result := RenderNodes(node.CondThen, opts)
+  if opts.Vars.TryGetValue(LowerAscii(name), val) then
+  begin
+    i := 1;
+    while i <= Length(val) do
+    begin
+      if not IsJsSpaceCp(SpCodePointAt(val, i, cpLen)) then
+      begin
+        baseTruthy := True; Break;
+      end;
+      Inc(i, cpLen);
+    end;
+  end;
+  if inverted then Result := not baseTruthy else Result := baseTruthy;
+end;
+
+function RenderConditional(node: TNode; const opts: TRenderOpts): string;
+begin
+  if ConditionalTakesThen(node.CondName, node.CondInverted, opts) then
+    Result := RenderNodes(node.CondThen, opts)
   else Result := RenderNodes(node.CondElse, opts);
 end;
 
@@ -1804,11 +1888,132 @@ begin
   Result := res;
 end;
 
+{ Match every opening brace to its closing brace in ONE pass: for each of them the offset
+  of the brace that closes it, or 0.
+
+  Equivalent to searching for the matching close per '{', and that is the point -- the
+  per-brace search rescans to the end of the string every time it fails to match, and an
+  UNBALANCED count slot is legal input: only the whole `{plural ...` block has to balance,
+  and the slot is cut at the first ':'. The reference measured 3 seconds on a 78 KB slot
+  that way, against 42 ms for this. }
+function MatchBraces(const text: string): TArray<Integer>;
+var opens: TArray<Integer>; top, i: Integer;
+begin
+  Result := nil; // SetLength reads the result variable; -Sew rejects it uninitialised
+  SetLength(Result, Length(text) + 1); // zero-filled: 0 means "no matching close"
+  SetLength(opens, Length(text) + 1);
+  top := 0;
+  for i := 1 to Length(text) do
+  begin
+    if text[i] = '{' then begin opens[top] := i; Inc(top); end
+    else if text[i] = '}' then
+    begin
+      if top > 0 then begin Dec(top); Result[opens[top]] := i; end;
+    end;
+  end;
+end;
+
+{ Resolve conditionals in the plural COUNT slot, TEXTUALLY -- the taken branch is
+  substituted, never rendered (spintax-js#67).
+
+  Why it exists: the PHP plugin runs its conditional stage over the whole document before
+  plurals, so a `#set` holding `?flag?1|2` in braces reaches the count slot as a plain
+  number and the block renders. This engine expanded VARIABLES only into the raw slot, so
+  the conditional survived, failed the numeric test, and the block was ERASED -- while
+  SpValidate reported nothing at all, and plural.count-macro exempts conditionals precisely
+  BECAUSE they resolve before plurals. Valid input, silently deleted output.
+
+  Textual, and only the taken branch's TEXT, because the stage order still holds around it:
+  enumerations and permutations resolve AFTER plurals, so a branch yielding an enumeration
+  must reach the numeric test intact and erase the block, exactly as the plugin does.
+  Rendering the branch would spin it to one option and invent a count no engine has. The
+  FORM slot is deliberately untouched -- there the engines genuinely disagree and picking a
+  side is not a bug fix.
+
+  Iterative over SPANS of the source, for the two reasons the family's review paid for:
+  recursing into the taken branch overflows the stack on deep nesting, which SpRender must
+  survive because it never fails on content; and copying the branch out per level, or
+  re-scanning for the matching brace per '{?', is quadratic on input a host may accept from
+  a stranger. No branch is ever copied out.
+
+  It is NOT linear in the depth of nesting. RecognizeConditional finds the separator by
+  scanning the body, so N nested conditionals whose branch is TAKEN scan N + (N-1) + ...
+  characters: 2000 levels 54 ms, 4000 210 ms, 8000 913 ms. The reference is quadratic here
+  too and slower, and upstream calls bounding such input a host job. An earlier version of
+  this comment claimed every character was visited at most once, on a measurement taken with
+  the flag EMPTY -- where the else branch is three characters and the nested chain is never
+  walked at all. Spec sec.5.6 carries the numbers and both branches are in the suite. }
+function ResolveCountConditionals(const text: string; const opts: TRenderOpts): string;
+var close: TArray<Integer>; res: TStrBuf; pend: TArray<Integer>;
+    top, i, segEnd, open, shut, cut, branchFrom, branchTo: Integer;
+    head: TCondHead;
+begin
+  if Pos('{?', text) = 0 then Exit(text);
+
+  close := MatchBraces(text);
+  res.Init(Length(text) + 16);
+  { spans of `text` still to emit, in order; a taken branch is a SPAN of the same string,
+    never a copy, and the untaken one is skipped }
+  SetLength(pend, 64);
+  pend[0] := 1; pend[1] := Length(text) + 1; top := 2;
+
+  while top > 0 do
+  begin
+    Dec(top, 2);
+    i := pend[top]; segEnd := pend[top + 1];
+    while i < segEnd do
+    begin
+      open := PosEx('{?', text, i);
+      { a '{?' found past this span belongs to the text around it, not to this span }
+      if (open = 0) or (open + 1 >= segEnd) then
+      begin
+        res.AppendSlice(text, i, segEnd - i);
+        Break;
+      end;
+
+      shut := close[open];
+      { a close outside the span is no close at all: the branch it would reach into is not
+        ours to read }
+      if (shut = 0) or (shut >= segEnd) or
+         (not RecognizeConditional(text, open + 1, shut, head)) then
+      begin
+        { unclosed, or a '{?' that is not a conditional -- to the parser a malformed one is
+          an enumeration, and enumerations are not this pass's business }
+        cut := open + 2; if cut > segEnd then cut := segEnd;
+        res.AppendSlice(text, i, cut - i);
+        i := open + 2;
+        Continue;
+      end;
+
+      res.AppendSlice(text, i, open - i);
+      if ConditionalTakesThen(head.Name, head.Inverted, opts) then
+      begin
+        branchFrom := head.BodyStart;
+        if head.SepIndex = 0 then branchTo := shut else branchTo := head.SepIndex;
+      end
+      else
+      begin
+        if head.SepIndex = 0 then branchFrom := shut else branchFrom := head.SepIndex + 1;
+        branchTo := shut;
+      end;
+
+      { continuation first, branch second: the stack pops the branch back out ahead of it,
+        which is what keeps the output in source order }
+      if top + 4 > Length(pend) then SetLength(pend, Length(pend) * 2);
+      pend[top] := shut + 1; pend[top + 1] := segEnd; Inc(top, 2);
+      pend[top] := branchFrom; pend[top + 1] := branchTo; Inc(top, 2);
+      Break;
+    end;
+  end;
+
+  Result := res.Finish;
+end;
+
 function RenderPlural(node: TNode; const opts: TRenderOpts): string;
 var countRaw, formsRaw, count, picked, cur: string; base: string;
     forms: TStringList; i: Integer; hasBracket: Boolean; sub: TNodeList;
 begin
-  countRaw := ExpandVarsOnly(node.PluralCountRaw, opts);
+  countRaw := ResolveCountConditionals(ExpandVarsOnly(node.PluralCountRaw, opts), opts);
   formsRaw := ExpandVarsOnly(node.PluralFormsRaw, opts);
   base := NormalizeBaseLang(opts.Locale);
 
@@ -4050,10 +4255,263 @@ begin
   end;
 end;
 
-procedure CheckPluralsV(const text, src, locale: string; map: TList<Integer>; res: TSpDiagList);
+{ How many forms the plural stage will actually RECEIVE -- or an admission that it is not
+  knowable. Forms = 0 whenever Unresolved is set.
+
+  Why it exists: SpRender expands %variables% and only THEN splits the form list, while
+  this validator split the raw source, so any reference inside a form list was judged on
+  the wrong number in BOTH directions -- a `#def %tail% = few|many` in `one|%tail%` made a
+  correct 3-form Russian template report plural.arity, and a one-pipe list that expands to
+  two forms reported nothing. Found here while adopting plural.locale-missing, then
+  confirmed and fixed in all five engines (spintax-js#66).
+
+  The rule is deliberately narrow, and the narrowness IS the correction. The reference's
+  first version predicted the roll -- counting pipes at bracket depth 0, on the theory that
+  a construct always collapses to one form. It does not: the false branch of a conditional
+  `?flag?a|b|c` freezes as `b|c`, which is TWO forms, so
+
+      #set %flag% =
+      #def %x% = ... that conditional ...
+      plural 1: one|%x%
+
+  renders fine under ru while the guess reported plural.arity.
+
+  So a value is counted only when its form count is the same WHATEVER the roll does -- when
+  it carries no bracket at all. Anything else, any name the HOST may supply at render time,
+  and any reference the template does not define suppress the count-based verdicts.
+  Construct-free is a SUFFICIENT condition, deliberately not a necessary one.
+
+  DirectMacroSpintax is the one prediction that survives, because it is not one: a #set
+  named DIRECTLY in the form slot is substituted verbatim and is still spintax when the
+  plural is decided, so its brackets earn plural.nested-brackets exactly as brackets
+  written inline do. Reached through a #def it is rolled first and earns nothing. }
+type
+  TFormCount = record
+    Forms: Integer;
+    Unresolved: Boolean;
+    DirectMacroSpintax: Boolean;
+  end;
+
+const
+  { Passes, not occurrences -- each one substitutes EVERY reference, as the renderer's
+    expansion does. Counting occurrences instead let a form list of 51 references exhaust
+    the budget and go unjudged. Deliberately NOT claimed to match a renderer's own limit
+    (they differ across the family): it only has to terminate, and a chain deeper than this
+    is suppressed rather than judged, which is the safe direction. }
+  FORM_EXPANSION_PASSES = 51;
+
+  { How far the form list may GROW under expansion, in UTF-16 code units.
+
+    Passes alone do NOT bound the work: `#set %a% = %b% %b%` over `#set %b% = %a% %a%`
+    DOUBLES the text every pass, so 51 of them is 2^51 -- a 62-character template took the
+    validator out with an out-of-memory crash in every engine of the family, this one
+    included, and it reaches SpValidate through any endpoint a host exposes.
+
+    GROWTH, not total size, and the difference is a verdict: a form list of 65 KB of
+    ordinary text is plainly two forms and must keep earning plural.arity under ru. A
+    ceiling on total LENGTH called that unknowable and flipped it to valid -- this port
+    shipped that regression for the length of one review round, having ported the ceiling
+    from upstream's work-in-progress before upstream's own review caught it. Expansion that
+    ADDS this much is a graph exploding; a long form list is just long.
+
+    Counted in UTF-16 code units, which is what the reference's `.length` counts -- not in
+    bytes. The budget decides a verdict, and a byte count made it a different one: 40 000
+    Cyrillic characters are 80 KB of UTF-8 and 40 000 units, so `plural 1: %x%` under en was
+    silent here and invalid there. Codex review, 2026-08-18. }
+  FORM_EXPANSION_MAX_GROWTH = 64 * 1024;
+
+{ All four brackets, conditionals included.
+
+  A conditional resolves before plurals, so it is not "unresolved at plural time" -- but
+  its branches can differ in top-level pipes, and counting is about INVARIANCE rather than
+  stage order. A closing bracket counts too: a #set holding a lone closer balances against
+  an opener elsewhere in the template, so CheckBrackets stays quiet, while every renderer's
+  plural guard rejects all four. The form test has to mirror that guard, not test for "a
+  construct". }
+{ JavaScript's `.length`: UTF-16 code units.
+
+  Under a UTF-16 compiler that is what Length already returns. Under FPC the string is UTF-8
+  bytes, so count the code points -- every byte that is not a continuation byte starts one --
+  and add a second unit for the astral ones, which are a surrogate PAIR in UTF-16. No full
+  decode is needed to count. }
+{ How many UTF-16 units ONE code unit of this string contributes: under a UTF-16 compiler
+  always one (a surrogate pair is two units and two chars alike); under FPC zero for a
+  continuation byte, one for a lead, and two for an astral lead. }
+function Utf16Units(c: Char): Integer;
+begin
+  {$IFDEF UNICODE}
+  Result := 1;
+  {$ELSE}
+  if (Byte(c) and $C0) = $80 then Result := 0
+  else if Byte(c) >= $F0 then Result := 2
+  else Result := 1;
+  {$ENDIF}
+end;
+
+function Utf16Len(const s: string): Integer;
+{$IFDEF UNICODE}
+begin
+  Result := Length(s);
+end;
+{$ELSE}
+var i: Integer; b: Byte;
+begin
+  Result := 0;
+  for i := 1 to Length(s) do
+  begin
+    b := Byte(s[i]);
+    if (b and $C0) <> $80 then
+    begin
+      Inc(Result);
+      if b >= $F0 then Inc(Result);
+    end;
+  end;
+end;
+{$ENDIF}
+
+function HasAnyBracket(const s: string): Boolean;
+var i: Integer;
+begin
+  for i := 1 to Length(s) do
+    if CharInSet(s[i], ['{', '}', '[', ']']) then Exit(True);
+  Result := False;
+end;
+
+function ExpandFormsForCounting(const formsRaw: string; defs, macros: TStrMap;
+  host: TDictionary<string, Boolean>): TFormCount;
+var frames: TObjectList<TStringList>; idx: TList<Integer>;
+    seen: TDictionary<string, Boolean>;
+    refs: TStringList;
+    verbatim: Integer; // 0 clean, 1 brackets, 2 opaque
+    nm, macro, txt, val: string;
+    pass, i, j, k, cnt, total, budget: Integer;
+    sawRef, bailed, isRef: Boolean;
+    buf: TStrBuf;
+begin
+  Result.Forms := 0; Result.Unresolved := True; Result.DirectMacroSpintax := False;
+  j := 0;
+
+  { Which brackets reach the form slot VERBATIM: follow the #set chain out of the raw slot,
+    stopping at anything that changes the answer. "Direct" is a property of the PATH, not
+    of one hop -- a #set whose value is another #set never crosses a #def, so the macro
+    text arrives whole and the block renders as the fallback.
+
+    Iterative, with the recursion's own visiting order: a form list may name a chain of
+    macros as deep as the document is long, and a walk that recurses per link dies on input
+    the renderer handles. }
+  verbatim := 0;
+  frames := TObjectList<TStringList>.Create(True);
+  idx := TList<Integer>.Create;
+  seen := TDictionary<string, Boolean>.Create;
+  try
+    refs := TStringList.Create; frames.Add(refs); idx.Add(0);
+    RawReferences(formsRaw, refs);
+    while (frames.Count > 0) and (verbatim = 0) do
+    begin
+      refs := frames[frames.Count - 1];
+      k := idx[idx.Count - 1];
+      if k >= refs.Count then
+      begin
+        frames.Delete(frames.Count - 1); idx.Delete(idx.Count - 1);
+        Continue;
+      end;
+      idx[idx.Count - 1] := k + 1;
+      nm := refs[k];
+      { a #def rolls it, and a host value replaces it -- either way the macro text does not
+        arrive verbatim, so this path says nothing }
+      if defs.ContainsKey(nm) or host.ContainsKey(nm) then Continue;
+      if not macros.TryGetValue(nm, macro) then Continue;
+      if seen.ContainsKey(nm) then Continue;
+      seen.Add(nm, True);
+      { a conditional is where the ENGINES disagree: both PHP renderers resolve one that
+        expansion introduces inside a form list, this port and the reference do not. Until
+        that is settled (spintax-js#67), decline to judge rather than pick a side. }
+      if Pos('{?', macro) > 0 then begin verbatim := 2; Break; end;
+      if HasAnyBracket(macro) then begin verbatim := 1; Break; end;
+      refs := TStringList.Create; frames.Add(refs); idx.Add(0);
+      RawReferences(macro, refs);
+    end;
+  finally
+    frames.Free; idx.Free; seen.Free;
+  end;
+  if verbatim = 1 then begin Result.DirectMacroSpintax := True; Exit; end;
+  if verbatim = 2 then Exit;
+
+  { The budget is what this pass may ADD to the list it started with, so a long-but-plain
+    form list is judged and a graph exploding is not. Enforced DURING the pass, never after
+    it: one pass can multiply the text by the size of the value it substitutes, and
+    measuring afterwards means measuring an allocation that has already happened. Built by
+    hand for the same reason -- 20 000 refs to a value holding 5 000 refs is 300 MB out of a
+    75 KB template, acyclic, so the cycle detector never sees it. Measured 3.5 s before this
+    check and 49 ms after. }
+  budget := Utf16Len(formsRaw) + FORM_EXPANSION_MAX_GROWTH;
+  txt := formsRaw;
+  for pass := 1 to FORM_EXPANSION_PASSES do
+  begin
+    sawRef := False; bailed := False; total := 0;
+    { EVERY reference per pass, as the renderer's expansion does. Replacing one at a time
+      spends the budget on a list that merely repeats a name. }
+    buf.Init(Length(txt) + 16);
+    i := 1;
+    while i <= Length(txt) do
+    begin
+      isRef := False;
+      if txt[i] = '%' then
+      begin
+        j := i + 1; nm := '';
+        while (j <= Length(txt)) and IsAsciiWord(txt[j]) do begin nm := nm + txt[j]; Inc(j); end;
+        isRef := (nm <> '') and (j <= Length(txt)) and (txt[j] = '%');
+      end;
+      if not isRef then
+      begin
+        buf.AppendChar(txt[i]); Inc(total, Utf16Units(txt[i])); Inc(i);
+        Continue;
+      end;
+
+      sawRef := True;
+      nm := LowerAscii(nm);
+      { runtime context outranks a definition of the same name, so a host-declared name
+        makes the count unknowable even where the template defines one locally }
+      if host.ContainsKey(nm) then bailed := True
+      else if defs.TryGetValue(nm, val) then
+      begin
+        { a construct in the value: what it rolls to may or may not carry a top-level pipe,
+          so no single count is true of every render }
+        if HasAnyBracket(val) then bailed := True else buf.AppendStr(val);
+      end
+      else if macros.TryGetValue(nm, val) then
+      begin
+        if HasAnyBracket(val) then bailed := True else buf.AppendStr(val);
+      end
+      else bailed := True;
+      if bailed then Break;
+      Inc(total, Utf16Len(val));
+      if total > budget then Exit; // the graph exploding, not a form list
+      i := j + 1;
+    end;
+    if bailed then Exit; // unresolved, and Result already says so
+    if total > budget then Exit;
+    txt := buf.Finish;
+    if not sawRef then
+    begin
+      { no construct can be left here, so the plain split is what the renderer does too }
+      cnt := 1;
+      for k := 1 to Length(txt) do if txt[k] = '|' then Inc(cnt);
+      Result.Forms := cnt; Result.Unresolved := False;
+      Exit;
+    end;
+  end;
+  // a cycle, or a chain deeper than this bothers to follow
+end;
+
+procedure CheckPluralsV(const text, src, locale: string; known: TStringList;
+  map: TList<Integer>; res: TSpDiagList);
 var base: string; arity, defArity, i, k, cnt, m: Integer;
     counts, forms, kinds, names, values, refs: TStringList;
-    tainted: TDictionary<string, Boolean>;
+    tainted, host: TDictionary<string, Boolean>;
+    defs, macros: TStrMap;
+    formCache: TDictionary<string, Integer>;
+    expanded: TFormCount; cached: Integer;
     starts: TList<Integer>;
     hasBracket: Boolean;
     curMacro, curForms: TSourceCursor;
@@ -4071,10 +4529,25 @@ begin
   tainted := TDictionary<string, Boolean>.Create;
   counts := TStringList.Create; forms := TStringList.Create;
   starts := TList<Integer>.Create;
+  defs := TStrMap.Create; macros := TStrMap.Create;
+  host := TDictionary<string, Boolean>.Create;
+  formCache := TDictionary<string, Integer>.Create;
   try
     CollectOccurrences(text, kinds, names, values);
     BuildMacroTaint(kinds, names, values, tainted);
     FindPluralBlocks(text, counts, forms, starts);
+
+    { One entry per name, the LAST definition winning and a #def of the same name not
+      removing the #set -- the reference's extractDirectives returns two MAPS, and every
+      downstream reader sees only the surviving value. Names arrive lower-cased from
+      TryParseDirective. }
+    for k := 0 to names.Count - 1 do
+      if kinds[k] = 'def' then defs.AddOrSetValue(names[k], values[k])
+      else macros.AddOrSetValue(names[k], values[k]);
+    { names the HOST will supply: runtime context outranks a definition of the same name,
+      so one of these makes a form count unknowable however the template defines it }
+    if known <> nil then
+      for k := 0 to known.Count - 1 do host.AddOrSetValue(LowerAscii(known[k]), True);
 
     { The plain AddDiagAt rescans from offset 1 per diagnostic, which is fine for a document
       raising two and O(document x blocks) for one raising thousands: 2000 no-locale 3-form
@@ -4122,8 +4595,47 @@ begin
         Continue;
       end;
 
-      cnt := 1;
-      for m := 1 to Length(forms[i]) do if forms[i][m] = '|' then Inc(cnt);
+      { The form list AS THE RENDERER WILL SEE IT. SpRender expands %variables% and only
+        then splits on '|', so counting the raw pipes judged a different string than the
+        one that gets rendered -- in both directions (spintax-js#66).
+
+        Memoized on the raw slot, because the answer depends on nothing else: defs, macros
+        and host are fixed for the document. The point of a `#def` holding a form list is to
+        name it in every block, so the identical slot arrives thousands of times -- 2000
+        blocks naming one 20-link macro chain measured 140 ms walking it per block and 5 ms
+        through the cache, against 8 ms for the raw count this replaced. Blocks sharing a
+        slot is the SHAPE this feature is for, so it is the shape to measure -- where they
+        do NOT share one, 2000 DISTINCT slots over the same chain cost 156 ms against the
+        old 38 ms, linear in blocks x chain length and measured, not assumed. }
+      if not formCache.TryGetValue(forms[i], cached) then
+      begin
+        expanded := ExpandFormsForCounting(forms[i], defs, macros, host);
+        if expanded.DirectMacroSpintax then cached := -2
+        else if expanded.Unresolved then cached := -1
+        else cached := expanded.Forms;
+        formCache.Add(forms[i], cached);
+      end;
+      expanded.DirectMacroSpintax := cached = -2;
+      expanded.Unresolved := cached < 0;
+      if cached > 0 then expanded.Forms := cached else expanded.Forms := 0;
+
+      { A #set whose value carries spintax lands in the form list VERBATIM and is still
+        unresolved when the plural is decided -- the same fact plural.count-macro states
+        for the count slot. }
+      if expanded.DirectMacroSpintax then
+      begin
+        AddDiagAtOrdered(res, 'plural.nested-brackets', 'error', src, map,
+          starts[i], starts[i] + 8, curForms);
+        Continue;
+      end;
+
+      { A reference the template does not define -- a host variable, or a chain past the
+        budget -- has no static form count. Judging it would repeat the mistake
+        plural.locale-missing was careful not to make: filing a verdict on a fact the
+        caller never claimed. }
+      if expanded.Unresolved then Continue;
+
+      cnt := expanded.Forms;
       if arity > 0 then
       begin
         if cnt <> arity then
@@ -4141,18 +4653,17 @@ begin
         without moving the verdict. A block of exactly defArity forms stays silent, because
         the default resolves it.
 
-        cnt is the pipes as WRITTEN, while the renderer counts them after expanding
-        %variables%, so a form list grown or shrunk by a reference is judged on the wrong
-        number in both directions. That is the family's contract, not this port's choice --
-        the reference counts raw here too, and plural.arity has always done the same -- and
-        changing it means changing the family. Spec sec.5.5 has the two shapes and the four
-        tests that pin them. }
+        cnt is the count the RENDERER will split, not the pipes as written -- see
+        ExpandFormsForCounting. Both verdicts here were once taken on the raw list, which
+        judged a different string than the one that gets rendered; spec sec.5.5 has the
+        shapes and the tests that pin them. }
       else if cnt <> defArity then
         AddDiagAtOrdered(res, 'plural.locale-missing', 'warning', src, map,
           starts[i], starts[i] + 8, curForms);
     end;
   finally
     kinds.Free; names.Free; values.Free; tainted.Free; counts.Free; forms.Free; starts.Free;
+    defs.Free; macros.Free; host.Free; formCache.Free;
   end;
 end;
 
@@ -4455,7 +4966,7 @@ begin
   CheckBrackets(text, Src, smap, Result);
   CheckDirectivesV(text, Src, smap, Result);
   CheckPermConfigsV(text, Src, smap, Result);
-  CheckPluralsV(text, Src, Locale, smap, Result);
+  CheckPluralsV(text, Src, Locale, KnownVariables, smap, Result);
   CheckVariableRefsV(text, Src, smap, KnownIncludes, Result);
 
   // include.unknown-target (only when a slug list is supplied)
