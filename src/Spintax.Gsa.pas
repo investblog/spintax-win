@@ -276,8 +276,7 @@ type
   private
     FPrefix: string;
     FVars: TStrMap;
-    FKeys: TStringList;    { kind + text }
-    FNames: TStringList;   { the variable name, parallel to FKeys }
+    FIndex: TStrMap;       { kind + text -> the variable name }
     FCounts: TStringList;  { per-kind counter, as kind=number }
   public
     constructor Create(const APrefix: string; AVars: TStrMap);
@@ -292,35 +291,58 @@ begin
   inherited Create;
   FPrefix := APrefix;
   FVars := AVars;
-  FKeys := TStringList.Create;
-  { TStringList.IndexOf folds case by default, and the keys here are the author's own
-    text. Without this, `#file[A.txt,1,S]` and `#file[a.txt,1,S]` share one variable and
-    the second renders as the first -- silent corruption of a file name. This is the same
-    defect the family fixed in v0.2.2, where IndexOf folded an include target; it is worth
-    treating every TStringList lookup over user text as case-folded until told otherwise. }
-  FKeys.CaseSensitive := True;
-  FNames := TStringList.Create;
+  { A MAP, NOT TWO PARALLEL LISTS SEARCHED LINEARLY. This was a TStringList looked up with
+    IndexOf, which walks it, so a template whose every line lifts its own macro cost O(n^2)
+    in the number of DISTINCT lifted macros. That is not a stress shape: a SER project
+    template with a file spin per line is the ordinary one. Measured unoptimised, converting
+    n lines each carrying its own `#file[...]`, minimum of three runs:
+
+        n        before      after
+      1 000      266 ms       0 ms
+      2 000    1 266 ms      31 ms
+      4 000    5 375 ms      47 ms
+      8 000   20 375 ms      93 ms
+
+    READ THE SHAPE, NOT THE ABSOLUTES. This was measured on a busy workstation and the same
+    input answered 12 453, 19 000 and 25 734 ms across runs; the timer's own granularity is
+    about 16 ms, which is most of the `after` column. What is stable is the doubling: 4.8x,
+    4.2x, 3.8x before -- quadratic -- against a straight line after, which holds all the way
+    to 128 000 distinct macros (5.5 MB) in about 2.5 s. The old shape was not measured
+    there; extrapolating its own doubling puts it beyond an hour.
+
+    Cost only; no output moves, which is what the checks in tests/gsa_tests.dpr are for and
+    what they can see. They cannot see the cost itself, the same as the plural cursors in
+    local_tests.dpr.
+
+    THE CASE RULE IS UNCHANGED AND IS STILL THE POINT. The keys are the author's own text,
+    so folding them makes `#file[A.txt,1,S]` and `#file[a.txt,1,S]` one variable and the
+    second renders as the first -- a file name silently replaced, shipped in v0.4.0 and
+    fixed in v0.4.1, and the same defect the family fixed in v0.2.2 for include targets. It
+    used to be bought with `FKeys.CaseSensitive := True` against TStringList's folding
+    DEFAULT; TDictionary's default comparer for `string` compares ordinally, so it is bought
+    by the type instead. That is a claim about the RTL rather than about this unit, which is
+    why both directions of the lookup are pinned in the suite -- two texts differing only in
+    case are two variables, and identical text is one. }
+  FIndex := TStrMap.Create;
   FCounts := TStringList.Create;
 end;
 
 destructor TLifter.Destroy;
 begin
-  FKeys.Free; FNames.Free; FCounts.Free;
+  FIndex.Free; FCounts.Free;
   inherited Destroy;
 end;
 
 function TLifter.Ref(const Kind, Text: string): string;
-var key, nm: string; i, n: Integer;
+var key, nm: string; n: Integer;
 begin
   key := Kind + #1 + Text;
-  i := FKeys.IndexOf(key);
-  if i >= 0 then Exit('%' + FNames[i] + '%');
+  if FIndex.TryGetValue(key, nm) then Exit('%' + nm + '%');
   n := StrToIntDef(FCounts.Values[Kind], 0) + 1;
   FCounts.Values[Kind] := IntToStr(n);
   nm := FPrefix + Kind + IntToStr(n);
   FVars.AddOrSetValue(nm, SpNeutralize(Text));
-  FKeys.Add(key);
-  FNames.Add(nm);
+  FIndex.Add(key, nm);
   Result := '%' + nm + '%';
 end;
 

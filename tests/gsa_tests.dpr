@@ -440,7 +440,7 @@ begin
   Check('empty input', Conv(''), '');
 end;
 
-{ ─── 5a. case, and tag sets that only partly overlap ─────────────────────── }
+{ ─── 5a. the lifter's key: case, sharing, overlapping tag sets ───────────── }
 
 procedure TestCaseAndOverlap;
 var vars: TStrMap; unsup: TStringList; tmpl: string; outs: TStringList;
@@ -458,6 +458,24 @@ begin
   finally
     vars.Free; unsup.Free;
   end;
+  { AND THE OTHER DIRECTION OF THE SAME LOOKUP, which nothing pinned until the lifter's
+    two parallel lists became a map: identical text shares ONE variable. That is what makes
+    a template full of square brackets cost one variable rather than hundreds, and a key can
+    be got wrong this way as easily as the other -- one that accidentally carried a position
+    or an occurrence index would satisfy every case check above and still give each repeat
+    its own variable. Both directions together are what specify the key. }
+  vars := TStrMap.Create;
+  unsup := TStringList.Create;
+  try
+    tmpl := SpGsaToSpintax('#file[a.txt,1,S] x #file[a.txt,1,S] y #file[a.txt,1,S]',
+                           vars, unsup);
+    Check('identical macros share one variable',
+          tmpl, '%__gsa_m1% x %__gsa_m1% y %__gsa_m1%');
+    CheckTrue('and only one is stored', vars.Count = 1);
+  finally
+    vars.Free; unsup.Free;
+  end;
+
   CheckVerbatim('case/two-macros', '#file[A.txt,1,S] and #file[a.txt,1,S]');
   CheckVerbatim('case/three-macros',
                 '#file[Ab.txt,1,S] and #file[aB.txt,1,S] and #file[zz.txt,1,S]');
