@@ -247,8 +247,13 @@ collision-freedom for every generated name at once.
 | `<prefix>gG_L` | a spintag group's definition, group `G`, level `L` |
 
 Keys are compared **case-sensitively**: `#file[A.txt]` and `#file[a.txt]` are different
-macros and get different variables. (They shared one in `v0.4.0` — `TStringList.IndexOf`
-folds case by default — which silently replaced one file name with another.)
+macros and get different variables. (They shared one in `v0.4.0`, which silently replaced
+one file name with another: the lifter looked its keys up with `TStringList.IndexOf`, which
+folds case by default. That lookup is a `TDictionary` now — for cost, not for case — and its
+default comparer for `string` is ordinal, so the property is the same and is bought by the
+type rather than by a flag.) Identical text, in contrast, shares **one** variable: that is
+what makes a bracket-heavy template cost one variable rather than hundreds. Both directions
+are pinned in `tests/gsa_tests.dpr`.
 
 ---
 
