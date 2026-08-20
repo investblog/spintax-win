@@ -71,6 +71,23 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
 ## Done
 
+- [x] **The GSA lifter keys through a map** (2026-08-19, released as `v0.8.1`). `TLifter`
+      kept two parallel `TStringList`s and found a key with `IndexOf`, which walks them, so
+      converting a SER template cost O(n²) in the number of DISTINCT lifted macros — and a
+      project template with a file spin per line is the ordinary shape, not a stress test.
+      Measured independently of the change, best of three, n lines each lifting its own
+      `#file[…]`: **179 → 8 ms** at 1 000, **735 → 16**, **2 820 → 30**, **11 421 → 60 ms**
+      at 8 000; 4.1× / 3.8× / 4.05× per doubling before against 2.0× / 1.9× / 2.0× after.
+      Output is byte-for-byte identical — a whole conversion dumped and compared across both
+      trees over repeats, case pairs, mixed kinds and unsupported constructs, not only the
+      shape the fix repairs. The case rule survived by TYPE rather than by a flag
+      (`TStringList.IndexOf` folds by default and needed `CaseSensitive := True`;
+      `TDictionary` compares `string` keys ordinally), which is a claim about the RTL and not
+      about this unit — so both directions are now pinned and the suite is 96 checks. Names
+      still come from a per-kind counter in first-encounter order, never from enumerating the
+      map. Written by a parallel session on a branch; reviewed, re-measured and released
+      here.
+
 - [x] **Re-aligned to per-NAME circular-reference emission** (2026-08-18, engine issue #2 from
       [spintax-js#59](https://github.com/investblog/spintax-js/issues/59)). The family reversed
       the shape this port had deliberately reproduced eleven days earlier: one diagnostic per
