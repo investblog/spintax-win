@@ -17,38 +17,6 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 and pinned the forms (see Done). What is left open is one syntax proposal and one known
 ordering difference; the neutralize question was answered on 2026-08-07.
 
-- [ ] **`include.unknown-target` is emitted before the `variable.undefined` warnings; the
-      reference emits it after.** Found by the 2026-08-06 review over 5 000 include-bearing
-      cases: the diagnostic MULTISET is identical to `@spintax/core` (`sort | diff` = 0) and
-      1 184 lines differ in order alone. Pre-existing — identical at `f408fea`, so not from
-      the comment or graph work — and codes plus severity are what §3 makes the contract, so
-      no verdict moves. Worth closing anyway: an editor that lists diagnostics in engine
-      order shows them in a different order than the reference would, and the corpus does not
-      gate order. Filed upstream as
-      [spintax-js#70](https://github.com/investblog/spintax-js/issues/70), where it turned out
-      to be a FOUR-way split rather than a two-way one: this engine leads with the include
-      diagnostic, `@spintax/core` appends includes last, the Python port sorts by source
-      position, and both PHP engines return two separate lists and cannot express an order at
-      all. The open question there is whether order is contract at all; the current answer is
-      that it is not. Nothing to change here until that is settled.
-
-- [ ] **Deeply nested conditionals in a plural count slot are quadratic when the branch is
-      TAKEN.** `RecognizeConditional` finds the separator by scanning the body, so N nested
-      truthy conditionals scan N + (N−1) + … characters: 2000 levels 54 ms, 4000 210 ms,
-      8000 913 ms (2026-08-18). The reference shares it and is slower (393 / 1426 / 4510 ms),
-      and upstream's own #67 commit says deep balanced nesting stays super-linear in every
-      engine and that bounding input is a host job — the reference deployment caps a template
-      at 8192 characters. Recorded rather than fixed: an exact fast version needs the
-      separator scan's clamped, type-agnostic bracket counter precomputed, and a second
-      reading of that rule is what the one-recognizer discipline exists to prevent. Both
-      branches are now pinned in `TestPluralFormCounting`; spec §5.6 carries the numbers.
-      Filed upstream as [spintax-js#71](https://github.com/investblog/spintax-js/issues/71)
-      and reproduced on the reference — 238 / 822 / 2437 ms at 2k / 4k / 8k levels against
-      this port's 54 / 210 / 913 — with the reading of the cause confirmed and the same
-      decision taken there.
-      Found by Codex review, which also caught that the first version of that section
-      claimed linearity while measuring only the branch that cannot exhibit the cost.
-
 - [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
       in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
       `#set %a% = {x|y}` + `#set %b% = {x|y}` + `{plural %a% %b%: one|two}` gives
@@ -60,7 +28,12 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       count-expansion work, and the same shape as the lesson AGENTS.md already records about
       `detectCycle` — a diagnostic COUNT can be a property of the walk. Removing the `Break`
       is the fix; it needs the two-cursor claim in §5.5 re-checked, since `count-macro` would
-      no longer fire at most once per block.
+      no longer fire at most once per block. **Filed upstream 2026-08-21 as
+      [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)** with the family
+      measurement: `@spintax/core` and `spintax-core` both emit one per tainted REFERENCE
+      (200 refs in one count slot give 200 diagnostics, all at the same anchor), this port
+      one per BLOCK. Verdict identical either way; waiting on the decision rather than
+      guessing, because it is the same question #59 answered for circular references.
 
 - [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
       tests only whether a variable is SET, so the dialect converter below expresses an
@@ -70,6 +43,24 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **Two upstream questions answered, and one proposal filed** (2026-08-21).
+      [spintax-js#70](https://github.com/investblog/spintax-js/issues/70) — **diagnostic
+      ORDER is not contract**, closed with the four-way table moved into
+      `packages/conformance/README.md` under "Known divergences, measured and not currently
+      gated", where this engine is recorded as leading with `include.unknown-target`. Making
+      order contract would mean changing the PHP two-list API for a property nobody asked
+      for; changing this port to match would move what a consumer sees for no named need.
+      **Nothing to do here** — and the backlog entry that said "worth closing anyway" was the
+      tidiness argument the answer explicitly declines.
+      [spintax-js#71](https://github.com/investblog/spintax-js/issues/71) — the super-linear
+      count slot on the TAKEN branch is **recorded, not tracked**: measured on the reference
+      too (238 / 822 / 2 437 ms at 2k / 4k / 8k), same call as ours, same reason. The numbers
+      live in spec §5.6 and in the closed issue.
+      New: [spintax-js#74](https://github.com/investblog/spintax-js/issues/74) proposes an
+      optional exact multiplicity assertion in the `validate` fixture schema — the gap that
+      let per-path circular references live eleven days, hid the counting bomb, and hides
+      #73 now. This port offered to take the runner side of it.
 
 - [x] **The GSA lifter keys through a map** (2026-08-19, released as `v0.8.1`). `TLifter`
       kept two parallel `TStringList`s and found a key with `IndexOf`, which walks them, so
