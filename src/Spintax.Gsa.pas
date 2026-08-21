@@ -143,6 +143,27 @@ uses
   refused to convert, so a host can resolve them itself by overriding those variables.
   Empty means everything in the template was translated.
 
+  THE LIFTED NAMES CARRY AN ORDER, AND THE CONTAINER DOES NOT.
+
+  A name is `<prefix><kind><N>` -- `__gsa_m1`, `__gsa_u2` -- where the kind is one letter
+  (`m` a bracketed macro, `u` a block this unit refused to convert, `l` a lone sentinel-ish
+  character it had to protect) and N ascends PER KIND in the order this unit lifted them,
+  which for each kind is the order they appear in the source.
+
+  Three things follow, and a host that shows these to a reader needs all three:
+
+  - MacroVars is a TDictionary, so enumerating it gives HASH order. Twelve lifted macros
+    came back `m4 m5 m8 m9 m7 m6 m10 m11 m2 m3 m12 m1` when this was measured.
+  - Sorting the names as TEXT is worse than useless, because the number is text there:
+    `m1 m10 m11 m12 m2 ...`, so the reader's tenth item lands between their first and
+    second. A consumer shipped exactly that (spintax-win#4).
+  - Comparing the stem as text and the trailing digits as a NUMBER gives the lift order
+    within each kind -- but not across kinds, because the counters are independent. A
+    template of alternating macros and unconvertible blocks lifts `m1 u1 m2 u2 m3`, and no
+    ordering of those five names recovers that. The document order is in the RETURNED
+    TEMPLATE, as the order the `%name%` references appear in it; read it there if that is
+    what you need.
+
   Both are the caller's to own and free; existing entries are left alone. }
 function SpGsaToSpintax(const Src: string; MacroVars: TStrMap;
   Unsupported: TStrings): string;

@@ -440,6 +440,46 @@ begin
   Check('empty input', Conv(''), '');
 end;
 
+{ ─── 5b. the lifted names carry an order, and the container does not ─────── }
+
+procedure TestLiftOrder;
+var vars: TStrMap; unsup: TStringList; tmpl, src: string; i: Integer;
+begin
+  { A consumer reads the header, sees a dictionary and invents an order. spintax-studio
+    sorted the names as TEXT and shipped `m1 m10 m11 m12 m2 ...` for weeks -- the reader's
+    tenth list between their first and second (spintax-win#4). The order the names carry
+    was real all along and simply unsaid; it is in the header now, so it is pinned here.
+
+    What is promised: `<prefix><kind><N>`, N ascending PER KIND in lift order, which for
+    each kind is source order. }
+  vars := TStrMap.Create; unsup := TStringList.Create;
+  try
+    src := '';
+    for i := 1 to 12 do
+      src := src + 'l' + IntToStr(i) + ' #file[list' + IntToStr(i) + '.txt,1,S]'#10;
+    tmpl := SpGsaToSpintax(src, vars, unsup);
+    Check('the twelfth macro is numbered twelve, not sorted as text',
+          tmpl, 'l1 %__gsa_m1%'#10'l2 %__gsa_m2%'#10'l3 %__gsa_m3%'#10'l4 %__gsa_m4%'#10 +
+                'l5 %__gsa_m5%'#10'l6 %__gsa_m6%'#10'l7 %__gsa_m7%'#10'l8 %__gsa_m8%'#10 +
+                'l9 %__gsa_m9%'#10'l10 %__gsa_m10%'#10'l11 %__gsa_m11%'#10 +
+                'l12 %__gsa_m12%'#10);
+    Check('and N follows the source, so m10 holds the tenth list',
+          vars['__gsa_m10'], SpNeutralize('#file[list10.txt,1,S]'));
+  finally vars.Free; unsup.Free; end;
+
+  { ACROSS kinds the counters are independent, so no ordering of the NAMES recovers the
+    document order -- which is why the header sends a host to the returned template for
+    that. Alternating a macro with an unconvertible block lifts m1 u1 m2 u2 m3. }
+  vars := TStrMap.Create; unsup := TStringList.Create;
+  try
+    tmpl := SpGsaToSpintax('#file[a.txt,1,S]'#10'{#.de Hallo|#.com Hello}'#10 +
+                           '#file[b.txt,1,S]'#10'{#.fr Bonjour|#.es Hola}'#10 +
+                           '#file[c.txt,1,S]', vars, unsup);
+    Check('the two kinds are numbered independently, and the TEMPLATE holds the real order',
+          tmpl, '%__gsa_m1%'#10'%__gsa_u1%'#10'%__gsa_m2%'#10'%__gsa_u2%'#10'%__gsa_m3%');
+  finally vars.Free; unsup.Free; end;
+end;
+
 { ─── 5a. the lifter's key: case, sharing, overlapping tag sets ───────────── }
 
 procedure TestCaseAndOverlap;
@@ -611,6 +651,7 @@ begin
   TestRefusals;
   TestCosmeticStageIsOurs;
   TestCaseAndOverlap;
+  TestLiftOrder;
   TestNamespace;
   TestArtifacts;
   TestCombined;
