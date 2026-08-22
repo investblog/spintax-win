@@ -910,7 +910,7 @@ and make a variable truthy, and they are in `TestConditionalTruthiness` as the c
 stop the class drifting into "anything non-ASCII".
 
 **Why nothing caught it.** No corpus fixture carries a Unicode space, and neither did any of
-the 500 local checks. It surfaced when a Codex review of the §5.6 work noticed the count slot
+the 520-odd local checks of that day. It surfaced when a Codex review of the §5.6 work noticed the count slot
 had given the predicate a second caller. The nearest thing to a justification for leaving it
 was a line in the agent charter calling the ASCII narrowing a family convention — true of the
 `#include` anchor, where the reference writes out `[ \t\n\r\f\x0B]` itself, and false here.

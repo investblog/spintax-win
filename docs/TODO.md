@@ -74,7 +74,7 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       shape the fix repairs. The case rule survived by TYPE rather than by a flag
       (`TStringList.IndexOf` folds by default and needed `CaseSensitive := True`;
       `TDictionary` compares `string` keys ordinally), which is a claim about the RTL and not
-      about this unit — so both directions are now pinned and the suite is 96 checks. Names
+      about this unit — so both directions were pinned, taking the suite to 96 checks. Names
       still come from a per-kind counter in first-encounter order, never from enumerating the
       map. Written by a parallel session on a branch; reviewed, re-measured and released
       here.
@@ -127,7 +127,8 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       byte by byte, so a variable holding one U+00A0 was truthy here and falsy everywhere
       else and the wrong branch rendered. `IsJsSpaceCp` enumerates the class and
       `ConditionalTakesThen` walks code points. No fixture carries a Unicode space and
-      neither did any of the 500 local checks; 22 now do, measured against the reference,
+      neither did any of the 520-odd local checks of the day; 22 now do, measured against
+      the reference,
       with U+200B / U+0085 / U+3164 as the controls that keep the class from widening into
       "non-ASCII". Spec §5.7. Worth reporting upstream only as a note — the reference is the
       one that is right here.
