@@ -25,8 +25,8 @@ local work.
       recursive: `RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`, and
       `TNode.Destroy` through its owned child lists. They raise `EStackOverflow`, not the
       parser's old `EOutOfMemory`, which is how they are told apart. Measured: an enumeration
-      chain parses, renders and frees at 40 000 and overflows the destructor at 60 000; a
-      conditional chain is fine at 50 000, since a conditional level costs fewer frames.
+      chain parses, renders and frees at 40 000 and at 50 000, and overflows at 60 000 in the
+      render walk and in the destructor alike; a conditional chain is fine at 50 000.
       **Not a regression** — both walks recursed before this release and the parser simply
       failed first, so every depth any earlier release handled is handled now. Raised by the
       Codex review of §5.11, which was right that fixing one recursive walk makes the next one

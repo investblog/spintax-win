@@ -1320,18 +1320,18 @@ wall:
 
 | shape, measured on the shipped build | outcome |
 |---|---|
-| enumeration chain, parse only, 100 000 levels | parses |
-| enumeration chain, parse + free + **render**, 40 000 | fine |
-| enumeration chain, parse **and free**, 60 000 | `EStackOverflow` in the destructor |
-| conditional chain, parse + free + render, 50 000 | fine |
+| enumeration chain, **parse only**, 100 000 levels | parses |
+| enumeration chain, parse + render + free, 40 000 and 50 000 | fine |
+| enumeration chain, 60 000 | `EStackOverflow`, in the render walk and in the destructor alike |
+| conditional chain, parse + render + free, 50 000 | fine |
 
-A conditional level costs fewer destructor frames than an enumeration level, which is why the
-two chains stop in different places. None of this is new behaviour: both walks recursed before
-this release, and the parser simply failed first, so the limit was never reachable. Every depth
-the previous release handled is handled now, and the depths in §5.9's table that never worked in
-any release do. Making the render walk and the destructor iterative is filed in the backlog, not
-done here — the reference made both of its walks iterative for family issue #68, and this port
-now differs from it only past 50 000 levels.
+The parser clears every row; what stops is the walk after it. None of this is new behaviour:
+both walks recursed before this release and the parser simply failed first, so the limit was
+never reachable. Every depth the previous release handled is handled now, and so are the depths
+in §5.9's table that never worked in any release. Making the render walk and the destructor
+iterative is filed in the backlog, not done here — the reference made both of its walks
+iterative for family issue #68, and this port now differs from it only past 50 000 levels, where
+the reference itself aborts on the heap.
 
 **The deep depths are measured, not gated**, and deliberately so: a 20 000-level render costs
 7.6 s and the local suite runs twice on every push. The suite pins the ROUTE at 5 000 — a
