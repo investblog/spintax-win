@@ -19,7 +19,27 @@ recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the ne
 walk reachable, which is the first item below. The other is a family question rather than local
 work. The `plural.count-macro` multiplicity question was DECIDED on 2026-09-12 and is in Done.
 
-- [ ] **Make the render walk and the tree destructor iterative.** `ParseSequence` was made
+- [ ] **Make the render walk and the tree destructor iterative. NEXT SESSION** (decided by the
+      owner, 2026-09-12). Where to start, so that session does not rediscover it:
+      - **The walks.** `RenderNodes` → `RenderNode` → `RenderEnumeration` /
+        `RenderPermutation` / `RenderConditional` / `RenderPlural` → `RenderNodes`, plus the
+        re-entries through `SpliceConstruct` and `ResolveVariable`; and `TNode.Destroy` /
+        `TPermOption.Destroy` freeing owned child lists recursively.
+      - **The hard constraint is RNG DRAW ORDER, not output.** An enumeration picks BEFORE it
+        descends, so an unpicked branch spends no draw; a permutation renders every element,
+        then draws its size, then shuffles. The corpus pins that order with sequence-RNG
+        fixtures, and a walk that renders in a different order changes seeded output while
+        every unseeded check stays green. `@spintax/core`'s iterative render (a step returning
+        child lists plus an assemble function, `render.ts`) is the shape to mirror.
+      - **Proof it is a refactor.** Byte-identical output against the current build over a
+        differential, as §5.11 did for the parser: corpus generated ONCE and fed to both
+        builds, first / last / seeded RNG with post-process off and on, and a control class
+        that must differ. That harness lived in the session scratchpad and is gone; rebuild
+        it. Then the depth sweep: an enumeration chain overflows at 60 000 in both walks today.
+      - **Destruction** needs the same explicit stack: detach a node's child lists before
+        freeing it, or `Free` recurses anyway.
+
+      `ParseSequence` was made
       iterative on 2026-09-12 (spec §5.11) and is no longer the depth limit — an enumeration
       chain 100 000 levels deep parses. What stops first now are the two walks that are still
       recursive: `RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`, and
