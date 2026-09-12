@@ -1731,11 +1731,14 @@ var
         else begin thenRaw := Copy(body, 1, sep - 1); elseRaw := Copy(body, sep + 1, MaxInt); end;
         node := TNode.Create;
         node.Kind := nkConditional;
+        { Attached BEFORE anything is hung on it: an allocation that raises between here
+          and the end of this procedure must leave the node reachable from Result, or the
+          except below cannot free it. Destroy tolerates the nil fields that leaves. }
+        list.Add(node);
         node.CondName := head.Name;
         node.CondInverted := head.Inverted;
         node.CondThen := TNodeList.Create(True);
         node.CondElse := TNodeList.Create(True);
-        list.Add(node);
         PushJob(thenRaw, node.CondThen);
         PushJob(elseRaw, node.CondElse);
         Exit;
@@ -1750,10 +1753,12 @@ var
     end;
     node := TNode.Create;
     node.Kind := nkEnumeration;
-    node.EnumOptions := TObjectList<TNodeList>.Create(True);
     list.Add(node);
+    node.EnumOptions := TObjectList<TNodeList>.Create(True);
     SplitTopLevel(content, parts);
     try
+      { Reserve once, so Add cannot reallocate and lose a list created but not yet held. }
+      node.EnumOptions.Capacity := parts.Count;
       for i := 0 to parts.Count - 1 do
       begin
         nl := TNodeList.Create(True);
@@ -1763,8 +1768,22 @@ var
     finally
       parts.Free;
     end;
-    node.Raw := content;   { tentative -- the finalize pass decides }
-    pend.Add(node);
+    { Retaining the body is what the sec.5.9 splice needs, and it is NOT free: a construct
+      keeps its whole inner text until the finalize pass. Holding one per level is
+      quadratic in the document all over again -- the first cut of the iterative parser did
+      exactly that and bought a bigger constant rather than a better order, which is why
+      40 000 reference-free levels still died (Codex review). So prune on a cheap NECESSARY
+      condition first: a direct reference is literally a %name% inside this body, in an
+      option, a conditional branch or a separator, so a body with no such token anywhere
+      cannot have one. Sound, one linear scan, and it cannot change the tree -- the
+      finalize pass would have cleared Raw on exactly these. What stays quadratic is a deep
+      chain where every level really does carry a reference, and there the reference engine
+      keeps the same bodies for the same reason. }
+    if HasReferenceText(content) then
+    begin
+      node.Raw := content;   { tentative -- the finalize pass decides }
+      pend.Add(node);
+    end;
   end;
 
   procedure MakePerm(const rawInner: string; list: TNodeList);
@@ -1778,11 +1797,12 @@ var
   begin
     node := TNode.Create;
     node.Kind := nkPermutation;
+    list.Add(node);   { attached first -- see MakeBrace }
     node.PermOptions := TObjectList<TPermOption>.Create(True);
-    list.Add(node);
     ParsePermConfig(rawInner, node, content);
     SplitTopLevel(content, parts);
     try
+      node.PermOptions.Capacity := parts.Count;
       pendingSep := ''; hasPending := False;
       for i := 0 to parts.Count - 1 do
       begin
@@ -1828,9 +1848,9 @@ var
         if trimmed <> '' then
         begin
           opt := TPermOption.Create;
-          opt.Nodes := TNodeList.Create(True);
+          node.PermOptions.Add(opt);   { held before it is filled, as above }
           opt.Separator := pendingSep; opt.HasSeparator := hasPending;
-          node.PermOptions.Add(opt);
+          opt.Nodes := TNodeList.Create(True);
           PushJob(trimmed, opt.Nodes);
         end;
         pendingSep := trailingSep; hasPending := hasTrailing;
@@ -1838,8 +1858,13 @@ var
     finally
       parts.Free;
     end;
-    node.Raw := rawInner;   { tentative -- the finalize pass decides }
-    pend.Add(node);
+    { Same necessary-condition prune as the enumeration, over the FULL inner text, since a
+      permutation's separators are part of what the splice re-reads. }
+    if HasReferenceText(rawInner) then
+    begin
+      node.Raw := rawInner;   { tentative -- the finalize pass decides }
+      pend.Add(node);
+    end;
   end;
 
   { The character scan of ONE job's text. Everything it meets that has children becomes a
@@ -1851,8 +1876,11 @@ var
     begin
       if literal.Len > 0 then
       begin
-        node := TNode.Create; node.Kind := nkLiteral; node.Text := literal.Finish;
+        node := TNode.Create; node.Kind := nkLiteral;
+        { Attached before the text is handed over: a literal node carries the largest
+          string this loop produces, and an Add that raised afterwards would strand it. }
         list.Add(node);
+        node.Text := literal.Finish;
         { Finish handed Data out as the node's text, so the buffer must let go of it rather
           than keep writing into a string it no longer owns. Reset, not Init: a flush is
           usually the LAST thing a scan does -- every option of an enumeration ends with

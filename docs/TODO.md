@@ -14,10 +14,25 @@ The single list of open work.
 All three of the 2026-07-25 divergence sweep are closed, all on 2026-08-06 — the
 unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
-and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The last
-engine item here — the recursive parser — was closed on 2026-09-12 and is in Done. What is left
-open is one syntax proposal and one known ordering difference, both of them family questions
-rather than local work.
+and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
+recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
+walk reachable, which is the first item below. The other two are family questions rather than
+local work.
+
+- [ ] **Make the render walk and the tree destructor iterative.** `ParseSequence` was made
+      iterative on 2026-09-12 (spec §5.11) and is no longer the depth limit — an enumeration
+      chain 100 000 levels deep parses. What stops first now are the two walks that are still
+      recursive: `RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`, and
+      `TNode.Destroy` through its owned child lists. They raise `EStackOverflow`, not the
+      parser's old `EOutOfMemory`, which is how they are told apart. Measured: an enumeration
+      chain parses, renders and frees at 40 000 and overflows the destructor at 60 000; a
+      conditional chain is fine at 50 000, since a conditional level costs fewer frames.
+      **Not a regression** — both walks recursed before this release and the parser simply
+      failed first, so every depth any earlier release handled is handled now. Raised by the
+      Codex review of §5.11, which was right that fixing one recursive walk makes the next one
+      reachable. The reference made both of its walks iterative for family issue
+      [spintax-js#68](https://github.com/investblog/spintax-js/issues/68); this port now
+      differs from it only past 50 000 levels.
 
 - [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
       in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
@@ -60,8 +75,12 @@ rather than local work.
       released as soon as it is scanned. Verified as a pure refactor: byte-identical over
       10 560 renders while the same harness reports 3 218 differences against the pre-splice
       engine. 20 000 levels now parse and render in every shape, including two that never
-      worked in any release; the remaining ceiling is between 30 000 and 40 000, in the parse
-      phase, against the reference's just past 40 000, and is recorded as not diagnosed.
+      worked in any release. The first cut moved the quadratic instead of removing it — every
+      construct's body was retained tentatively for the §5.9 marks — and the depth number said
+      so: 20 000 → ~35 000 is the √3 a threefold drop in bytes-per-level predicts, not what
+      removing a quadratic looks like. Pruning on a cheap necessary condition (a body with no
+      `%name%` token cannot hold a direct reference) took parsing to 100 000 levels, and the
+      ceiling moved out of the parser entirely — see the render/destructor item above.
 
 - [x] **A `%var%` directly inside `{…}`/`[…]` is spliced as text before the split**
       (2026-09-12, engine issue [#5](https://github.com/investblog/spintax-win/issues/5),

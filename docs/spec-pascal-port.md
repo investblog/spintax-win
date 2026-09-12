@@ -1198,19 +1198,17 @@ correctly refused to let it ship as one — so the parser was made iterative in 
 | 20 000-deep value, PICKED | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
 | 20 000-deep plain TEMPLATE, no variables | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
 | 30 000 levels, plain template | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
-| 40 000 levels | `EOutOfMemory` | `EOutOfMemory` | `EOutOfMemory` | renders |
-| 50 000 levels | `EOutOfMemory` | `EOutOfMemory` | `EOutOfMemory` | heap abort |
+| 40 000 levels, plain template | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
+| 50 000 levels | `EOutOfMemory` | `EOutOfMemory` | see §5.11 | heap abort |
 
 Two things that table is worth reading for. The cliff was **never created by the splice**: a
 plain nested template with no variables in it at all raised on the old engine at the same depth,
 so any host taking an untrusted TEMPLATE was already exposed. And the fix did not merely restore
 the old reach — every shape at 20 000 renders now, including the two that never worked. The
-remaining ceiling sits **between 30 000 and 40 000** — 30 000 parses and renders, 40 000 does
-not — against the reference's own wall just past 40 000; what consumes the memory there is in
-the parse phase (`SpCompile` alone raises) and is **deliberately recorded as not diagnosed
-further**. `SpValidate` is unaffected at any depth here — it never builds a node tree, which is
-also why its clearing 100 000 levels says nothing about the parser and must not be quoted as if
-it did.
+remaining ceiling is no longer in the parser at all — §5.11 has the shapes and the two walks
+that now stop first, both of them recursive since long before this release. `SpValidate` is
+unaffected at any depth here: it never builds a node tree, which is also why its clearing
+100 000 levels says nothing about the parser and must not be quoted as if it did.
 
 ### 5.10 A one-option construct must not cost an RNG draw
 
@@ -1253,9 +1251,12 @@ and is unchanged.
 ### 5.11 The parser is iterative, and the wall was memory rather than the stack
 
 Rewritten 2026-09-12, in the same release as §5.9, because a Codex review would not let the
-splice ship while it widened the reach of a recursive parser. `ParseSequence` was the last
+splice ship while it widened the reach of a recursive parser. `ParseSequence` was the deepest
 recursive walk in this engine — the hazard §7 names in one line, *follow nesting iteratively
-where input depth is unbounded*, and the one the Python port paid for before us.
+where input depth is unbounded*, and the one the Python port paid for before us. It was not the
+only one, and an earlier draft of this section wrongly called it the last: **the render walk and
+the tree's own destructor still recurse**, which is recorded at the end of this section rather
+than papered over.
 
 **The cause was not the one the hazard predicts, and that decided the design.** A recursive
 descent costs a stack frame per level, so the expected failure is a stack overflow. This engine
@@ -1276,10 +1277,32 @@ that level is scanned — the job slot first, the local right after — so what 
 current text and its siblings instead of every ancestor at once.
 
 The direct-reference marks of §5.9 cannot be decided during the scan, since a construct's
-children do not exist yet. Every enumeration and permutation is recorded with `Raw` set
-tentatively and one flat pass at the end clears it on the constructs that turned out not to hold
-one. `EnumHasDirectReference` and `PermHasDirectReference` read the construct's own options only,
-so by then they have everything they need.
+children do not exist yet. Every candidate is recorded with `Raw` set tentatively and one flat
+pass at the end clears it on the constructs that turned out not to hold one.
+`EnumHasDirectReference` and `PermHasDirectReference` read the construct's own options only, so
+by then they have everything they need.
+
+**That tentative `Raw` undid the fix, and a second review round caught it.** Retaining a
+construct's whole inner text until the finalize pass keeps one copy alive per level — the same
+Θ(n²) the recursion had, moved out of the stack frames and into the tree. It bought a bigger
+constant, not a better order, and the measurement said so plainly: the ceiling went from under
+20 000 to about 35 000, which is roughly the √3 that a threefold drop in bytes-per-level
+predicts, where a real fix removes the quadratic altogether. The cure is a cheap NECESSARY
+condition checked before retaining: a direct reference is literally a `%name%` token inside that
+body — in an option, in a conditional branch, or in a separator — so a body with no such token
+anywhere cannot have one. One linear scan, sound, and it cannot change the tree, because the
+finalize pass would have cleared `Raw` on exactly those constructs. A deep chain where every
+level really does carry a reference stays quadratic, and there the reference engine keeps the
+same bodies for the same reason.
+
+**Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
+is hung on it, and each owning list is reserved to its final size before it is filled, so an
+allocation that raises mid-construction leaves nothing detached for `Result.Free` to miss.
+`TNode.Destroy` and `TPermOption.Destroy` tolerate the nil fields that ordering leaves behind.
+The first cut had this backwards in five places — a conditional's two child lists, both owner
+lists, a permutation option, and worst of them a literal node holding the largest string the
+scan produces — all found by reading the invariant rather than trusting the comment that
+asserted it.
 
 **Verified as a pure refactor, which is the only acceptable result for it.** The §5.9
 differential — 1 760 documents × 6 configurations, 10 560 renders — is **byte-identical** to the
@@ -1288,16 +1311,32 @@ pre-splice engine, so it is not blind. The corpus, both local suites and both GS
 unchanged. What moved is only the depth table in §5.9: 20 000 levels now parse and render in
 every shape, including the two that never worked in any earlier release.
 
-Where it still stops is recorded rather than explained: 30 000 levels parse and render, 40 000
-raise, and the phase is the parse (`SpCompile` alone is enough). The node tree's own footprint
-is the obvious suspect and was **not** confirmed, so it is written here as undiagnosed instead
-of as a cause. The reference clears 40 000 and dies at 50 000, so this port is within a factor
-on the same wall rather than level with it.
+**Where it stops now, and in which walk.** Parsing is no longer the limit: an enumeration chain
+100 000 levels deep parses. What fails past that is the two walks that are still recursive — the
+render walk (`RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`) and the
+tree's own destructor, which recurses through the owned child lists. They fail with
+`EStackOverflow`, not `EOutOfMemory`, which is how they are told apart from the parser's old
+wall:
+
+| shape, measured on the shipped build | outcome |
+|---|---|
+| enumeration chain, parse only, 100 000 levels | parses |
+| enumeration chain, parse + free + **render**, 40 000 | fine |
+| enumeration chain, parse **and free**, 60 000 | `EStackOverflow` in the destructor |
+| conditional chain, parse + free + render, 50 000 | fine |
+
+A conditional level costs fewer destructor frames than an enumeration level, which is why the
+two chains stop in different places. None of this is new behaviour: both walks recursed before
+this release, and the parser simply failed first, so the limit was never reachable. Every depth
+the previous release handled is handled now, and the depths in §5.9's table that never worked in
+any release do. Making the render walk and the destructor iterative is filed in the backlog, not
+done here — the reference made both of its walks iterative for family issue #68, and this port
+now differs from it only past 50 000 levels.
 
 **The deep depths are measured, not gated**, and deliberately so: a 20 000-level render costs
 7.6 s and the local suite runs twice on every push. The suite pins the ROUTE at 5 000 — a
-regression that made an unpicked branch raise again fails there — while the numbers that
-separate the two parsers live here, the same arrangement §5.6 uses for its nesting-cost table.
+regression that made an unpicked branch raise again fails there — while the numbers live here,
+the same arrangement §5.6 uses for its nesting-cost table.
 
 ## 6. Trust model
 
