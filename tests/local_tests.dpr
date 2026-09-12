@@ -1437,6 +1437,21 @@ begin
   Check('splice/reference-in-a-per-element-separator-holding-brackets',
         RenderVars('[a <[%S%]> | b]', ['S'], [', '], True), 'a[, ]b');
 
+  { The two separator grammars DISAGREE about a quote, and the prefilter has to satisfy
+    both. A config stops at the first `>` outside quotes (ParsePermConfig); a per-element
+    separator treats the quote as ordinary text and stops at the first `>` at all
+    (extractTrailingSep, and the reference's own version of it). Reading only the config's
+    rule made this look unterminated, so the walk fell through, skipped the bracket pair,
+    and rendered a literal %S%. Measured against @spintax/core 0.7.0, 2026-09-12: the quote
+    is part of the separator and survives into the output. }
+  Check('splice/per-element-separator-with-an-unmatched-quote',
+        RenderVars('[a <"[%S%]> | b]', ['S'], [', '], True), 'a"[, ]b');
+  Check('splice/per-element-separator-with-a-quote-and-no-brackets',
+        RenderVars('[a <"%S%> | b]', ['S'], [', '], True), 'a", b');
+  { ...and the config's rule still holds where IT applies: a quoted `>` is separator text. }
+  Check('splice/config-separator-holding-a-quoted-angle-bracket',
+        RenderVars('[<sep="a>b">x|y]', [], [], True), 'xa>by');
+
   { A reference buried TWO conditionals deep still belongs to the construct around them, and
     that is the shape the retention prefilter is most likely to get wrong if anyone
     "simplifies" it: MayHoldDirectReference must ENTER a conditional and step over anything

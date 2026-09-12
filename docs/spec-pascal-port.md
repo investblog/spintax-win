@@ -1309,29 +1309,45 @@ unmatched bracket as the literal the parser treats it as. A deep chain where eve
 does carry a direct reference stays quadratic, and there the reference engine keeps the same
 bodies for the same reason.
 
-**Two false negatives got through the first two cuts of it, both found by review and both real
-output bugs.** A `<…>` region is separator TEXT, so the brackets in `[<sep="[%S%]">a|b]` are
-characters; skipping them the way the walk skips a nested construct hid the reference, no body
-was retained, and the separator reached the output as a literal `%S%`. And a conditional's two
-branches were scanned as ONE span, where an opening brace in the then-branch can pair with a
-closing brace in the else-branch and carry the walk across the separator — the parser parses
-them separately, so the prefilter does too now. Every `<…>` region is flat-tested for a
-reference and the walk then continues INTO it rather than past it: adding a check can only add
-false positives, which cost memory and not answers.
+**Three false negatives got through successive cuts of it, every one a real output bug, and the
+last one is the most instructive.** First: a `<…>` region is separator TEXT, so the brackets in
+`[<sep="[%S%]">a|b]` are characters, and skipping them the way the walk skips a nested construct
+hid the reference and printed a literal `%S%`. Second: a conditional's two branches were scanned
+as ONE span, where an opening brace in the then-branch can pair with a closing brace in the
+else-branch and carry the walk across the separator — the parser parses them separately, so the
+prefilter does too now. Third: **the two separator grammars disagree, and the prefilter has to
+satisfy both.** A config ends at the first `>` OUTSIDE quotes, which is how `ParsePermConfig`
+reads it; a per-element separator treats a quote as ordinary text and ends at the first `>` at
+all, which is how `extractTrailingSep` and the reference's own version read it. Honouring only
+the config's rule made `[a <"[%S%]> | b]` look unterminated, so the walk fell through and skipped
+the bracket pair. The fix takes the WIDER of the two endpoints — where a prefilter is allowed to
+be wrong.
+
+**Its cost had to be checked against the ORDER, not against "faster".** The first `<…>` handling
+tested the region and then advanced a single character, so a body of bare `<` rescanned its own
+suffix once per bracket: 20 000 of them cost 187 ms, 40 000 688, 80 000 4 562 and 160 000
+15 578 — four times the work for twice the input, the signature this section already paid for
+once. A region that has just been tested and holds no reference can be resumed AFTER its `>`,
+since a `%name%` cannot straddle one, and a search that reaches the end of a span without
+finding `>` proves no later `<` in that span will either. Both together: 0 ms at every one of
+those sizes.
 
 **The property is verified against a build with the prefilter compiled out**, since that is the
-only direction that would be a behaviour bug rather than a cost one. Three corpora, **12 618
+only direction that would be a behaviour bug rather than a cost one. Four corpora, **12 720
 renders, all identical** to the prefilter-free build: the 1 760-document differential; 332
 adversarial shapes putting a reference in an option, a permutation element, `sep`, `lastsep`, a
 per-element separator, the single-separator form, either branch of a conditional, an inverted
 one, two conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the
 shapes where the reference sits inside a NESTED construct and the shapes with an unmatched
-bracket around it; and the separator-with-brackets shapes above. None of it is a vacuous zero —
-the same three corpora differ from the pre-splice engine in 3 218, 1 302 and 48 renders. Three
-local checks pin the separator shapes and two pin a reference two conditionals deep; disabling
-the `<…>` flat test fails exactly the first three, and stopping the walk from entering
-conditionals fails exactly the other two plus the two branch-trimming checks. Both were built
-and run, not assumed.
+bracket around it; and two sets of separator shapes — brackets and braces inside a separator,
+an unmatched quote, a quoted `>`, nested `<…>`, and bare `<` runs. None of it is a vacuous
+zero: the four corpora differ from the pre-splice engine in 3 218, 1 302, 48 and 48 renders.
+
+Six local checks pin the separator shapes and two pin a reference two conditionals deep, and
+each was confirmed capable of failing by building the mutant that would break it: disabling the
+`<…>` flat test fails exactly the three bracket ones; honouring only the config's quote grammar
+fails exactly the unmatched-quote one; stopping the walk from entering conditionals fails
+exactly the two nested-conditional checks plus the two branch-trimming ones.
 
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
 is hung on it, each owning list is reserved to its final size before it is filled, and the

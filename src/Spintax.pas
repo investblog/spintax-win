@@ -1448,8 +1448,8 @@ end;
 
   Iterative, like every walk here. }
 function MayHoldDirectReference(const s: string): Boolean;
-var span: TArray<Integer>; top, i, upto, endp, j, k: Integer;
-    head: TCondHead; inQuote: Boolean;
+var span: TArray<Integer>; top, i, upto, endp, j, k, kPlain, kQuoted: Integer;
+    head: TCondHead; inQuote, noClose: Boolean;
 
   procedure PushSpan(from, upTo_: Integer);
   begin
@@ -1484,20 +1484,46 @@ begin
   begin
     Dec(top, 2);
     i := span[top]; upto := span[top + 1];
+    { per SPAN: a failed search for `>` only rules out the rest of THIS range }
+    noClose := False;
     while i < upto do
     begin
       if s[i] = '<' then
       begin
-        { to the first `>` that is not inside quotes, as ParsePermConfig reads a config }
-        k := i + 1; inQuote := False;
+        { Once a forward search has run to the end of this span without finding a `>`, no
+          LATER `<` in it can find one either -- remembering that is what keeps a body of
+          bare `<` from costing a scan each (Codex review; the first cut was quadratic and
+          the comment claimed one linear scan). }
+        if noClose then begin Inc(i); Continue; end;
+        { TWO grammars meet here and they disagree, so take the WIDER region. A config
+          stops at the first `>` OUTSIDE quotes, which is how ParsePermConfig reads it; a
+          per-element separator treats a quote as ordinary text and stops at the first `>`
+          at all, which is how extractTrailingSep reads it. Scanning only the config's way
+          made `[a <"[%S%]> | b]` look unterminated, so the walk fell through and skipped
+          the bracket pair -- and the separator rendered a literal %S%. }
+        kPlain := 0; kQuoted := 0; inQuote := False;
+        k := i + 1;
         while k < upto do
         begin
           if s[k] = '"' then inQuote := not inQuote
-          else if (s[k] = '>') and not inQuote then Break;
+          else if s[k] = '>' then
+          begin
+            if kPlain = 0 then kPlain := k;
+            if not inQuote then begin kQuoted := k; Break; end;
+          end;
           Inc(k);
         end;
-        if (k < upto) and FlatRefIn(i + 1, k) then Exit(True);
-        Inc(i);
+        if (kPlain = 0) and (kQuoted = 0) then
+        begin
+          noClose := True;
+          Inc(i);
+          Continue;
+        end;
+        if kQuoted > kPlain then endp := kQuoted else endp := kPlain;
+        if FlatRefIn(i + 1, endp) then Exit(True);
+        { The whole region was just tested, and a `%name%` cannot straddle a `>`, so
+          resuming AFTER it loses nothing and makes the pass linear. }
+        i := endp + 1;
         Continue;
       end;
       if s[i] = '{' then
@@ -1923,10 +1949,10 @@ var
       40 000 reference-free levels still died (Codex review). So prune on a cheap NECESSARY
       condition first: a direct reference is literally a %name% inside this body, in an
       option, a conditional branch or a separator, so a body with no such token anywhere
-      cannot have one. Sound, one linear scan, and it cannot change the tree -- the
-      finalize pass would have cleared Raw on exactly these. What stays quadratic is a deep
-      chain where every level really does carry a reference, and there the reference engine
-      keeps the same bodies for the same reason. }
+      cannot have one. Linear in the body, and it cannot change the tree -- the finalize
+      pass would have cleared Raw on exactly these. What stays quadratic is a deep chain
+      where every level really does carry a reference, and there the reference engine keeps
+      the same bodies for the same reason. }
     if MayHoldDirectReference(content) then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
