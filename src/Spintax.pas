@@ -1925,6 +1925,7 @@ var
     try
       node.PermOptions.Capacity := parts.Count;
       pendingSep := ''; hasPending := False;
+      keepRaw := False;
       for i := 0 to parts.Count - 1 do
       begin
         part := parts[i];
@@ -1973,6 +1974,12 @@ var
           opt.Separator := pendingSep; opt.HasSeparator := hasPending;
           opt.Nodes := TNodeList.Create(True);
           PushJob(trimmed, opt.Nodes);
+          { Judge the text this option ACTUALLY keeps -- the same text the authority's node
+            walk will see -- and not the raw body, which still holds separators the loop
+            DISCARDS: a trailing separator pending for an empty part is overwritten and never
+            attached, so `[a <%x%> || ...]` carries a %x% no node will ever hold. Scanning
+            the raw body saw it at every ancestor and retained every body (Codex review). }
+          if not keepRaw then keepRaw := MayHoldDirectReference(trimmed);
         end;
         pendingSep := trailingSep; hasPending := hasTrailing;
       end;
@@ -1988,9 +1995,12 @@ var
       positive at every ancestor, which is the retention quadratic all over again (Codex
       review, three rounds). Only a leading region is config and only a trailing one on a
       non-final part is a separator; the rest is option text, and option text is exactly
-      what the structural scan is for. }
-    keepRaw := HasReferenceText(node.PermSep) or
-               (node.PermHasLastSep and HasReferenceText(node.PermLastSep));
+      what the structural scan is for -- run, in the loop above, over each option's KEPT
+      text rather than the raw body, so a discarded separator cannot masquerade as one.
+      With both halves the decision reads exactly what the authority reads. }
+    if not keepRaw then
+      keepRaw := HasReferenceText(node.PermSep) or
+                 (node.PermHasLastSep and HasReferenceText(node.PermLastSep));
     if not keepRaw then
       for i := 0 to node.PermOptions.Count - 1 do
         if node.PermOptions[i].HasSeparator and
@@ -1999,7 +2009,7 @@ var
           keepRaw := True;
           Break;
         end;
-    if keepRaw or MayHoldDirectReference(content) then
+    if keepRaw then
     begin
       node.Raw := rawInner;   { tentative -- the finalize pass decides }
       pend.Add(node);

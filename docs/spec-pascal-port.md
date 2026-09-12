@@ -1326,11 +1326,20 @@ under a comment claiming one linear pass (187 ms at 20 000 bare `<`, 15 578 at 1
 None of it was necessary. By the time a permutation's body is judged, `ParsePermConfig` has run
 and the per-element separators are collected, so the EXACT fields the authority reads —
 `PermSep`, `PermLastSep` and each option's separator — are already in hand. `MakePerm` reads
-those with the authority's own `HasReferenceText`, and the prefilter walks only the body's option
-text, which is what a structural scan is for. Only a leading region is config and only a trailing
-one on a non-final part is a separator; everything else between angle brackets is option text.
-The prefilter itself no longer knows what a separator is. Measured on the angle-wrapped
+those with the authority's own `HasReferenceText`. Only a leading region is config and only a
+trailing one on a non-final part is a separator; everything else between angle brackets is option
+text. The prefilter itself no longer knows what a separator is. Measured on the angle-wrapped
 permutation chain: `EOutOfMemory` at 32 000 before, parses after.
+
+**And "option text" has to mean the text each option KEEPS, which a ninth round caught.** The
+first cut of the exact read still ran the structural scan over the permutation's raw body — and
+the raw body holds separators the parser DISCARDS. A trailing separator pending for an empty
+part is overwritten on that empty iteration and never attached, so in `[a <%x%> || …]` there is
+a `%x%` that no node will ever hold; the authority rightly finds no direct reference there, and
+the raw scan found one at every ancestor. The scan now runs, inside the option loop, over each
+kept option's trimmed text — the very text pushed as that option's parse job and later walked by
+the authority. With the parsed separators on one side and the kept option texts on the other, the
+decision reads exactly what the authority reads, and nothing it does not.
 
 **What the prefilter buys is retention, and nothing more is claimed for it.** It is linear in a
 body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²) TIME, because
@@ -1342,8 +1351,10 @@ upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of
 per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
 
 **The property is verified against a build with the prefilter AND the separator read compiled
-out**, since a false negative is the only direction that would be a behaviour bug. Four corpora,
-**12 720 renders, all identical**: the 1 760-document differential; 332 adversarial shapes
+out**, since a false negative is the only direction that would be a behaviour bug. Five corpora,
+**12 768 renders, all identical** — including a set of discarded-separator shapes (`||` after a
+separator, separators around empty parts, a leading empty part): the 1 760-document
+differential; 332 adversarial shapes
 putting a reference in an option, a permutation element, `sep`, `lastsep`, a per-element
 separator, the single-separator form, either branch of a conditional, an inverted one, two
 conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the shapes
