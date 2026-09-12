@@ -364,13 +364,29 @@ output has to supply them through a host variable, the same as any other reserve
 character.
 
 And the forms that would break **without** the lifting of §7 — `[b]bold[/b]`, `[10|20]`, a
-`/#` fragment URL, a line opening with `#set`, and a block whose text starts with `?` or
-`plural ` (a conditional and a plural here, an ordinary spin in SER) — all survive because
-they are lifted, not because they were harmless.
+`/#` fragment URL, a line opening with `#set` — all survive because they are lifted, not
+because they were harmless.
+
+A block whose text starts with `?` or `plural ` (a conditional and a plural here, an ordinary
+spin in SER) survives by a different escape: an **empty enumeration in front of the first
+option**, `{?a?b|c}` → `{{}?a?b|c}`. It renders to nothing, it is not a `?`, and the block
+stays a spin over the author's own text. Until 2026-09-12 the first character was lifted into a
+literal variable instead (`{%__gsa_l1%a?b|c}` with `l1 = ?`), and that stopped working the day
+the family made a `%var%` written directly inside a construct splice back as TEXT before the
+split (`@spintax/core` 0.7.0, engine spec §5.9): the lifted `?` came back into the body ahead
+of the parse and the block was a conditional again, in every engine. `gsa_tests` caught it in
+the build that made the new corpus green.
+
+The same rule has a consequence this converter cannot shield: a lifted value is split on a
+`|` it carries whenever its reference sits directly inside a spin, because the sentinels cover
+brackets, `%` and `#`, and the family's `neutralize` deliberately does not cover the pipe. A
+macro argument with a pipe in it, inside a spin, is therefore torn into options — measured on
+the reference (`{a|%m%}` with `m = p|q` spins over `a`, `p` and `q`). No SER macro seen so far
+carries one; it is recorded here rather than engineered around.
 
 ## 12. How this is tested
 
-`tests/gsa_tests.dpr` — 94 assertions, run in CI beside the engine's suites, in both an
+`tests/gsa_tests.dpr` — 99 assertions, run in CI beside the engine's suites, in both an
 optimised and a `-Co -Cr` (overflow and range checked) build, with warnings as errors.
 
 Its rule is **convert-then-render**: assertions are made on what the engine *prints*, never

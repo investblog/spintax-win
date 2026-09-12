@@ -131,15 +131,25 @@ begin
   { What the value's right-trim removes, and what it must NOT. The rule is
     `(.*?)[ \t]*\r?$` -- spaces and tabs only. This port used PHP's rtrim charlist, which
     also eats \0 and \x0B, so a value ending in either came out short. Measured against the
-    reference 2026-07-25; 720 cases of it in the commit's differential. }
-  Check('trim/space tail',   RenderFirst('#set %x% = A  '#10'[%x%]'), #10'A');
-  Check('trim/tab tail',     RenderFirst('#set %x% = A'#9#10'[%x%]'), #10'A');
-  Check('trim/formfeed kept',RenderFirst('#set %x% = A'#12#10'[%x%]'), #10'A'#12);
-  Check('trim/NUL kept',     RenderFirst('#set %x% = A'#0#10'[%x%]'), #10'A'#0);
-  Check('trim/VT kept',      RenderFirst('#set %x% = A'#11#10'[%x%]'), #10'A'#11);
-  Check('trim/VT kept in def',RenderFirst('#def %x% = A'#11#10'[%x%]'), #10'A'#11);
-  Check('trim/VT-only value', RenderFirst('#set %x% = '#11#10'[%x%]'), #10#11);
-  Check('trim/NUL inside',   RenderFirst('#set %x% = A'#0'B'#10'[%x%]'), #10'A'#0'B');
+    reference 2026-07-25; 720 cases of it in the commit's differential.
+
+    The probe is a TOP-LEVEL reference, where a value is finished text. It used to be
+    `[%x%]`, and that stopped measuring the directive trim on 2026-09-12: a value written
+    directly inside a construct is now spliced as text and the construct re-read (spec
+    sec.5.9), and the permutation parser PHP-trims its elements -- so the bracket probe eats
+    the NUL and the VT the directive kept, in every engine. Re-measured against
+    @spintax/core 0.7.0 on both probes; the last check pins the bracket shape so the
+    difference stays visible rather than being absorbed. }
+  Check('trim/space tail',   RenderFirst('#set %x% = A  '#10'%x%'), #10'A');
+  Check('trim/tab tail',     RenderFirst('#set %x% = A'#9#10'%x%'), #10'A');
+  Check('trim/formfeed kept',RenderFirst('#set %x% = A'#12#10'%x%'), #10'A'#12);
+  Check('trim/NUL kept',     RenderFirst('#set %x% = A'#0#10'%x%'), #10'A'#0);
+  Check('trim/VT kept',      RenderFirst('#set %x% = A'#11#10'%x%'), #10'A'#11);
+  Check('trim/VT kept in def',RenderFirst('#def %x% = A'#11#10'%x%'), #10'A'#11);
+  Check('trim/VT-only value', RenderFirst('#set %x% = '#11#10'%x%'), #10#11);
+  Check('trim/NUL inside',   RenderFirst('#set %x% = A'#0'B'#10'%x%'), #10'A'#0'B');
+  Check('trim/NUL-in-a-bracket-is-element-trim',
+        RenderFirst('#set %x% = A'#0#10'[%x%]'), #10'A');
 
   { Dropping the CR feeds the blank-run collapse -- three or more bare LFs become two --
     which a CRLF run used to be invisible to. Three CRLF directive lines now collapse the
@@ -1172,6 +1182,37 @@ end;
   engines expand by different mechanisms and stop in different places -- so each pins its
   own bound in its own suite, which is what the length check below is for. No fixture covers
   any of this; the corpus cannot carry a case that crashes the runner. }
+function CountSub(const s, sub: string): Integer;
+var p: Integer; rest: string;
+begin
+  Result := 0;
+  rest := s;
+  while True do
+  begin
+    p := Pos(sub, rest);
+    if p = 0 then Break;
+    Inc(Result);
+    rest := Copy(rest, p + Length(sub), MaxInt);
+  end;
+end;
+
+{ Render with host variables and a first- or last-pick RNG, no post-process. }
+function RenderVars(const tmpl: string; const names, values: array of string;
+  last: Boolean): string;
+var ctx: TSpContext; i: Integer;
+begin
+  ctx := Default(TSpContext);
+  ctx.Locale := 'en'; ctx.PostProcess := False;
+  if last then ctx.Rng := TLastRng.Create else ctx.Rng := TFirstRng.Create;
+  ctx.Vars := TStrMap.Create;
+  try
+    for i := 0 to High(names) do ctx.Vars.Add(names[i], values[i]);
+    Result := SpRender(tmpl, ctx);
+  finally
+    ctx.Rng.Free; ctx.Vars.Free;
+  end;
+end;
+
 function BombRender(const body, locale: string): string;
 var r: string;
 begin
@@ -1233,33 +1274,61 @@ begin
         RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'{plural %a%: one|two}', 'en'),
         #10#10);
 
-  { A value that carries no construct is substituted and never expanded again, so it CANNOT
-    be part of an explosion and is not charged -- the reference orders its checks the same
-    way. Charging it made these two ordinary shapes truncate: 2 MB of output from a plain
-    100 KB #set, and ten #def hops over one literal, which is 100 KB of finished text and no
-    recursion at all. Both measured byte-for-byte against @spintax/core 0.5.2 on
-    2026-08-18: 2 048 021 and 102 402 characters, no reference left literal in either.
-    Codex review found this; the first cut of the budget got it wrong. }
+  { EVERY substitution is charged, the plain ones included -- the family's rule since
+    @spintax/core 0.7.0, and PHP's from the start. Until 2026-09-12 a value carrying no
+    construct was free here, on the reasoning that it is substituted and never expanded
+    again, and a check named `bomb/a-plain-value-is-not-charged` pinned it: twenty references
+    to a plain 100 KB #set gave 2 048 021 characters with nothing left literal. The free leaf
+    was the one door left open once a re-read construct (spec sec.5.9) could hand
+    ResolveVariable references its own fixpoint had cut off: 2^12 of them, each to a plain
+    1 KiB value, expanded for nothing -- 4 MiB out of a 1 MiB allowance, an out-of-memory
+    abort at 2^20. Found in the reference's review; the two door checks below are its tests.
+    Measured against @spintax/core 0.7.0 on 2026-09-12: the twenty references leave NINE
+    literal and 1 126 466 characters (ten charges of 100 KB fit the purse and the eleventh is
+    allowed on a purse that is not yet empty); the ten #def hops still give 102 402, for the
+    same arithmetic. Both to the byte here. }
   deep := StringOfChar('w', 100 * 1024);
   tail := '';
   for i := 1 to 20 do tail := tail + '%big% ';
-  Check('bomb/a-plain-value-is-not-charged',
-        BoolToStr(Pos('%big%', RenderIn('#set %big% = ' + deep + #10 + tail, '')) = 0, True),
-        'True');
+  first := RenderIn('#set %big% = ' + deep + #10 + tail, '');
+  Check('bomb/a-plain-value-is-charged-too',
+        IntToStr(Length(first)) + ' ' + IntToStr(CountSub(first, '%big%')), '1126466 9');
   tail := '#set %v0% = ' + deep + #10;
   for i := 1 to 10 do tail := tail + '#def %v' + IntToStr(i) + '% = %v' + IntToStr(i - 1) + '%'#10;
   Check('bomb/a-plain-value-through-ten-def-hops',
         IntToStr(Length(RenderIn(tail + '%v10%', ''))), '102402');
+
+  { The door itself, on both sides of the bracket: 2^12 references to a 1 KiB plain value,
+    reached through a doubling chain. Inside a construct the fixpoint charges the first
+    ~1 MiB and leaves the rest literal, and the re-read must not hand those leftovers to a
+    free path; at top level the same chain used to be bounded by nothing at all. The bound
+    is the reference test's; the byte counts are not gated (1 030 238 and 1 042 451 there). }
+  tail := '#set %d0% = %x% %x%'#10;
+  for i := 1 to 11 do
+    tail := tail + '#set %d' + IntToStr(i) + '% = %d' + IntToStr(i - 1) + '% %d' + IntToStr(i - 1) + '%'#10;
+  deep := StringOfChar('a', 1024);
+  first := RenderVars(tail + '{%d11%}', ['x'], [deep], False);
+  Check('bomb/a-budget-cut-reference-is-not-spliced-for-free',
+        BoolToStr((Length(first) < 1024 * 1024 + 64 * 1024) and (Pos('%x%', first) > 0), True),
+        'True');
+  first := RenderVars(tail + '%d11%', ['x'], [deep], False);
+  Check('bomb/a-plain-value-is-not-a-free-leaf-at-top-level-either',
+        BoolToStr(Length(first) < 1024 * 1024 + 64 * 1024, True), 'True');
 
   { This engine's OWN bound, pinned here because the family says the truncated output is
     deliberately not parity-gated and no fixture carries it: the engines expand by different
     mechanisms and stop in different places, so each pins its own. Ours happens to agree
     with the reference to the byte on this shape, which is worth knowing and is not a
     contract -- what IS the contract is that the render terminates, stays lenient, and
-    leaves what it could not afford as literal. }
+    leaves what it could not afford as literal. Half of what it was (1 198 225) before every
+    substitution was charged: the one at the depth cap used to be free. Same number for the
+    bomb inside braces, here and on the reference. }
   Check('bomb/this-engine-stops-where-it-says-it-does',
         IntToStr(Length(RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', ''))),
-        '1198225');
+        '599193');
+  Check('bomb/inside-braces-stops-at-the-same-place',
+        IntToStr(Length(RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'{%a%}', ''))),
+        '599193');
 
   { CONTROL, and the point of the whole design: an ordinary template never meets the
     budget, so nothing that renders today renders differently. }
@@ -1299,6 +1368,95 @@ begin
         BoolToStr(RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', '') =
                   RenderIn('#set %a% = %b% %b%'#10'#set %b% = %a% %a%'#10'%a%', ''), True),
         'True');
+end;
+
+{ A %var% written DIRECTLY inside braces or square brackets is spliced as TEXT before the
+  construct is split (spec sec.5.9; engine issue #5, spintax-js#78, mirrored from
+  @spintax/core 0.7.0). The corpus carries the rule itself -- nineteen splice/* fixtures --
+  so what is here is what no fixture expresses: the untouched class, the hop budget reached
+  through a macro, the two consequences a triggered construct inherits from PHP's text, the
+  neutralize edge, and the compiled path. Every expectation measured against @spintax/core
+  0.7.0 on 2026-09-12; the RNG is first- or last-pick, which the corpus itself uses. }
+procedure TestSplice;
+var chain, r, x51, y51: string; i: Integer; tpl: TSpTemplate; ctx: TSpContext;
+begin
+  { The untouched class: a value with no structural character re-reads to the very tree the
+    parser built -- same element count, same draws, same order. }
+  Check('splice/plain-values-keep-the-tree',
+        RenderVars('[%a%|%b%|c]', ['a', 'b'], ['x', 'y'], False), 'y c x');
+  Check('splice/plain-values-keep-the-tree-in-braces',
+        RenderVars('{%a%|%b%}', ['a', 'b'], ['x', 'y'], True), 'y');
+
+  { The hop budget is 51 inside a bracket exactly as outside one -- the corpus knot pin,
+    moved inside braces -- and whatever the fixpoint leaves is frozen. }
+  x51 := StringOfChar('x', 51); y51 := StringOfChar('y', 51);
+  Check('splice/knot-in-braces', RenderFirst('#set %b% = x%b%y'#10'{%b%}'), #10 + x51 + '%b%' + y51);
+  Check('splice/mutual-cycle-in-braces', RenderFirst('#set %a% = %b%'#10'#set %b% = %a%'#10'{%a%}'), #10#10'%b%');
+  { Reached through a macro re-parse the construct has already spent one hop: the fixpoint
+    gets 50 passes -- the 51st hop overall -- and a flat 51 would leave %a52% here. }
+  chain := '';
+  for i := 1 to 59 do chain := chain + '#set %a' + IntToStr(i) + '% = %a' + IntToStr(i + 1) + '%'#10;
+  Check('splice/through-a-macro-the-hop-is-already-spent',
+        RenderFirst('#set %v% = {%a1%|x}'#10 + chain + '#set %a60% = END'#10'%v%'), #10#10'%a51%');
+  { One deeper than the corpus's 51st-hop split: the reference is what is left, frozen, not
+    spliced a 52nd time. }
+  chain := '';
+  for i := 1 to 51 do chain := chain + '#set %a' + IntToStr(i) + '% = %a' + IntToStr(i + 1) + '%'#10;
+  Check('splice/52-deep-chain-stays-literal',
+        RenderVars(chain + '#set %a52% = x|y'#10'{%a1%}', [], [], True), #10#10'%a52%');
+  { A frozen leftover inside a nested construct stays frozen there too (last-pick: no swap). }
+  Check('splice/frozen-leftover-in-a-nested-construct',
+        RenderVars('#set %b% = x%b%y'#10'[{%b%}|z]', [], [], True), #10 + x51 + '%b%' + y51 + ' z');
+
+  { Two consequences a TRIGGERED construct inherits from PHP, both new to a tree walk and
+    both absent from the untriggered path, which keeps its tree: a conditional's taken
+    branch is trimmed at the element's edge, and an element that became empty is dropped
+    before the shuffle. The third check is the control -- no direct reference, no re-read,
+    the empty element kept. }
+  Check('splice/taken-branch-trimmed-at-the-edge',
+        RenderVars('#set %f% = 1'#10'[{?f? %L% |y}|c]', ['L'], ['x'], True), #10'x c');
+  Check('splice/empty-element-dropped',
+        RenderVars('#set %f% = 1'#10'[a|{?f?%E%|x}|c]', ['E'], [''], True), #10'a c');
+  Check('splice/untriggered-empty-element-kept',
+        RenderVars('#set %f% = 1'#10'[a|{?f?|x}|c]', [], [], True), #10'a  c');
+
+  { The single-separator config form is text to the reference too. }
+  Check('splice/single-separator-form-from-a-variable',
+        RenderVars('[<%S%>a|b]', ['S'], ['+'], True), 'a+b');
+  { A top-level conditional is not a construct that splits: its branch is finished text. }
+  Check('splice/top-level-conditional-does-not-split',
+        RenderVars('{?L?%L%|none}', ['L'], ['x|y'], True), 'x|y');
+  { An undefined name and a list side by side: one literal element, two spliced ones. }
+  Check('splice/undefined-beside-a-list',
+        RenderVars('[%nope%|%L%]', ['L'], ['x|y'], True), '%nope% x y');
+
+  { neutralize() shields a value's brackets, not its pipe: inside the author's own construct
+    a neutralized list still splits, in every engine -- this one was immune only by the
+    defect. Shielding the pipe would be a family-wide contract change. }
+  Check('splice/neutralized-value-still-splits-on-its-pipe',
+        RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], True), '[a, b]');
+  Check('splice/neutralized-value-still-splits-on-its-pipe-first',
+        RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], False), 'b], [a');
+
+  { Deep nesting with a reference in every level answers instead of overflowing: the
+    direct-reference walk and the re-read are both iterative. }
+  r := '';
+  for i := 1 to 5000 do r := r + '{%x%|';
+  r := r + 'z';
+  for i := 1 to 5000 do r := r + '}';
+  Check('splice/deep-nesting-answers', RenderVars(r, ['x'], ['a'], False), 'a');
+
+  { The compiled path keeps the raw body across the compile, so a compiled template splices
+    exactly as SpRender does. }
+  tpl := SpCompile('[<minsize=2;maxsize=2;sep=", ">%L%]');
+  try
+    ctx := Default(TSpContext);
+    ctx.Locale := 'en'; ctx.PostProcess := False; ctx.Rng := TFirstRng.Create;
+    ctx.Vars := TStrMap.Create; ctx.Vars.Add('L', 'a|b|c');
+    try
+      Check('splice/compiled-template-splices-too', SpRenderCompiled(tpl, ctx), 'b, c');
+    finally ctx.Rng.Free; ctx.Vars.Free; end;
+  finally tpl.Free; end;
 end;
 
 { Conditional truthiness over the FULL whitespace class.
@@ -2197,6 +2355,7 @@ begin
   TestPluralFormCounting;
   TestConditionalTruthiness;
   TestRenderExpansionBudget;
+  TestSplice;
   TestIncludes;
   TestIncludeAnchor;
   TestIncludeResolver;

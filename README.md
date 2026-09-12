@@ -100,7 +100,7 @@ cross-engine gate. Measured on this port:
 
 | corpus file            | cases | passed | note                                  |
 |------------------------|-------|--------|---------------------------------------|
-| render-semantics       | 80    | 80     | plurals, conditionals, permutations, variables, set/def |
+| render-semantics       | 99    | 99     | plurals, conditionals, permutations, variables, set/def, the text splice of a variable inside a construct |
 | validate               | 70    | 70     | bracket/directive/permutation/plural/variable diagnostics |
 | render-postprocess     | 43    | 43     | full 12-step pipeline                 |
 | render-deterministic   | 16    | 16     | variable substitution, enumeration selection |
@@ -109,7 +109,7 @@ cross-engine gate. Measured on this port:
 | neutralize             | 10    | 10     | T2 shielding round-trip               |
 | render-rng-selection   | 10    | 10     | selection semantics under injected RNG |
 
-Totals: **`PASS=254 FAIL=0 SKIP=4`** over 258 cases. Only `kind:rng` render cases
+Totals: **`PASS=273 FAIL=0 SKIP=4`** over 277 cases. Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 

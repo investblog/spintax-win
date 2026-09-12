@@ -829,14 +829,22 @@ begin
               branch every time, where GSA spins both. A MALFORMED conditional -- a block
               opening with a question mark but carrying no second one -- is not affected,
               because the engine already falls through to an enumeration there; the escape
-              covers both rather than trying to tell them apart. Lifting the first
-              character defeats the prefix test while leaving the block a spin and the
-              character in the output. }
+              covers both rather than trying to tell them apart.
+
+              The escape is an EMPTY enumeration in front of the first option: it renders
+              to nothing, it is not a `?`, and the block stays a spin over the author's own
+              text. Until 2026-09-12 the first character was lifted into a literal variable
+              instead, and that stopped working the day the family made a `%var%` written
+              directly inside a construct splice back as TEXT before the split
+              (@spintax/core 0.7.0, engine issue #5): the lifted `?` came back into the
+              body ahead of the parse and the block was a conditional again, in every
+              engine. Measured on the reference before choosing this form: the escaped
+              conditional shape spins over `?a?b` and `c` with no diagnostic, and so does
+              the plural shape. }
             if collectOnly then
               WalkTags(inner, ctx, True)
             else if (inner <> '') and ((inner[1] = '?') or (Copy(inner, 1, 7) = 'plural ')) then
-              res := res + '{' + ctx.Lift.Ref('l', inner[1])
-                         + WalkTags(Copy(inner, 2, MaxInt), ctx, False) + '}'
+              res := res + '{{}' + WalkTags(inner, ctx, False) + '}'
             else
               res := res + '{' + WalkTags(inner, ctx, False) + '}';
           end;

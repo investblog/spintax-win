@@ -1369,6 +1369,16 @@ type
     CondThen, CondElse: TNodeList;
     // plural
     PluralCountRaw, PluralFormsRaw: string;
+    { enumeration / permutation: the inner text, kept ONLY when the construct holds a direct
+      `%var%` reference (EnumHasDirectReference / PermHasDirectReference). The renderer
+      splices such a value into the body as TEXT and re-reads the construct
+      (SpliceConstruct), because a `|` inside a substituted value separates options in the
+      reference engines -- their expansion runs before any bracket is read. Empty on every
+      other construct, so nothing else pays for it and the parsed tree stays the one
+      rendered. For a permutation it is the FULL inner text, `<config>` included: the
+      re-read starts from the config again, so `[<sep="%S%">a|b]` takes its separator from
+      the value. Never empty when kept -- a direct reference is at least `%x%`. }
+    Raw: string;
     destructor Destroy; override;
   end;
 
@@ -1385,6 +1395,84 @@ begin
   CondThen.Free;
   CondElse.Free;
   inherited;
+end;
+
+{ A `%var%` reference written inside a separator string -- the reference's REFERENCE_RE,
+  /%\w+%/u, whose \w is ASCII. }
+function HasReferenceText(const s: string): Boolean;
+var i, j: Integer;
+begin
+  for i := 1 to Length(s) do
+    if s[i] = '%' then
+    begin
+      j := i + 1;
+      while (j <= Length(s)) and IsAsciiWord(s[j]) do Inc(j);
+      if (j > i + 1) and (j <= Length(s)) and (s[j] = '%') then Exit(True);
+    end;
+  Result := False;
+end;
+
+{ Does a construct body hold a `%var%` that expansion would splice at THIS construct's own
+  level? One at the top level of an option counts, and so does one inside a conditional's
+  branches: the reference engines resolve conditionals before they expand, so a branch's text
+  lands in the body ahead of the split. Nested enumerations / permutations / plurals are
+  not entered -- a value inside them is spliced when THEY render, and a `|` it carries
+  belongs to them.
+
+  `pending` is the caller's seed, the option lists of the construct being parsed, and is
+  drained iteratively like every walk here: a deep chain of conditionals is content, and
+  the parser must not overflow on content. }
+function DrainDirectReference(pending: TList<TNodeList>): Boolean;
+var list: TNodeList; i: Integer;
+begin
+  while pending.Count > 0 do
+  begin
+    list := pending[pending.Count - 1];
+    pending.Delete(pending.Count - 1);
+    for i := 0 to list.Count - 1 do
+    begin
+      if list[i].Kind = nkVariable then Exit(True);
+      if list[i].Kind = nkConditional then
+      begin
+        pending.Add(list[i].CondThen);
+        pending.Add(list[i].CondElse);
+      end;
+    end;
+  end;
+  Result := False;
+end;
+
+function EnumHasDirectReference(node: TNode): Boolean;
+var pending: TList<TNodeList>; i: Integer;
+begin
+  pending := TList<TNodeList>.Create;
+  try
+    for i := 0 to node.EnumOptions.Count - 1 do pending.Add(node.EnumOptions[i]);
+    Result := DrainDirectReference(pending);
+  finally
+    pending.Free;
+  end;
+end;
+
+{ The reference engines expand the config and the per-element separators too -- to them it
+  is all text -- so a reference written there is as direct as one written in an element. }
+function PermHasDirectReference(node: TNode): Boolean;
+var pending: TList<TNodeList>; i: Integer;
+begin
+  if HasReferenceText(node.PermSep) or
+     (node.PermHasLastSep and HasReferenceText(node.PermLastSep)) then Exit(True);
+  pending := TList<TNodeList>.Create;
+  try
+    for i := 0 to node.PermOptions.Count - 1 do
+    begin
+      if node.PermOptions[i].HasSeparator and HasReferenceText(node.PermOptions[i].Separator) then
+        Exit(True);
+      pending.Add(node.PermOptions[i].Nodes);
+    end;
+    Result := DrainDirectReference(pending);
+  finally
+    pending.Free;
+  end;
 end;
 
 { forward }
@@ -1663,6 +1751,7 @@ begin
       end;
       pendingSep := trailingSep; hasPending := hasTrailing;
     end;
+    if PermHasDirectReference(Result) then Result.Raw := rawInner;
   finally
     parts.Free;
   end;
@@ -1694,6 +1783,7 @@ begin
       nl := ParseSequence(parts[i]);
       Result.EnumOptions.Add(nl);
     end;
+    if EnumHasDirectReference(Result) then Result.Raw := content;
   finally
     parts.Free;
   end;
@@ -1770,6 +1860,12 @@ type
       #include children -- see SP_RENDER_EXPANSION_BUDGET. A pointer because TRenderOpts is
       copied at every nesting step and the count has to be shared, not forked. }
     Budget: PInteger;
+    { Every reference is literal from here down (SpliceConstruct). Set for the subtree of a
+      construct whose textual fixpoint ran out of passes: the reference runs ONE fixpoint of
+      51 passes and then reads text, so whatever it left unexpanded stays unexpanded -- in
+      the body, in a nested construct, in a plural slot. Without this a leftover would earn
+      a fresh allowance from every walker that met it. }
+    Frozen: Boolean;
   end;
 
 function RenderNodes(nodes: TNodeList; const opts: TRenderOpts): string; forward;
@@ -1802,17 +1898,36 @@ begin
   Result := True;
 end;
 
-function ExpandVarsOnly(const text: string; const opts: TRenderOpts): string;
+{ The passes a textual fixpoint may run from this point of the walk: the reference's loop
+  is `<= MAX_VARIABLE_DEPTH` -- 51 passes, once, over the whole text -- and a construct or
+  slot reached through a macro re-parse has already spent `Depth` of those hops in
+  ResolveVariable. Never below one. }
+function PassesLeft(const opts: TRenderOpts): Integer;
+begin
+  Result := MAX_VARIABLE_DEPTH - opts.Depth + 1;
+  if Result < 1 then Result := 1;
+end;
+
+{ Variable-expansion ONLY (the plugin's expand_variables fixpoint) -- enumerations and
+  permutations stay literal -- plus the one fact a caller needs: whether a pass came back
+  unchanged before the pass budget ran out. Not converged means the text was still changing
+  on the last allowed pass, a cycle or a chain deeper than the budget, and the caller must
+  then keep every leftover reference literal (Frozen), because the reference never expands
+  again after its one fixpoint. Under Frozen nothing is expanded at all. }
+function ExpandVarsFixpoint(const text: string; const opts: TRenderOpts; passes: Integer;
+  out converged: Boolean): string;
 var iter, i, j: Integer; changed, hasPct: Boolean; outp, nm, val: string; res: TStrBuf;
 begin
+  converged := True;
   outp := text;
-  for iter := 1 to MAX_VARIABLE_DEPTH do
+  if opts.Frozen then Exit(outp);
+  for iter := 1 to passes do
   begin
     { No '%' left means no reference left to expand -- stop before rebuilding the string. }
     hasPct := False;
     for i := 1 to Length(outp) do
       if outp[i] = '%' then begin hasPct := True; Break; end;
-    if not hasPct then Break;
+    if not hasPct then Exit(outp);
 
     changed := False;
     res.Init(Length(outp) + 16); i := 1;
@@ -1838,25 +1953,30 @@ begin
       res.AppendChar(outp[i]); Inc(i);
     end;
     outp := res.Finish;
-    if not changed then Break;
+    if not changed then Exit(outp);
   end;
+  converged := False;
   Result := outp;
 end;
 
 function ResolveVariable(const name: string; const opts: TRenderOpts): string;
 var val: string; sub: TNodeList; subOpts: TRenderOpts;
 begin
-  if not opts.Vars.TryGetValue(LowerAscii(name), val) then Exit('%' + name + '%');
-  { The plain paths first, and they are NOT charged -- a value carrying no construct, or one
-    at the depth cap, is substituted and never expanded again, so it cannot be part of an
-    explosion. Charging it made ten chained #def hops over one 100 KB literal cost ten times
-    its length and then refuse the reference that was the actual output. The reference
-    orders these the same way; Codex review, 2026-08-18. }
-  if (opts.Depth >= MAX_VARIABLE_DEPTH) or (not HasConstructChar(val)) then Exit(val);
-  { Charged before the recursive expansion, because one substitution can be the whole
-    explosion: each level of `#set %a% = %b% %b%` doubles, and the depth cap alone permits
-    2^50. Out of budget, the reference stays as written -- the answer an unknown name gets. }
+  if (not opts.Vars.TryGetValue(LowerAscii(name), val)) or opts.Frozen then
+    Exit('%' + name + '%');
+  { Charged before ANY substitution, the plain ones included, as PHP charges. Until this
+    port mirrored @spintax/core 0.7.0 a value carrying no construct was free -- substituted
+    and never expanded again, it cannot be an explosion on its own, and spec sec.5.8 recorded
+    that order as the right one. It was the one door left open once a re-read construct
+    (SpliceConstruct) could hand this function references its own fixpoint had cut off: 2^k
+    of them, each to a plain 1 KiB value, expanded here for nothing -- 4 MiB out of a 1 MiB
+    allowance, and an out-of-memory abort at 2^20 (found in the reference's review; the
+    local suite pins the door shut). The price is that a plain 100 KB value referenced more
+    than ten times now reaches the budget, as it always has in PHP. Out of budget, the
+    reference stays as written -- the answer an unknown name gets. }
   if not TakeBudget(opts, Length(val)) then Exit('%' + name + '%');
+  { At the depth cap, or with nothing in the value to expand, the value is finished text. }
+  if (opts.Depth >= MAX_VARIABLE_DEPTH) or (not HasConstructChar(val)) then Exit(val);
   sub := ParseSequence(val);
   try
     subOpts := opts; subOpts.Depth := opts.Depth + 1;
@@ -1977,8 +2097,11 @@ begin
   end;
 end;
 
-{ Resolve conditionals in the plural COUNT slot, TEXTUALLY -- the taken branch is
-  substituted, never rendered (spintax-js#67).
+{ Resolve conditionals in a piece of text, TEXTUALLY -- the taken branch is substituted,
+  never rendered. Two callers: the plural COUNT slot (spintax-js#67, where this was born)
+  and the body of a construct being re-read after a direct `%var%` splice
+  (SpliceConstruct), which needs the plugin's Stage 6a/6c around its expansion for the same
+  reason.
 
   Why it exists: the PHP plugin runs its conditional stage over the whole document before
   plurals, so a `#set` holding `?flag?1|2` in braces reaches the count slot as a plain
@@ -2007,7 +2130,7 @@ end;
   this comment claimed every character was visited at most once, on a measurement taken with
   the flag EMPTY -- where the else branch is three characters and the nested chain is never
   walked at all. Spec sec.5.6 carries the numbers and both branches are in the suite. }
-function ResolveCountConditionals(const text: string; const opts: TRenderOpts): string;
+function ResolveConditionalsInText(const text: string; const opts: TRenderOpts): string;
 var close: TArray<Integer>; res: TStrBuf; pend: TArray<Integer>;
     top, i, segEnd, open, shut, cut, branchFrom, branchTo: Integer;
     head: TCondHead;
@@ -2075,10 +2198,19 @@ end;
 
 function RenderPlural(node: TNode; const opts: TRenderOpts): string;
 var countRaw, formsRaw, count, picked, cur: string; base: string;
-    forms: TStringList; i: Integer; hasBracket: Boolean; sub: TNodeList;
+    forms: TStringList; i, passes: Integer; hasBracket, countConverged, formsConverged: Boolean;
+    sub: TNodeList; subOpts: TRenderOpts;
 begin
-  countRaw := ResolveCountConditionals(ExpandVarsOnly(node.PluralCountRaw, opts), opts);
-  formsRaw := ExpandVarsOnly(node.PluralFormsRaw, opts);
+  { Both slots get the same pass arithmetic as a re-read construct (51 hops in every shape),
+    and a form list whose passes ran out renders its pick FROZEN. Until the family's 0.7.0
+    the slots ran a flat 50 and the picked form re-entered the walk unfrozen, so a 51-deep
+    alias chain in the count slot erased a block the plugin renders, and a 52-deep chain in
+    a form resolved to its end where the plugin leaves `%a52%`. Corpus-pinned now
+    (`splice/plural-*`). }
+  passes := PassesLeft(opts);
+  countRaw := ResolveConditionalsInText(
+    ExpandVarsFixpoint(node.PluralCountRaw, opts, passes, countConverged), opts);
+  formsRaw := ExpandVarsFixpoint(node.PluralFormsRaw, opts, passes, formsConverged);
   base := NormalizeBaseLang(opts.Locale);
 
   hasBracket := False;
@@ -2105,15 +2237,68 @@ begin
   end;
   sub := ParseSequence(picked);
   try
-    Result := RenderNodes(sub, opts);
+    subOpts := opts;
+    if not formsConverged then subOpts.Frozen := True;
+    Result := RenderNodes(sub, subOpts);
   finally
     sub.Free;
   end;
 end;
 
-function RenderEnumeration(node: TNode; const opts: TRenderOpts): string;
-var idx: Integer;
+{ Splice the direct `%var%` references of a construct into its body as TEXT and re-read
+  the construct -- the plugin's own order (Stage 6a conditionals, 6b expansion, 6c
+  conditionals) run over this one body, then the brackets go back on and the parser reads
+  the result. Only constructs the parser marked (Raw) get here; every other one keeps the
+  tree it was parsed into, and with it the exact RNG order the corpus pins.
+
+  Why textual: `[<...>%list%]` with `%list% = a|b|c` is ONE option to the parser, because
+  the tree is built before any value exists, and ResolveVariable hands a construct-free
+  value back as finished text -- so the `|` that separates elements in every PHP engine was
+  never seen here, and a 57-name runtime list rendered as one element (engine issue #5,
+  spintax-js#78; mirrored from @spintax/core 0.7.0). Same for `%list%` in braces.
+
+  False when the body would not change -- an undefined name, a reference the budget cut
+  off -- so the caller renders the nodes it already has. That is also what terminates the
+  re-read: after a converged fixpoint every reference left is one expansion cannot touch,
+  so the re-read construct changes nothing and falls through.
+
+  Hop budget: the plugin's fixpoint is `<= MAX_VARIABLE_DEPTH` -- 51 passes -- and it runs
+  once, over text; a construct reached through a macro re-parse has already spent Depth of
+  those hops in ResolveVariable, so it gets `51 - Depth` passes here and the total is 51 in
+  every shape. When the passes run out still changing, whatever is left is FROZEN for the
+  whole subtree: the mutual cycle leaves `%b%`, `#set %b% = x%b%y` leaves 51 pairs, a
+  51-deep chain into `x|y` reaches the body as text and IS split -- inside a bracket exactly
+  as outside one -- and nothing below earns a fresh allowance. (The reference's first cut
+  rendered that subtree at the depth cap instead, which spliced a leftover once more as
+  finished text: a 52nd hop, and one that hid a structural value from the split.) }
+function SpliceConstruct(const raw: string; open, close: Char; const opts: TRenderOpts;
+  out rendered: string): Boolean;
+var body: string; converged: Boolean; nodes: TNodeList; subOpts: TRenderOpts;
 begin
+  rendered := '';
+  if opts.Frozen then Exit(False);
+  body := ResolveConditionalsInText(
+    ExpandVarsFixpoint(ResolveConditionalsInText(raw, opts), opts, PassesLeft(opts), converged),
+    opts);
+  if body = raw then Exit(False);
+  { The brackets go back on so an unbalanced value degrades exactly as the plugin's
+    innermost regex does: an option list closed twice is the first construct followed by
+    the literal tail, in both engines. }
+  nodes := ParseSequence(open + body + close);
+  try
+    subOpts := opts;
+    if not converged then subOpts.Frozen := True;
+    rendered := RenderNodes(nodes, subOpts);
+  finally
+    nodes.Free;
+  end;
+  Result := True;
+end;
+
+function RenderEnumeration(node: TNode; const opts: TRenderOpts): string;
+var idx: Integer; spliced: string;
+begin
+  if (node.Raw <> '') and SpliceConstruct(node.Raw, '{', '}', opts, spliced) then Exit(spliced);
   if node.EnumOptions.Count = 0 then Exit('');
   idx := opts.Rng.Next(0, node.EnumOptions.Count - 1);
   Result := RenderNodes(node.EnumOptions[idx], opts);
@@ -2134,8 +2319,9 @@ end;
 function RenderPermutation(node: TNode; const opts: TRenderOpts): string;
 type TElem = record Text: string; Sep: string; HasSep: Boolean; end;
 var elems: array of TElem; total, i, j, min, max, pick: Integer; tmp: TElem;
-    globalSep, globalLast, sep: string; buf: TStrBuf;
+    globalSep, globalLast, sep, spliced: string; buf: TStrBuf;
 begin
+  if (node.Raw <> '') and SpliceConstruct(node.Raw, '[', ']', opts, spliced) then Exit(spliced);
   total := node.PermOptions.Count;
   if total = 0 then Exit('');
   SetLength(elems, total);
@@ -3505,6 +3691,7 @@ begin
     opts.Depth := 0;
     opts.Rng := Rng;
     opts.Budget := Budget;
+    opts.Frozen := False;
 
     // Roll each #def once, DEPENDENCIES FIRST; a runtime var of the same name
     // outranks it (never rolled). The order must not come from hash enumeration —

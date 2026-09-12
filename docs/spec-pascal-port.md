@@ -55,6 +55,10 @@ gone for good; leaving them costs a conditional in a handful of places.
 - `{?…}` truthiness
 - directive semantics: **`#set` is a macro** — re-rolled at every reference;
   **`#def` resolves once per render** and holds
+- **a `%var%` written directly inside `{…}`/`[…]` is spliced as TEXT before the construct
+  is split** — a pipe-joined value is a list of options or elements, a conditional's taken
+  branch lands in the body first, `<sep="%S%">` takes its value; a value at top level, with
+  no construct around it, is not split (§5.9)
 - the post-process pipeline — *to the extent it is implemented*, see §4
 
 **ALLOWED to diverge:** RNG selection results, internal architecture, diagnostic message
@@ -67,13 +71,14 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(258 cases total, 2026-08-18 — the corpus grew on 2026-08-06 with the cases the family
-pinned from this port's divergences, once more with `plural.locale-missing` (§5.5), and
-again the next day with the two plural fixes §5.5 and §5.6 describe):
+(277 cases total, 2026-09-12 — the corpus grew on 2026-08-06 with the cases the family
+pinned from this port's divergences, once more with `plural.locale-missing` (§5.5), again
+the next day with the two plural fixes §5.5 and §5.6 describe, and on 2026-09-12 with the
+nineteen `splice/*` cases §5.9 describes):
 
 | fixture file | cases | passing |
 |---|---|---|
-| render-semantics | 80 | 80 |
+| render-semantics | 99 | 99 |
 | validate | 70 | 70 |
 | render-postprocess | 43 | 43 |
 | render-deterministic | 16 | 16 |
@@ -83,7 +88,7 @@ again the next day with the two plural fixes §5.5 and §5.6 describe):
 | render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 
-**`PASS=254 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=273 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -839,7 +844,8 @@ literal, so the conditional survived, failed the numeric test, and the block was
 `plural.count-macro` exempts conditionals *because* they resolve before plurals — the
 validator was written to a renderer behaviour nobody had implemented.
 
-`ResolveCountConditionals` runs over the var-expanded count slot, before every check, which
+`ResolveConditionalsInText` (named `ResolveCountConditionals` until it gained a second caller
+in §5.9) runs over the var-expanded count slot, before every check, which
 is what makes the lenient fallback's text comparable across engines: it prints the count as
 the plural stage saw it, resolved.
 
@@ -958,7 +964,7 @@ of an `#include` included: one budget per call, not per document, or the include
 multiply it. It is charged per substitution and checked **before** the substitution happens,
 because one substitution can be the whole explosion — the same lesson §5.5 records for the
 counting path. Both sites are charged: `ResolveVariable` (the general path) and
-`ExpandVarsOnly` (the plural slots).
+`ExpandVarsFixpoint` (the plural slots, and since §5.9 the body of a re-read construct).
 
 **When the budget is gone, the reference is left LITERAL.** That is already what this engine
 emits for a name it does not know, so no new output shape enters the language: a plural whose
@@ -975,25 +981,35 @@ would mean rewriting one engine's traversal for input no author writes. **The co
 render terminates, stays lenient, and leaves what it could not afford as a literal `%name%`**;
 each engine pins its own bound in its own suite.
 
-**A value carrying no construct is not charged at all.** It is substituted and never expanded
-again, so it cannot be part of an explosion — and charging it truncated ordinary output: a
-plain 100 KB `#set` referenced twenty times, and ten `#def` hops over one literal, which is
-100 KB of finished text with no recursion in it. The first cut of this budget charged before
-that check and got both wrong; the reference orders them the other way. Measured after,
-byte-for-byte against `@spintax/core` 0.5.2: **2 048 021** and **102 402** characters, no
-reference left literal in either.
+**Every substitution is charged, the plain ones included** — since 2026-09-12, the family's
+rule from `@spintax/core` 0.7.0 and PHP's from the start. This section used to say the
+opposite: a value carrying no construct was free here, on the reasoning that it is substituted
+and never expanded again and so cannot be part of an explosion, and two checks pinned the
+shapes that charging it would truncate — a plain 100 KB `#set` referenced twenty times
+(2 048 021 characters, nothing literal) and ten `#def` hops over one literal (102 402). The
+reasoning was sound while a plain value could only ever be a LEAF. It stopped being sound the
+day a re-read construct (§5.9) could hand `ResolveVariable` references its own textual
+fixpoint had cut off at the budget: 2^12 of them, each to a plain 1 KiB value, were expanded
+for nothing — 4 MiB out of a 1 MiB allowance, and an out-of-memory abort at 2^20. The
+reference's review found it before release; the door is pinned shut here on both sides of the
+bracket (`bomb/a-budget-cut-reference-is-not-spliced-for-free` and its top-level twin). The
+price is that the twenty references now leave nine literal (1 126 466 characters); the ten
+hops still give 102 402, because ten charges of 100 KB fit the purse and the eleventh is
+allowed on a purse that is not yet empty. Both to the byte against `@spintax/core` 0.7.0.
 
-That ordering, plus refusing on an EMPTY purse rather than on one the next substitution would
-overdraw, puts this engine at the same stopping point as the reference on the bomb itself
-— 1 198 225 characters for `%a%`, to the byte. Worth knowing, and not a contract: the
-README's own measurement of the spread across engines is 1 198 223 against 599 191.
+Refusing on an EMPTY purse rather than on one the next substitution would overdraw puts this
+engine at the same stopping point as the reference on the bomb itself — 599 193 characters
+for `%a%`, to the byte, and the same number for `{%a%}`. Half of what it was before every
+substitution was charged: the one at the depth cap used to be free. Worth knowing, and not a
+contract.
 
 `TestRenderExpansionBudget` asserts the CONTRACT, plus this engine's own bound: every shape
 from the issue's table answers, a refused reference stays literal, an unresolved count still
-erases, a plain value is never charged, and the budget is **per render**, not cumulative, so
-the second render of a compiled template matches the first — the shape this could most easily
-have got wrong, since a host renders a compiled template in a loop and a carried-over counter
-would leave only the first render correct.
+erases, every substitution is charged and a budget-cut reference is never spliced for free,
+and the budget is **per render**, not cumulative, so the second render of a compiled template
+matches the first — the shape this could most easily have got wrong, since a host renders a
+compiled template in a loop and a carried-over counter would leave only the first render
+correct.
 
 One purse covers the whole call, `#include` children and all. A budget created per child
 document bounds each subtree and bounds nothing overall: the reference shipped exactly that in
@@ -1006,22 +1022,118 @@ the file does. Measured flat: 1, 50, 200 and 500 include lines over the same bod
 1 198 225 / 1 198 519 / 1 199 419 / 1 201 219 characters, the growth being the include lines'
 own text.
 
-**Where this engine sits, measured 2026-08-18** against `@spintax/core` 0.5.3, now that the
-family's remaining question is volume and time rather than survival:
+**Where this engine sits, re-measured 2026-09-12** against `@spintax/core` 0.7.0 (best of
+three, no post-process), now that the family's remaining question is volume and time rather
+than survival:
 
 | shape | this port | reference |
 |---|---|---|
-| `#set` bomb, `%a%` | 448 ms, 1 198 225 chars | 104 ms, 1 198 225 chars |
-| `#def` bomb | 872 ms, 3 353 865 chars | 161 ms, 3 353 865 chars |
-| 200 `#include` lines over one bomb | 464 ms, 1 199 419 chars | ~210 ms, ~1.14 MB |
+| `#set` bomb, `%a%` | 172 ms, 599 193 chars | 67 ms, 599 193 chars |
+| `#def` bomb | 156 ms, 838 857 chars | 33 ms, 838 857 chars |
+| 200 `#include` lines over one bomb | 187 ms, 600 387 chars | 71 ms, 600 387 chars |
 
 The volume is **identical to the byte** on every shape the two engines share, which is worth
-recording precisely because the corpus deliberately does not assert it. The time is 3–5× the
-reference and roughly a sixth of the Python port's, which the family measured at ~5 s for the
-same budget. It is linear in output, not super-linear — a terminating doubling chain costs
+recording precisely because the corpus deliberately does not assert it; every count halved or
+better on 2026-09-12 when the substitution at the depth cap started being charged, in both
+engines together. The time is 2.5–5× the reference (on 2026-08-18 it was 3–5×, on twice the
+output) and well under the Python port's, which the family measured at ~5 s for the same
+budget. It is linear in output, not super-linear — a terminating doubling chain costs
 **~1.2 ms per KB** flat from 32 KB to 190 KB — so the constant is allocation and copying, where
 a JavaScript engine has ropes and this one has strings. §3 does not ask performance to match,
 and nothing here is a bound that fails to hold.
+
+### 5.9 A `%var%` directly inside `{…}`/`[…]` is spliced as text before the split
+
+Adopted 2026-09-12 from [`spintax-js#78`](https://github.com/investblog/spintax-js/issues/78)
+(engine issue [#5](https://github.com/investblog/spintax-win/issues/5)), mirrored from
+`@spintax/core` 0.7.0. A **parity-REQUIRED** surface (§3), and this port had it wrong from
+its first commit — as did every other tree-walk engine of the family.
+
+**The report.** A brand preset `[<minsize=5;maxsize=7;sep=", ";lastsep=" and ">%List%]` over
+a 57-name runtime list rendered all 57 names joined with `|` — no size pick, no shuffle, no
+separators — into 131 published rows across 15 tenants. Both PHP engines have always split
+it: their `expand_variables` runs a fixpoint over the whole text before any bracket is read,
+so a `|` inside a substituted value IS an element separator. A tree walk builds its tree
+before any value exists, so `[<…>%List%]` was one option holding a variable node, and
+`ResolveVariable` handed a construct-free value back as finished text. The `|` was never
+seen. Nothing in the corpus put a variable inside a bracket — 258 cases, not one — which is
+how it shipped in four engines. Here the gate said `PASS=256 FAIL=17` the moment the corpus
+grew.
+
+**The rule.** A `%var%` that sits **directly** in an enumeration or permutation body is
+spliced into that body as TEXT before the body is split on `|`. Directly means: at the top
+level of an option; inside a conditional's branches (the reference resolves `{?…}` before it
+expands, Stage 6a, so the taken branch lands in the body ahead of the split); or inside a
+separator string — the config's `sep`/`lastsep`, a per-element `<…>`, and the
+single-separator form `[<%S%>a|b]` are all text to the reference. It does NOT mean a nested
+enumeration, permutation or plural: a value inside one of those is spliced when THAT construct
+renders, and a `|` it carries belongs to it. What does not split, pinned as negatives: a
+reference at top level with no construct around it (`%L%` → `x|y`), a top-level conditional's
+branch (`{?L?%L%|none}` → `x|y`), and an undefined name (one literal element).
+
+**How this port does it.** The parser keeps the construct's inner text in `TNode.Raw` when
+`EnumHasDirectReference` / `PermHasDirectReference` finds a direct reference — an iterative
+walk over the option lists that descends into conditional branches and nothing else, plus the
+reference's `/%\w+%/` over the three separator strings. Every other construct leaves `Raw`
+empty and renders the tree it always did, with the RNG order the corpus pins. At render time
+`SpliceConstruct` runs the reference's own order over that one body — conditionals
+(`ResolveConditionalsInText`, the §5.6 pass, which now has two callers), the variable fixpoint
+(`ExpandVarsFixpoint`), conditionals again — then puts the brackets back on, parses the
+result with the ordinary parser and renders it. If the body did not change (an undefined name,
+a reference the budget refused) it returns `False` and the caller renders the nodes it already
+has; that is also what terminates the re-read, since after a converged fixpoint every
+reference left is one expansion cannot touch. `SpCompile` keeps `Raw` in the cached tree, so
+the compiled path splices exactly as `SpRender` does.
+
+**The hop budget is 51 inside a bracket exactly as outside one.** The reference's fixpoint is
+`<= MAX_VARIABLE_DEPTH` — 51 passes, once, over text — and a construct reached through a macro
+re-parse has already spent `Depth` of those hops in `ResolveVariable`, so `PassesLeft` gives
+it `51 − Depth` and the total is 51 in every shape. When the passes run out still changing,
+whatever is left is **frozen** for the whole subtree (`TRenderOpts.Frozen`: `ResolveVariable`
+answers the literal, `ExpandVarsFixpoint` does nothing): the mutual cycle leaves `%b%`,
+`#set %b% = x%b%y` leaves 51 pairs, a 50-alias chain into `x|y` reaches the body as text on
+the 51st pass and IS split (`splice/chain-into-a-list-is-split-on-the-51st-hop`), a 51-alias
+chain leaves `%a52%`, and nothing below earns a fresh allowance. The reference's first cut
+rendered the leftover at the depth cap instead — a 52nd hop, and one that hid a structural
+value from the split; its review caught it, and the corpus carries the pin.
+
+**The plural slots use the same arithmetic**, and a form list whose passes ran out renders its
+pick frozen. They ran a flat 50 here and rendered the picked form unfrozen, so a 50-alias
+chain in the count slot stopped at `%a51%`, non-numeric, and ERASED a block the plugin
+renders, and a 51-alias chain in a form resolved to its end where the plugin leaves `%a52%`.
+Both pinned in the corpus (`splice/plural-*`).
+
+**Every substitution now charges the budget** — the reversal §5.8 records. It is a
+consequence of this section: the re-read is the only path that can hand `ResolveVariable` a
+reference whose value the fixpoint already refused, and a free plain-value leaf was then a
+door.
+
+**Two consequences a triggered construct inherits from PHP's text**, both measured on the
+reference and pinned in `TestSplice`: a conditional's taken branch is trimmed at the element's
+edge (`[{?f? %L% |y}|c]` gives `x c`, not ` x  c`), and an element that became empty is
+dropped before the shuffle, so later draws shift. Neither happens on the untriggered path,
+which keeps its tree — `[a|{?f?|x}|c]` still gives `a  c` — and the family recorded that
+divergence as known rather than closing it, since no author has reported hitting it.
+
+**One thing this broke, and how it was fixed.** The GSA front end (§5 of
+`gsa-ser-conversion.md`) escaped a spin whose first option opens with `?` or `plural ` by
+lifting that first character into a literal variable — `{%l1%a?b|c}` with `l1 = ?` — so the
+prefix test would not see it. The splice puts the `?` back into the body ahead of the parse,
+and the block was a conditional again, in every engine; `gsa_tests` caught it in the same
+build that made the corpus green. The escape is now an empty enumeration in front of the
+first option, `{{}?a?b|c}`, which renders to nothing, is not a `?`, and keeps the block a spin
+over the author's own text — measured on the reference before it was chosen, no diagnostic.
+`neutralize` shields brackets and not the pipe, so a neutralized value an author places
+inside a construct still splits on its `|` (`splice/neutralized-value-still-splits-on-its-pipe`);
+that is the family's contract, stated in the reference's `neutralize.ts`, and this port was
+immune to it only by the defect.
+
+**Verified** by the nineteen `splice/*` fixtures — the production preset shape, `#set` and
+`#def` wrappers, `<sep="%S%">`, `lastsep="%S%"`, a per-element `<%S%>`, a macro value carrying
+`{p|q}|r`, the three hop-budget pins and the three negatives, expected outputs taken from BOTH
+PHP engines — and by 21 local checks for what no fixture expresses. The rest of the corpus is
+unchanged: a spliced value with no structural character re-reads to the very tree the parser
+built, same element count, same draws, same order.
 
 ## 6. Trust model
 

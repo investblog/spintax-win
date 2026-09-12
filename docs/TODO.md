@@ -44,6 +44,23 @@ ordering difference; the neutralize question was answered on 2026-08-07.
 
 ## Done
 
+- [x] **A `%var%` directly inside `{…}`/`[…]` is spliced as text before the split**
+      (2026-09-12, engine issue [#5](https://github.com/investblog/spintax-win/issues/5),
+      family issue [spintax-js#78](https://github.com/investblog/spintax-js/issues/78),
+      mirrored from `@spintax/core` 0.7.0; spec §5.9). Reported from production: a brand
+      preset over a 57-name runtime list rendered the raw list, pipes and all, into 131
+      published rows. Every tree-walk engine of the family had it; both PHP engines never
+      did. The corpus grew by nineteen `splice/*` cases and this port went
+      `PASS=256 FAIL=17` → `PASS=273 FAIL=0`. Three things rode along, all from the
+      reference's own review: every substitution now charges the expansion budget (the free
+      plain-value leaf was a door once a re-read construct existed — the §5.8 measurement of
+      "not charged" is reversed, and the bomb's truncated output halved to 599 193, still to
+      the byte with the reference); the plural slots use the same 51-hop arithmetic and
+      freeze a picked form past it; and the GSA front end's escape for a spin opening with
+      `?` or `plural ` — a lifted literal — stopped working the moment the lifted character
+      spliced back in, and is now an empty enumeration in front of the first option. Local
+      checks 542 → 563; GSA 99, unchanged.
+
 - [x] **Two upstream questions answered, and one proposal filed** (2026-08-21).
       [spintax-js#70](https://github.com/investblog/spintax-js/issues/70) — **diagnostic
       ORDER is not contract**, closed with the four-way table moved into
