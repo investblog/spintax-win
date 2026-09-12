@@ -1309,12 +1309,38 @@ unmatched bracket as the literal the parser treats it as. A deep chain where eve
 does carry a direct reference stays quadratic, and there the reference engine keeps the same
 bodies for the same reason.
 
+**Two false negatives got through the first two cuts of it, both found by review and both real
+output bugs.** A `<…>` region is separator TEXT, so the brackets in `[<sep="[%S%]">a|b]` are
+characters; skipping them the way the walk skips a nested construct hid the reference, no body
+was retained, and the separator reached the output as a literal `%S%`. And a conditional's two
+branches were scanned as ONE span, where an opening brace in the then-branch can pair with a
+closing brace in the else-branch and carry the walk across the separator — the parser parses
+them separately, so the prefilter does too now. Every `<…>` region is flat-tested for a
+reference and the walk then continues INTO it rather than past it: adding a check can only add
+false positives, which cost memory and not answers.
+
+**The property is verified against a build with the prefilter compiled out**, since that is the
+only direction that would be a behaviour bug rather than a cost one. Three corpora, **12 618
+renders, all identical** to the prefilter-free build: the 1 760-document differential; 332
+adversarial shapes putting a reference in an option, a permutation element, `sep`, `lastsep`, a
+per-element separator, the single-separator form, either branch of a conditional, an inverted
+one, two conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the
+shapes where the reference sits inside a NESTED construct and the shapes with an unmatched
+bracket around it; and the separator-with-brackets shapes above. None of it is a vacuous zero —
+the same three corpora differ from the pre-splice engine in 3 218, 1 302 and 48 renders. Three
+local checks pin the separator shapes and two pin a reference two conditionals deep; disabling
+the `<…>` flat test fails exactly the first three, and stopping the walk from entering
+conditionals fails exactly the other two plus the two branch-trimming checks. Both were built
+and run, not assumed.
+
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
 is hung on it, each owning list is reserved to its final size before it is filled, and the
 attach itself goes through `AttachNode`, which frees the node if the list's own growth raises.
 `TNode.Destroy` and `TPermOption.Destroy` tolerate the nil fields that ordering leaves behind,
 and `pend` is allocated before the result list so that failing to allocate it cannot strand
-one. With all four in place `Result.Free` frees a half-built tree completely.
+one. The plural is filled through `FillPlural` after it is attached, for the same reason — it
+was the last node kind still built complete and handed over afterwards. With all of that in
+place `Result.Free` frees a half-built tree completely.
 
 It took two rounds to get there, and the first one is the lesson: the original code had the
 order backwards in five places — a conditional's two child lists, both owner lists, a

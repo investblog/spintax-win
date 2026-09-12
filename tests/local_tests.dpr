@@ -1423,6 +1423,32 @@ begin
   { The single-separator config form is text to the reference too. }
   Check('splice/single-separator-form-from-a-variable',
         RenderVars('[<%S%>a|b]', ['S'], ['+'], True), 'a+b');
+
+  { A separator is TEXT, so a bracket inside it is a character and not nesting. This is the
+    shape the retention prefilter got wrong on its first two cuts: skipping the bracket pair
+    the way it skips a nested construct hid the reference, the body was never retained, and
+    the separator reached the output as a literal `%S%`. Measured against @spintax/core
+    0.7.0, 2026-09-12 -- the whole outcome set is two elements joined by the substituted
+    separator, so last-pick (no swap) pins it exactly. }
+  Check('splice/reference-in-a-separator-holding-brackets',
+        RenderVars('[<sep="[%S%]">a|b]', ['S'], [', '], True), 'a[, ]b');
+  Check('splice/reference-in-a-separator-holding-braces',
+        RenderVars('[<sep="{%S%}">a|b]', ['S'], [', '], True), 'a{, }b');
+  Check('splice/reference-in-a-per-element-separator-holding-brackets',
+        RenderVars('[a <[%S%]> | b]', ['S'], [', '], True), 'a[, ]b');
+
+  { A reference buried TWO conditionals deep still belongs to the construct around them, and
+    that is the shape the retention prefilter is most likely to get wrong if anyone
+    "simplifies" it: MayHoldDirectReference must ENTER a conditional and step over anything
+    else, so a scan that skipped every nested brace would drop Raw here and silently render
+    the pre-splice answer. Measured against @spintax/core 0.7.0, 2026-09-12: the outer
+    enumeration offers x, p and q, and the permutation shuffles c with the two spliced
+    elements. Last-pick RNG, so no swap. }
+  Check('splice/reference-two-conditionals-deep-still-splits',
+        RenderVars('{x|{?f?{?g?%L%|a}|b}}', ['L', 'f', 'g'], ['p|q', '1', '1'], True), 'q');
+  Check('splice/reference-two-conditionals-deep-in-a-permutation',
+        RenderVars('[c|{?f?{?g?%L%|a}|b}]', ['L', 'f', 'g'], ['p|q', '1', '1'], True),
+        'c p q');
   { A top-level conditional is not a construct that splits: its branch is finished text. }
   Check('splice/top-level-conditional-does-not-split',
         RenderVars('{?L?%L%|none}', ['L'], ['x|y'], True), 'x|y');

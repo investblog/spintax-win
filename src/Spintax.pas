@@ -1433,18 +1433,73 @@ end;
   body ahead of the split.
 
   An unmatched bracket is a literal character here exactly as it is to the parser, so the
-  two agree on what counts as nesting. Iterative, like every walk here. }
+  two agree on what counts as nesting. Two further traps, both found by review after the
+  first cut shipped them, and both FALSE NEGATIVES -- the direction that is a behaviour bug:
+
+  A `<...>` region is separator TEXT, not structure. Brackets inside it are characters, so
+  skipping them the way this walk skips a nested construct hides a reference the authority
+  finds in PermSep: `[<sep="[%S%]">a|b]` rendered the separator literally. Every such region
+  is therefore flat-tested for a reference, and the walk then continues INTO it rather than
+  past it -- adding a check can only add false positives, which cost memory and not answers.
+
+  A conditional's branches are scanned as two separate spans, because that is how the
+  parser parses them. Over one combined span an opening brace in the then-branch could pair
+  with a closing brace in the else-branch and carry the walk across the separator.
+
+  Iterative, like every walk here. }
 function MayHoldDirectReference(const s: string): Boolean;
-var span: TArray<Integer>; top, i, upto, endp, j: Integer; head: TCondHead;
+var span: TArray<Integer>; top, i, upto, endp, j, k: Integer;
+    head: TCondHead; inQuote: Boolean;
+
+  procedure PushSpan(from, upTo_: Integer);
+  begin
+    if from >= upTo_ then Exit;
+    if top + 2 > Length(span) then SetLength(span, Length(span) * 2);
+    span[top] := from; span[top + 1] := upTo_; Inc(top, 2);
+  end;
+
+  { A `%name%` anywhere in s[from .. upTo_ - 1], brackets and all. }
+  function FlatRefIn(from, upTo_: Integer): Boolean;
+  var a, b: Integer;
+  begin
+    a := from;
+    while a < upTo_ do
+    begin
+      if s[a] = '%' then
+      begin
+        b := a + 1;
+        while (b < upTo_) and IsAsciiWord(s[b]) do Inc(b);
+        if (b > a + 1) and (b < upTo_) and (s[b] = '%') then Exit(True);
+      end;
+      Inc(a);
+    end;
+    Result := False;
+  end;
+
 begin
   SetLength(span, 32);
-  span[0] := 1; span[1] := Length(s) + 1; top := 2;
+  top := 0;
+  PushSpan(1, Length(s) + 1);
   while top > 0 do
   begin
     Dec(top, 2);
     i := span[top]; upto := span[top + 1];
     while i < upto do
     begin
+      if s[i] = '<' then
+      begin
+        { to the first `>` that is not inside quotes, as ParsePermConfig reads a config }
+        k := i + 1; inQuote := False;
+        while k < upto do
+        begin
+          if s[k] = '"' then inQuote := not inQuote
+          else if (s[k] = '>') and not inQuote then Break;
+          Inc(k);
+        end;
+        if (k < upto) and FlatRefIn(i + 1, k) then Exit(True);
+        Inc(i);
+        Continue;
+      end;
       if s[i] = '{' then
       begin
         endp := FindMatchingClose(s, i, '{', '}');
@@ -1454,8 +1509,13 @@ begin
         if (endp > i + 1) and (s[i + 1] = '?') and
            RecognizeConditional(s, i + 1, endp, head) then
         begin
-          if top + 2 > Length(span) then SetLength(span, Length(span) * 2);
-          span[top] := head.BodyStart; span[top + 1] := endp; Inc(top, 2);
+          if head.SepIndex = 0 then
+            PushSpan(head.BodyStart, endp)
+          else
+          begin
+            PushSpan(head.BodyStart, head.SepIndex);
+            PushSpan(head.SepIndex + 1, endp);
+          end;
         end;
         i := endp + 1;
         Continue;
@@ -1545,14 +1605,15 @@ end;
 { forward }
 function ParseSequence(const text: string): TNodeList; forward;
 
-function ParsePlural(const afterPrefix: string): TNode;
+{ Fill an ALREADY-ATTACHED plural node. It used to create the node and populate both slots
+  before handing it to the caller to attach, so a Copy that raised in between stranded it --
+  the one node kind the attach-first invariant still missed (Codex review). }
+procedure FillPlural(node: TNode; const afterPrefix: string);
 var colon: Integer;
 begin
   colon := Pos(':', afterPrefix);
-  Result := TNode.Create;
-  Result.Kind := nkPlural;
-  Result.PluralCountRaw := Copy(afterPrefix, 1, colon - 1);
-  Result.PluralFormsRaw := Copy(afterPrefix, colon + 1, MaxInt);
+  node.PluralCountRaw := Copy(afterPrefix, 1, colon - 1);
+  node.PluralFormsRaw := Copy(afterPrefix, colon + 1, MaxInt);
 end;
 
 { Permutation config parse (faithful-enough: key form or single-separator form,
@@ -1832,7 +1893,10 @@ var
     else if (Copy(content, 1, Length(PLURAL_PREFIX)) = PLURAL_PREFIX)
        and (Pos(':', Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)) > 0) then
     begin
-      AttachNode(list, ParsePlural(Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)));
+      node := TNode.Create;
+      node.Kind := nkPlural;
+      AttachNode(list, node);
+      FillPlural(node, Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt));
       Exit;
     end;
     node := TNode.Create;
