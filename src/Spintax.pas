@@ -1438,10 +1438,13 @@ end;
   that tried to spot separators in the raw text were each wrong somewhere, and the last was a
   false positive on every angle region of ordinary option text.
 
-  Linear in a body's own level; over NESTED constructs the per-construct calls sum to
-  Theta(n^2) TIME, because each FindMatchingClose crosses its subtree -- the order the parse
-  already has on such input (spec sec.5.11). What it removes is the Theta(n^2) MEMORY of
-  one retained body per level. Iterative, like every walk here. }
+  It is NOT linear in time, in two ways, both of which the parse already shares: over nested
+  constructs the per-construct calls sum to Theta(n^2), because each FindMatchingClose crosses
+  its subtree; and even inside ONE body, a run of unmatched open brackets makes every
+  FindMatchingClose rescan the remaining suffix before it gives up. ScanInto calls the same
+  function on the same text, so this adds a constant and not an order (spec sec.5.11). What
+  it removes is the Theta(n^2) MEMORY of one retained body per level. Iterative, like every
+  walk here. }
 function MayHoldDirectReference(const s: string): Boolean;
 var span: TArray<Integer>; top, i, upto, endp, j: Integer; head: TCondHead;
 

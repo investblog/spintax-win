@@ -103,8 +103,9 @@ local work.
       exercising: `RenderEnumeration` spent an RNG draw on a ONE-option enumeration, where the
       reference short-circuits `min = max` without touching the generator and where this
       engine's own permutation draws already did (spec §5.10). Every one-option spin was
-      shifting each later choice in the document. Local checks 542 → 570; GSA 99 → 102, the
-      new ones sequence-driven because an outcome-set check cannot see a spent draw.
+      shifting each later choice in the document. Local checks 542 → 582 across the release
+      (the splice, the draw fix and the retention prefilter's shapes); GSA 99 → 102, the draw
+      ones sequence-driven because an outcome-set check cannot see a spent draw.
 
 - [x] **Two upstream questions answered, and one proposal filed** (2026-08-21).
       [spintax-js#70](https://github.com/investblog/spintax-js/issues/70) — **diagnostic

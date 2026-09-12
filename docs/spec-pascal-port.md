@@ -1352,14 +1352,15 @@ value unsplit, where the reference offers `]`, `][x` and `y`. So an enumeration 
 too. **Both construct kinds now feed the prefilter exactly the strings their parse jobs receive**,
 which is the only form of the equivalence that holds by construction rather than by argument.
 
-**What the prefilter buys is retention, and nothing more is claimed for it.** It is linear in a
-body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²) TIME, because
-each one's `FindMatchingClose` crosses its subtree — the angle-wrapped permutation chain costs
-110 ms at 2 000 levels and 30 s at 32 000. `ScanInto`'s own `FindMatchingClose` gives the parse
-that order on such input anyway, so the prefilter adds a constant and not an order, and §5.6
-already records that this engine and the reference are both quadratic on deep nesting with
-upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of one retained body
-per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
+**What the prefilter buys is retention, and nothing more is claimed for it.** It is not linear in
+TIME, in two ways the parse shares. Over NESTED constructs the per-construct calls sum to Θ(n²),
+because each one's `FindMatchingClose` crosses its subtree — the angle-wrapped permutation chain
+costs 110 ms at 2 000 levels and 30 s at 32 000. And even within ONE body, a run of unmatched
+opening brackets makes every `FindMatchingClose` rescan the rest of the body before it gives up.
+`ScanInto` calls the same function on the same text, so the prefilter adds a constant and not an
+order, and §5.6 already records that this engine and the reference are both quadratic on such
+input with upstream calling it a host job. What it removes is the Θ(n²) MEMORY of one retained
+body per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
 
 **The property is verified against a build with the prefilter AND the separator read compiled
 out**, since a false negative is the only direction that would be a behaviour bug. Six corpora,
@@ -1371,8 +1372,18 @@ separator, the single-separator form, either branch of a conditional, an inverte
 conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the shapes
 where the reference sits inside a NESTED construct and the shapes with an unmatched bracket
 around it; and two sets of separator shapes — brackets and braces in a separator, an unmatched
-quote, a quoted `>`, nested and bare angle brackets. None of it is a vacuous zero: the four
-corpora differ from the pre-splice engine in 3 218, 1 302, 48 and 48 renders.
+quote, a quoted `>`, nested and bare angle brackets. None of it is a vacuous zero — every one
+of the six corpora is also shown to differ from the pre-splice engine, so each exercises the
+splice it is asserting about:
+
+| corpus | renders | differ from pre-splice |
+|---|---|---|
+| differential | 10 560 | 3 218 |
+| adversarial positions | 1 992 | 1 302 |
+| separators holding brackets | 66 | 48 |
+| separator grammars and angle text | 102 | 48 |
+| discarded separators | 48 | 6 |
+| signed-depth stray brackets | 42 | 28 |
 
 Every local check in this family was confirmed capable of failing by building the mutant that
 breaks it. Removing the parsed-separator read fails exactly the six separator checks — including
