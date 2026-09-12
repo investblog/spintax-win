@@ -14,8 +14,25 @@ The single list of open work.
 All three of the 2026-07-25 divergence sweep are closed, all on 2026-08-06 — the
 unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
-and pinned the forms (see Done). What is left open is one syntax proposal and one known
-ordering difference; the neutralize question was answered on 2026-08-07.
+and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. What is
+left open is **one engine change** — the recursive parser below, which is the only item here
+that a release is waiting on — plus one syntax proposal and one known ordering difference,
+both of them family questions rather than local work.
+
+- [ ] **Make `ParseSequence` iterative.** It is the last recursive walk in this engine, one
+      stack frame per nesting level, and spec §5.9 now carries the measurement: a 20 000-deep
+      runtime value raises `EOutOfMemory` out of `SpRender`, which §9.2 says never happens on
+      content. The ceiling is not new and needs no variable to reach: a plain 20 000-deep
+      TEMPLATE already raised on the old engine, so a host taking an untrusted template was
+      always exposed. What the splice widened is the set of routes to it — the re-read expands
+      a construct's body before the RNG picks, so a deep value in an unpicked branch is parsed
+      now where it used to be skipped. `@spintax/core` clears 20 000 and only dies at 50 000
+      on the heap; its parser was made iterative for family issue
+      [spintax-js#68](https://github.com/investblog/spintax-js/issues/68), and the Python port
+      paid for the same lesson. Not done in the splice release on purpose: `ParseSequence` is
+      the parser behind render, validate, extract and compile, so it wants its own change with
+      its own differential rather than a rider on a behaviour fix. `TestSplice` pins the floor
+      at 5 000 meanwhile, so a regression that lowered it fails.
 
 - [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
       in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
@@ -58,8 +75,13 @@ ordering difference; the neutralize question was answered on 2026-08-07.
       the byte with the reference); the plural slots use the same 51-hop arithmetic and
       freeze a picked form past it; and the GSA front end's escape for a spin opening with
       `?` or `plural ` — a lifted literal — stopped working the moment the lifted character
-      spliced back in, and is now an empty enumeration in front of the first option. Local
-      checks 542 → 563; GSA 99, unchanged.
+      spliced back in, and is now an empty enumeration in front of the first option. A Codex
+      review of the result then found a fourth, older defect that the new escape had started
+      exercising: `RenderEnumeration` spent an RNG draw on a ONE-option enumeration, where the
+      reference short-circuits `min = max` without touching the generator and where this
+      engine's own permutation draws already did (spec §5.10). Every one-option spin was
+      shifting each later choice in the document. Local checks 542 → 570; GSA 99 → 102, the
+      new ones sequence-driven because an outcome-set check cannot see a spent draw.
 
 - [x] **Two upstream questions answered, and one proposal filed** (2026-08-21).
       [spintax-js#70](https://github.com/investblog/spintax-js/issues/70) — **diagnostic

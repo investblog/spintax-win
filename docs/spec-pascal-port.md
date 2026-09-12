@@ -1131,9 +1131,126 @@ immune to it only by the defect.
 **Verified** by the nineteen `splice/*` fixtures — the production preset shape, `#set` and
 `#def` wrappers, `<sep="%S%">`, `lastsep="%S%"`, a per-element `<%S%>`, a macro value carrying
 `{p|q}|r`, the three hop-budget pins and the three negatives, expected outputs taken from BOTH
-PHP engines — and by 21 local checks for what no fixture expresses. The rest of the corpus is
-unchanged: a spliced value with no structural character re-reads to the very tree the parser
-built, same element count, same draws, same order.
+PHP engines — and by 21 local checks for what no fixture expresses.
+
+**And by a differential against the engine as it was, over a corpus generated once and fed to
+every build** (1 760 documents × 6 configurations — first / last / seeded RNG, post-process off
+and on — 10 560 renders per build, 2026-09-12). Three builds, so the two changes of this release
+are attributed separately rather than blamed on each other: the engine before, the engine with
+the splice only, and the engine as shipped (splice + the §5.10 draw fix).
+
+| class | renders | splice only | draw fix only | as shipped |
+|---|---|---|---|---|
+| no direct reference, no one-option construct | 3 600 | **0** | **0** | **0** |
+| no direct reference, WITH a one-option construct | 1 800 | **0** | 410 | 410 |
+| direct reference, plain value | 2 400 | **0** | 146 | 146 |
+| direct reference, value with a `\|` | 2 400 | 2 302 | **0** | 2 302 |
+| control, built to differ | 360 | **360** | **0** | **360** |
+
+Read the columns, not the totals. **The splice moves nothing that does not carry a pipe into a
+construct** — zero on all three reference-free and plain-value classes — which is the claim that
+a spliced value with no structural character re-reads to the very tree the parser built. **The
+draw fix moves one-option constructs and nothing else**, wherever they appear.
+
+The one-option stratum exists because the first cut of this table did not have it and claimed
+"no direct reference ⇒ byte-identical under both changes" over a pool that could not express a
+singleton at all — a zero that measured nothing, which is the trap §8 records twice and which
+a review caught here. Split out and measured, the honest number is 410 renders of reference-free
+templates moved by the draw fix.
+
+The control class is the point: a differential that cannot fail is not evidence, and this repo
+has shipped a parity regression behind exactly that mistake. The 98 triggered renders that did
+NOT differ were read rather than assumed — they are RNG coincidences (`{a|%L%}` under a
+first-pick RNG takes option 0, `a`, in both engines; `[a <%S%> | b]` shuffles the element
+carrying the separator to position 0, where no separator is read) and the outcome SETS of all
+five such shapes are identical to `@spintax/core` 0.7.0's, including the asymmetric
+`["a, b", "b a"]` and all 24 permutations of `[a|%L%|b]`.
+
+**Cost on deep nesting: the same order as before, a constant times three.** Nested constructs
+with a direct reference at every level, best of three (the shape a splice could most easily have
+made super-linear, built deliberately rather than inferred from the corpus):
+
+| levels | no reference (baseline) | direct reference, plain value | reference engine, same triggered shape |
+|---|---|---|---|
+| 500 | 0 ms | 15 ms | 58 ms |
+| 1 000 | 16 ms | 62 ms | 222 ms |
+| 2 000 | 109 ms | 282 ms | 831 ms |
+| 4 000 | 343 ms | 1 079 ms | 3 710 ms |
+
+Both columns are quadratic in nesting depth, and so is the baseline — §5.6 already records that
+this engine and the reference are quadratic there and that upstream calls bounding such input a
+host job. The splice multiplies the constant, it does not change the order, and this port stays
+about 3.4× faster than the reference on the triggered shape. An undefined reference at every
+level costs less than a defined one (516 ms at 4 000), because the fixpoint changes nothing and
+the re-read returns without parsing.
+
+**What the splice widened, and did not create: a deep runtime value now reaches the parser from
+a branch the RNG did not pick.** The re-read expands the body BEFORE the pick, exactly as the
+reference does, so `{ok|%deep%}` parses `%deep%` whichever option wins; before, an unpicked
+option was never walked. `ParseSequence` recurses one frame per nesting level, so there is a
+depth at which this raises where the old engine returned. Measured 2026-09-12, first-pick RNG:
+
+| shape | before | as shipped | `@spintax/core` 0.7.0 |
+|---|---|---|---|
+| 10 000 levels, every shape below | renders | renders | renders |
+| 20 000-deep value, unpicked branch | renders | **`EOutOfMemory`** | renders |
+| 20 000-deep value, PICKED | **`EOutOfMemory`** | `EOutOfMemory` | renders |
+| **20 000-deep plain TEMPLATE, no variables at all** | **`EOutOfMemory`** | `EOutOfMemory` | renders |
+| 50 000-deep value | — | — | heap abort |
+
+So the ceiling is **pre-existing, unchanged, and reachable without any variable**: a plain nested
+template with nothing else in it raised `EOutOfMemory` on the old engine at the same depth, so
+any host taking an untrusted TEMPLATE was already exposed, and the same value one option to the
+left already raised. What this release moved is one more route to the same cliff — an untrusted
+VALUE in a branch the RNG did not pick — not the cliff. (`SpValidate` clears 20 000 on the same
+input and is not affected.) The reference clears every row because its parser is iterative
+(family issue #68) and only dies at 50 000, on the heap rather than the stack.
+
+This is the hazard §7 already names: *follow nesting iteratively where input depth is unbounded*.
+`ParseSequence` is the last recursive walk in this engine, and it is the parser behind render,
+validate, extract and compile, so making it iterative is in the backlog as its own change with
+its own differential rather than a rider on a behaviour fix — §9.2's promise that render never
+throws on content is the thing it would be changed to keep, and that promise is already broken
+for a plain deep template today. `TestSplice` pins the floor at 5 000 so a regression that
+lowered it fails.
+
+### 5.10 A one-option construct must not cost an RNG draw
+
+Fixed 2026-09-12, found by a Codex review of §5.9. One option is not a choice, and asking the
+generator for it spends a draw that shifts **every later choice in the document**.
+
+The reference's `randomInt` returns `min` when `min === max` without touching the generator, and
+says in its own comment that it mirrors the plugin's `random_int`. This engine already did that
+at both of the permutation's draws — the size pick (`if min = max then pick := min`) and the
+Fisher-Yates step — and `RenderEnumeration` was the one site that did not. So a one-option spin
+followed by a two-option one, over the injected sequence `[0,1]`, rendered the SECOND option of
+the second spin here and the first one in the reference.
+
+Ordinary content reaches it. A spin with no `|` is a one-option enumeration, and the GSA guide's
+own example of a braced placeholder in prose is exactly that shape. The corpus does not gate it:
+no fixture pairs a one-option construct with a later choice, and §3 makes cross-engine
+RNG-sequence parity a non-goal, so neither behaviour was ever a parity defect — but one of them
+matches the reference and the other was an inconsistency inside this engine.
+
+**How it surfaced, and why that matters more than the fix.** §5.9 gave the GSA front end a new
+escape for a SER block opening with `?` or `plural `: an empty enumeration in front of the first
+option. An empty enumeration is a ONE-option enumeration — `splitTopLevel('')` yields one empty
+part, here and in the reference — so every escaped block silently advanced the stream. The old
+escape, a lifted first character, spent nothing, so the conversion had been RNG-neutral by
+accident and stopped being so. The review found it by reading the draw, not the output: the GSA
+suite asserts outcome SETS, and a construct that spends a draw it should not still reaches every
+one of its options, just under different seeds. That is the general lesson — **an outcome-set
+check cannot see a draw being spent** — and both suites now carry sequence-driven checks that
+can (`TestSingleOptionDraw`, and `literal/escape-is-rng-neutral` end-to-end through the
+converter). Removing the short-circuit again fails three of the engine checks and two of the GSA
+ones, which is how they were confirmed to be capable of failing at all.
+
+**What moves.** Any template with a one-option construct renders a different draw sequence than
+it did, so seeded output changes for it — and for nothing else. The §5.9 differential puts a
+number on both halves: 410 of 1 800 renders in the stratum built from one-option constructs, 146
+more where a spliced plain value produced one, and **zero** across 6 360 renders of every class
+without one. An empty **permutation** was already neutral (`total = 0` returns before any draw)
+and is unchanged.
 
 ## 6. Trust model
 

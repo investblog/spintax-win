@@ -1439,12 +1439,32 @@ begin
         RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], False), 'b], [a');
 
   { Deep nesting with a reference in every level answers instead of overflowing: the
-    direct-reference walk and the re-read are both iterative. }
+    direct-reference walk and the re-read are both iterative. ParseSequence itself is NOT
+    -- see the next check. }
   r := '';
   for i := 1 to 5000 do r := r + '{%x%|';
   r := r + 'z';
   for i := 1 to 5000 do r := r + '}';
   Check('splice/deep-nesting-answers', RenderVars(r, ['x'], ['a'], False), 'a');
+
+  { A deeply nested RUNTIME VALUE in a branch the RNG does not pick. Before the splice
+    this cost nothing -- an unpicked option was never walked, so the value was never
+    parsed. The re-read expands the body BEFORE the pick, exactly as the reference does,
+    so the value now reaches ParseSequence whichever option wins.
+
+    ParseSequence recurses one frame per nesting level, so there IS a depth beyond which
+    this raises where the old engine returned. Measured 2026-09-12: both engines answer at
+    10 000 and raise EOutOfMemory at 20 000 when the value is PICKED, so the ceiling is
+    pre-existing and unchanged -- what the splice widened is which templates reach it. The
+    reference answers at 20 000 (its parser is iterative, family issue #68) and dies at
+    50 000 on the heap. Spec sec.5.9 records it and the backlog carries the parser.
+    This check pins the floor at 5 000: a regression that lowered it would fail here. }
+  r := '';
+  for i := 1 to 5000 do r := r + '{q|';
+  r := r + 'z';
+  for i := 1 to 5000 do r := r + '}';
+  Check('splice/deep-value-in-an-unpicked-branch-answers',
+        RenderVars('{ok|%deep%}', ['deep'], [r], False), 'ok');
 
   { The compiled path keeps the raw body across the compile, so a compiled template splices
     exactly as SpRender does. }
@@ -1457,6 +1477,47 @@ begin
       Check('splice/compiled-template-splices-too', SpRenderCompiled(tpl, ctx), 'b, c');
     finally ctx.Rng.Free; ctx.Vars.Free; end;
   finally tpl.Free; end;
+end;
+
+{ Render over an injected sequence of raw RNG values, the way the corpus's own
+  sequence-strategy cases do -- the only instrument that can see a draw being SPENT. An
+  outcome-set check cannot: a construct that consumes a draw it should not still reaches
+  every one of its options, just under different seeds. }
+function SeqRender(const tmpl: string; const seq: array of Integer): string;
+var ctx: TSpContext;
+begin
+  ctx := Default(TSpContext);
+  ctx.Locale := 'en'; ctx.PostProcess := False;
+  ctx.Rng := TSequenceRng.Create(seq);
+  try Result := SpRender(tmpl, ctx); finally ctx.Rng.Free; end;
+end;
+
+{ A construct with ONE option is not a choice, and must not cost a draw.
+
+  The reference's randomInt returns min when min = max without touching the generator,
+  mirroring the plugin's random_int, and this engine already short-circuits both of the
+  permutation's draws. RenderEnumeration was the one site that did not, so every
+  one-option spin silently advanced the stream and shifted every later choice in the
+  document. Ordinary content reaches it -- a spin with no pipe is a one-option spin, and a
+  lone braced placeholder in prose is the shape the GSA guide itself uses.
+
+  Found by a Codex review of the splice work, because the GSA escape for a block opening
+  with a question mark puts an empty enumeration in front of every such block; the
+  divergence is older than the splice. Cross-engine RNG parity is a non-goal, so this is
+  pinned here rather than in the corpus, which has no fixture that pairs a one-option
+  construct with a later choice. Measured against @spintax/core 0.7.0, 2026-09-12. }
+procedure TestSingleOptionDraw;
+begin
+  { control: two real choices consume one draw each, so the second spin sees seq[1] }
+  Check('draw/two-real-choices-consume-two', SeqRender('{a|b} {x|y}', [0, 1]), 'a y');
+  { and the one-option forms consume nothing, so the second spin still sees seq[0] }
+  Check('draw/one-option-enumeration-costs-nothing', SeqRender('{solo} {x|y}', [0, 1]), 'solo x');
+  Check('draw/empty-enumeration-costs-nothing', SeqRender('{} {x|y}', [0, 1]), ' x');
+  Check('draw/empty-permutation-costs-nothing', SeqRender('[] {x|y}', [0, 1]), ' x');
+  { the GSA escape, at engine level: the block still spins over the author's text AND
+    leaves the stream where it found it }
+  Check('draw/gsa-escape-shape-spins', SeqRender('{{}?a?b|c} {x|y}', [0, 0, 1]), '?a?b x');
+  Check('draw/gsa-escape-shape-second-option', SeqRender('{{}?a?b|c} {x|y}', [1, 0, 1]), 'c x');
 end;
 
 { Conditional truthiness over the FULL whitespace class.
@@ -2356,6 +2417,7 @@ begin
   TestConditionalTruthiness;
   TestRenderExpansionBudget;
   TestSplice;
+  TestSingleOptionDraw;
   TestIncludes;
   TestIncludeAnchor;
   TestIncludeResolver;

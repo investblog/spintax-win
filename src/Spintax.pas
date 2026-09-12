@@ -2300,7 +2300,18 @@ var idx: Integer; spliced: string;
 begin
   if (node.Raw <> '') and SpliceConstruct(node.Raw, '{', '}', opts, spliced) then Exit(spliced);
   if node.EnumOptions.Count = 0 then Exit('');
-  idx := opts.Rng.Next(0, node.EnumOptions.Count - 1);
+  { ONE option is not a choice, and asking the RNG for one costs a draw that shifts every
+    later choice in the document. The reference's randomInt returns min when min = max
+    WITHOUT touching the generator -- the plugin's random_int does -- and this engine already
+    short-circuits both of the permutation's draws the same way. The enumeration was the one
+    site that did not, so a one-option spin followed by a two-option one, over the sequence
+    [0,1], rendered the SECOND option of the second spin here and the first one there.
+    Ordinary content reaches this: a spin with no pipe is a one-option spin, and the GSA
+    front end's escape for a block opening with a question mark adds an empty one.
+    Found by a Codex review of the splice, which is what put an empty enumeration in front
+    of every escaped GSA block; the divergence itself is older than the splice. }
+  if node.EnumOptions.Count = 1 then idx := 0
+  else idx := opts.Rng.Next(0, node.EnumOptions.Count - 1);
   Result := RenderNodes(node.EnumOptions[idx], opts);
 end;
 

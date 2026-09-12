@@ -137,6 +137,28 @@ begin
   end;
 end;
 
+{ Convert, then render ONCE over an injected sequence of raw RNG values. The instrument
+  for what an outcome set cannot show: whether a construct SPENT a draw. Every value the
+  conversion needs comes back in MacroVars, so the render sees the same context a host
+  would give it. }
+procedure CheckSeq(const What, Src: string; const Seq: array of Integer; const Want: string);
+var vars: TStrMap; unsup: TStringList; ctx: TSpContext; tmpl, got: string;
+begin
+  vars := TStrMap.Create;
+  unsup := TStringList.Create;
+  try
+    tmpl := SpGsaToSpintax(Src, vars, unsup);
+    ctx := Default(TSpContext);
+    ctx.PostProcess := False;
+    ctx.Vars := vars;
+    ctx.Rng := TSequenceRng.Create(Seq);
+    try got := SpRender(tmpl, ctx); finally ctx.Rng.Free; end;
+    Check(What, got, Want);
+  finally
+    vars.Free; unsup.Free;
+  end;
+end;
+
 { Convert, render many times, and assert the set of outputs is exactly the two given --
   for a block that must still be a spin after the conversion. }
 procedure CheckSpins(const What, Src, A, B: string);
@@ -390,6 +412,19 @@ begin
     what caught that it proved nothing. }
   CheckSpins('literal/conditional-block', '{?a?b|c}', '?a?b', 'c');
   CheckSpins('literal/plural-block', '{plural 2:one|two}', 'plural 2:one', 'two');
+
+  { The escape must also be RNG-NEUTRAL -- it may not spend a draw, or every choice after
+    it in the document shifts. CheckSpins above cannot see that: a construct that consumes
+    a draw it should not still reaches all of its options, just under different seeds. So
+    this one drives the converted template with an injected SEQUENCE and asserts what the
+    block AFTER the escaped one gets. Codex review, 2026-09-12: the escape used to lift the
+    first character into a variable, which spent nothing; the empty enumeration that
+    replaced it did spend a draw until RenderEnumeration was taught the reference's
+    min = max short-circuit (local_tests TestSingleOptionDraw). }
+  CheckSeq('literal/escape-is-rng-neutral', '{?a?b|c} {x|y}', [0, 0, 1], '?a?b x');
+  CheckSeq('literal/escape-is-rng-neutral-second-option', '{?a?b|c} {x|y}', [1, 0, 1], 'c x');
+  CheckSeq('literal/plural-escape-is-rng-neutral', '{plural 2:one|two} {x|y}', [0, 0, 1],
+           'plural 2:one x');
 
   { none of this is a refusal -- the template is fully translated }
   Check('protected literals are not reported as unsupported',

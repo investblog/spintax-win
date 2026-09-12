@@ -377,6 +377,16 @@ split (`@spintax/core` 0.7.0, engine spec §5.9): the lifted `?` came back into 
 of the parse and the block was a conditional again, in every engine. `gsa_tests` caught it in
 the build that made the new corpus green.
 
+The escape also has to be **RNG-neutral**, and the first cut of it was not. An empty enumeration
+is a one-option enumeration, and this engine spent a draw on those, so every escaped block
+shifted each later choice in the document — where the old lifted-character escape had spent
+nothing. The engine now short-circuits a one-option construct the way the reference always has
+(engine spec §5.10). It was found by a review reading the draw rather than the output: the
+outcome-set checks in this suite cannot see a spent draw, because a block that spends one still
+reaches all of its options, just under different seeds. `literal/escape-is-rng-neutral` drives
+the converted template with an injected sequence and asserts what the block AFTER the escaped
+one gets.
+
 The same rule has a consequence this converter cannot shield: a lifted value is split on a
 `|` it carries whenever its reference sits directly inside a spin, because the sentinels cover
 brackets, `%` and `#`, and the family's `neutralize` deliberately does not cover the pipe. A
@@ -386,7 +396,7 @@ carries one; it is recorded here rather than engineered around.
 
 ## 12. How this is tested
 
-`tests/gsa_tests.dpr` — 99 assertions, run in CI beside the engine's suites, in both an
+`tests/gsa_tests.dpr` — 102 assertions, run in CI beside the engine's suites, in both an
 optimised and a `-Co -Cr` (overflow and range checked) build, with warnings as errors.
 
 Its rule is **convert-then-render**: assertions are made on what the engine *prints*, never
