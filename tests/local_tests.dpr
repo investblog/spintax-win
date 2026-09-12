@@ -1451,6 +1451,22 @@ begin
   { ...and the config's rule still holds where IT applies: a quoted `>` is separator text. }
   Check('splice/config-separator-holding-a-quoted-angle-bracket',
         RenderVars('[<sep="a>b">x|y]', [], [], True), 'xa>by');
+  { The other half of the widened endpoint, and the one the check above cannot see: here the
+    reference sits AFTER the quoted `>`, behind brackets. Reading only the per-element
+    grammar stops at that first `>`, finds nothing, and then skips `[%S%]` as a nested
+    construct -- so this fails if the config half is dropped, exactly as the unmatched-quote
+    check fails if the per-element half is. }
+  Check('splice/config-separator-with-the-reference-past-a-quoted-angle-bracket',
+        RenderVars('[<sep="a>[%S%]">x|y]', ['S'], [', '], True), 'xa>[, ]y');
+
+  { An ENUMERATION has no config and no per-element separators, so an angle region in its
+    body is ordinary text: a reference inside brackets there belongs to the permutation the
+    brackets make, and it is that construct which splices. Both measured against
+    @spintax/core 0.7.0, 2026-09-12 -- note the inner one trims to a bare comma. }
+  Check('splice/angle-text-in-an-enumeration-is-just-text',
+        RenderVars('{a<%S%>b|c}', ['S'], [', '], False), 'a<, >b');
+  Check('splice/angle-wrapped-brackets-in-an-enumeration-belong-to-the-inner-construct',
+        RenderVars('{a<[%S%]>b|c}', ['S'], [', '], False), 'a<,>b');
 
   { A reference buried TWO conditionals deep still belongs to the construct around them, and
     that is the shape the retention prefilter is most likely to get wrong if anyone
@@ -1479,9 +1495,11 @@ begin
   Check('splice/neutralized-value-still-splits-on-its-pipe-first',
         RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], False), 'b], [a');
 
-  { Deep nesting with a reference in every level answers instead of overflowing. Every walk
-    it touches is iterative now: the direct-reference scan, the re-read, and ParseSequence
-    itself (spec sec.5.11). }
+  { Deep nesting with a reference in every level answers instead of overflowing. The walks
+    on the PARSE side are all iterative now -- the direct-reference scan, the re-read, and
+    ParseSequence itself (spec sec.5.11) -- while the render walk and the tree's destructor
+    are still recursive and are what stops first at far greater depths (backlog). 5 000 is
+    comfortably inside both. }
   r := '';
   for i := 1 to 5000 do r := r + '{%x%|';
   r := r + 'z';

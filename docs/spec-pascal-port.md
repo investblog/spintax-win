@@ -1332,6 +1332,27 @@ since a `%name%` cannot straddle one, and a search that reaches the end of a spa
 finding `>` proves no later `<` in that span will either. Both together: 0 ms at every one of
 those sizes.
 
+**And the angle test itself was a false positive at every ancestor, which put the retention
+quadratic straight back.** An ENUMERATION body has no config and no per-element separators, so
+an angle region there is ordinary text; flat-testing it anyway meant that in a shape like an
+enumeration holding one reference and wrapped in angle regions, every ancestor's region
+contained the whole subtree and every ancestor retained its body. Measured on exactly that
+shape, parse only: before, `EOutOfMemory` at 32 000 levels; after restricting the test to
+permutation bodies, it parses. The test is kept where it is the rule — a permutation's config
+and per-element separators — and dropped where it is not, which also makes the answer more
+accurate: a reference behind brackets in an enumeration's angle text belongs to the permutation
+those brackets make, and it is that construct which splices (`{a<[%S%]>b|c}` → `a<,>b`, measured
+against the reference).
+
+**What the prefilter buys is retention, and the spec says so rather than claiming more.** It is
+linear in a body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²),
+because each one's `FindMatchingClose` crosses its whole subtree — the angle shape above still
+costs 78 ms at 2 000 levels and 21 s at 32 000. `ScanInto`'s own `FindMatchingClose` gives the
+parse that order on such input anyway, so the prefilter adds a constant and not an order, and
+§5.6 already records that this engine and the reference are both quadratic on deep nesting with
+upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of one whole body
+per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
+
 **The property is verified against a build with the prefilter compiled out**, since that is the
 only direction that would be a behaviour bug rather than a cost one. Four corpora, **12 720
 renders, all identical** to the prefilter-free build: the 1 760-document differential; 332
@@ -1343,11 +1364,14 @@ bracket around it; and two sets of separator shapes — brackets and braces insi
 an unmatched quote, a quoted `>`, nested `<…>`, and bare `<` runs. None of it is a vacuous
 zero: the four corpora differ from the pre-splice engine in 3 218, 1 302, 48 and 48 renders.
 
-Six local checks pin the separator shapes and two pin a reference two conditionals deep, and
-each was confirmed capable of failing by building the mutant that would break it: disabling the
-`<…>` flat test fails exactly the three bracket ones; honouring only the config's quote grammar
-fails exactly the unmatched-quote one; stopping the walk from entering conditionals fails
-exactly the two nested-conditional checks plus the two branch-trimming ones.
+Nine local checks pin the separator and angle shapes and two pin a reference two conditionals
+deep, and each was confirmed capable of failing by building the mutant that would break it:
+disabling the `<…>` flat test fails exactly the three bracket ones; honouring only the config's
+quote grammar fails exactly the unmatched-quote one; and the two halves of the widened endpoint
+are pinned from opposite sides, since a reference hidden AFTER a quoted `>` fails if the config
+half is dropped just as the unmatched quote fails if the per-element half is. Stopping the walk
+from entering conditionals fails exactly the two nested-conditional checks plus the two
+branch-trimming ones.
 
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
 is hung on it, each owning list is reserved to its final size before it is filled, and the

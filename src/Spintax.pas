@@ -1436,18 +1436,27 @@ end;
   two agree on what counts as nesting. Two further traps, both found by review after the
   first cut shipped them, and both FALSE NEGATIVES -- the direction that is a behaviour bug:
 
-  A `<...>` region is separator TEXT, not structure. Brackets inside it are characters, so
-  skipping them the way this walk skips a nested construct hides a reference the authority
-  finds in PermSep: `[<sep="[%S%]">a|b]` rendered the separator literally. Every such region
-  is therefore flat-tested for a reference, and the walk then continues INTO it rather than
-  past it -- adding a check can only add false positives, which cost memory and not answers.
+  In a PERMUTATION body a `<...>` region is separator TEXT, not structure. Brackets inside
+  it are characters, so skipping them the way this walk skips a nested construct hides a
+  reference the authority finds in PermSep: `[<sep="[%S%]">a|b]` rendered the separator
+  literally. Such a region is therefore flat-tested for a reference, and the walk resumes
+  AFTER it -- everything in it was just tested, and a %name% cannot straddle the closing
+  bracket, so resuming inside would only rescan.
+
+  `separatorsAreText` is False for an ENUMERATION, whose body has no config and no
+  per-element separators, so an angle region there is ordinary text the normal walk already
+  covers. Testing it anyway was a false positive at every ancestor of a shape like an
+  enumeration wrapped in angle regions -- each one's region contains the whole subtree --
+  and that put the Theta(n^2) retention straight back: 2 000 levels 94 ms, 4 000 375,
+  8 000 1 609, 16 000 7 797. A prefilter may err towards more work, but not towards the
+  very cost it exists to prevent (Codex review).
 
   A conditional's branches are scanned as two separate spans, because that is how the
   parser parses them. Over one combined span an opening brace in the then-branch could pair
   with a closing brace in the else-branch and carry the walk across the separator.
 
   Iterative, like every walk here. }
-function MayHoldDirectReference(const s: string): Boolean;
+function MayHoldDirectReference(const s: string; separatorsAreText: Boolean): Boolean;
 var span: TArray<Integer>; top, i, upto, endp, j, k, kPlain, kQuoted: Integer;
     head: TCondHead; inQuote, noClose: Boolean;
 
@@ -1488,7 +1497,7 @@ begin
     noClose := False;
     while i < upto do
     begin
-      if s[i] = '<' then
+      if (s[i] = '<') and separatorsAreText then
       begin
         { Once a forward search has run to the end of this span without finding a `>`, no
           LATER `<` in it can find one either -- remembering that is what keeps a body of
@@ -1949,11 +1958,22 @@ var
       40 000 reference-free levels still died (Codex review). So prune on a cheap NECESSARY
       condition first: a direct reference is literally a %name% inside this body, in an
       option, a conditional branch or a separator, so a body with no such token anywhere
-      cannot have one. Linear in the body, and it cannot change the tree -- the finalize
-      pass would have cleared Raw on exactly these. What stays quadratic is a deep chain
-      where every level really does carry a reference, and there the reference engine keeps
-      the same bodies for the same reason. }
-    if MayHoldDirectReference(content) then
+      cannot have one. It cannot change the tree -- the finalize pass would have cleared
+      Raw on exactly these.
+
+      What it buys is RETENTION, and only that. It is linear in a body's own level, but
+      over NESTED constructs the per-construct calls sum to Theta(n^2), because each one's
+      FindMatchingClose crosses its whole subtree; ScanInto's own FindMatchingClose gives
+      the parse that order on such input anyway, so this adds a constant and not an order
+      (spec sec.5.6 records that this engine and the reference are both quadratic on deep
+      nesting, and that upstream calls bounding such input a host job). What it does remove
+      is the Theta(n^2) MEMORY of holding one whole body per level, which is what the
+      recursion cost and what the tentative-Raw cut cost after it.
+
+      And a deep chain where every level really does carry a direct reference stays
+      quadratic in memory too -- the bodies are needed -- exactly as it does in the
+      reference engine. }
+    if MayHoldDirectReference(content, False) then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -2034,7 +2054,7 @@ var
     end;
     { Same necessary-condition prune as the enumeration, over the FULL inner text, since a
       permutation's separators are part of what the splice re-reads. }
-    if MayHoldDirectReference(rawInner) then
+    if MayHoldDirectReference(rawInner, True) then
     begin
       node.Raw := rawInner;   { tentative -- the finalize pass decides }
       pend.Add(node);
