@@ -1424,12 +1424,12 @@ begin
   Check('splice/single-separator-form-from-a-variable',
         RenderVars('[<%S%>a|b]', ['S'], ['+'], True), 'a+b');
 
-  { A separator is TEXT, so a bracket inside it is a character and not nesting. This is the
-    shape the retention prefilter got wrong on its first two cuts: skipping the bracket pair
-    the way it skips a nested construct hid the reference, the body was never retained, and
-    the separator reached the output as a literal `%S%`. Measured against @spintax/core
-    0.7.0, 2026-09-12 -- the whole outcome set is two elements joined by the substituted
-    separator, so last-pick (no swap) pins it exactly. }
+  { A separator is TEXT, so a bracket inside it is a character and not nesting. These are the
+    shapes that broke every attempt to spot separators in the RAW text before retaining a
+    body -- skipping the bracket pair hid the reference, the body was never retained, and the
+    separator reached the output as a literal `%S%`. The parser now reads the PARSED separator
+    fields, as the authority does, so the group below pins behaviour that no longer depends on
+    guessing. Measured against @spintax/core 0.7.0, 2026-09-12; last-pick (no swap) pins each. }
   Check('splice/reference-in-a-separator-holding-brackets',
         RenderVars('[<sep="[%S%]">a|b]', ['S'], [', '], True), 'a[, ]b');
   Check('splice/reference-in-a-separator-holding-braces',
@@ -1437,13 +1437,12 @@ begin
   Check('splice/reference-in-a-per-element-separator-holding-brackets',
         RenderVars('[a <[%S%]> | b]', ['S'], [', '], True), 'a[, ]b');
 
-  { The two separator grammars DISAGREE about a quote, and the prefilter has to satisfy
-    both. A config stops at the first `>` outside quotes (ParsePermConfig); a per-element
-    separator treats the quote as ordinary text and stops at the first `>` at all
-    (extractTrailingSep, and the reference's own version of it). Reading only the config's
-    rule made this look unterminated, so the walk fell through, skipped the bracket pair,
-    and rendered a literal %S%. Measured against @spintax/core 0.7.0, 2026-09-12: the quote
-    is part of the separator and survives into the output. }
+  { The two separator grammars DISAGREE about a quote: a config stops at the first `>` outside
+    quotes (ParsePermConfig), a per-element separator treats the quote as ordinary text and
+    stops at the first `>` at all (extractTrailingSep, and the reference's own version). A
+    raw-text guess at the separator had to satisfy both and got one wrong; reading the parsed
+    fields satisfies both by construction. Measured against @spintax/core 0.7.0, 2026-09-12:
+    the quote is part of the separator and survives into the output. }
   Check('splice/per-element-separator-with-an-unmatched-quote',
         RenderVars('[a <"[%S%]> | b]', ['S'], [', '], True), 'a"[, ]b');
   Check('splice/per-element-separator-with-a-quote-and-no-brackets',
@@ -1451,11 +1450,10 @@ begin
   { ...and the config's rule still holds where IT applies: a quoted `>` is separator text. }
   Check('splice/config-separator-holding-a-quoted-angle-bracket',
         RenderVars('[<sep="a>b">x|y]', [], [], True), 'xa>by');
-  { The other half of the widened endpoint, and the one the check above cannot see: here the
-    reference sits AFTER the quoted `>`, behind brackets. Reading only the per-element
-    grammar stops at that first `>`, finds nothing, and then skips `[%S%]` as a nested
-    construct -- so this fails if the config half is dropped, exactly as the unmatched-quote
-    check fails if the per-element half is. }
+  { The complement of the check above, which carries no reference and so cannot tell a right
+    answer from a lucky one: here the reference sits AFTER the quoted `>`, behind brackets,
+    where a reader following the per-element grammar would stop early and skip `[%S%]` as a
+    nested construct. }
   Check('splice/config-separator-with-the-reference-past-a-quoted-angle-bracket',
         RenderVars('[<sep="a>[%S%]">x|y]', ['S'], [', '], True), 'xa>[, ]y');
 

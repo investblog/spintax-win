@@ -1309,68 +1309,53 @@ unmatched bracket as the literal the parser treats it as. A deep chain where eve
 does carry a direct reference stays quadratic, and there the reference engine keeps the same
 bodies for the same reason.
 
-**Three false negatives got through successive cuts of it, every one a real output bug, and the
-last one is the most instructive.** First: a `<…>` region is separator TEXT, so the brackets in
-`[<sep="[%S%]">a|b]` are characters, and skipping them the way the walk skips a nested construct
-hid the reference and printed a literal `%S%`. Second: a conditional's two branches were scanned
-as ONE span, where an opening brace in the then-branch can pair with a closing brace in the
-else-branch and carry the walk across the separator — the parser parses them separately, so the
-prefilter does too now. Third: **the two separator grammars disagree, and the prefilter has to
-satisfy both.** A config ends at the first `>` OUTSIDE quotes, which is how `ParsePermConfig`
-reads it; a per-element separator treats a quote as ordinary text and ends at the first `>` at
-all, which is how `extractTrailingSep` and the reference's own version read it. Honouring only
-the config's rule made `[a <"[%S%]> | b]` look unterminated, so the walk fell through and skipped
-the bracket pair. The fix takes the WIDER of the two endpoints — where a prefilter is allowed to
-be wrong.
+**Separators are read, not guessed, and it took four review rounds to learn that.** Three
+successive cuts tried to spot a permutation's separators in the raw body text before retaining
+it, and every one was wrong somewhere. Brackets inside a separator are characters, so skipping
+them the way the walk skips a nested construct hid the reference in `[<sep="[%S%]">a|b]` and
+printed a literal `%S%`. The config and per-element grammars disagree about a quote — a config
+ends at the first `>` outside quotes (`ParsePermConfig`), a per-element separator treats the
+quote as text and ends at the first `>` at all (`extractTrailingSep`) — so reading one of them
+made `[a <"[%S%]> | b]` look unterminated. And flat-testing every angle region to be safe made
+ordinary option text a false positive at every ancestor: in `[a<…>b]` wrapped around one
+reference, each level's angle region contains the whole subtree, and `EOutOfMemory` came back
+at 32 000 levels — the very cost the prefilter exists to prevent. The first two were output
+bugs, the third was memory, and a fourth version of the angle scan was also quadratic in TIME
+under a comment claiming one linear pass (187 ms at 20 000 bare `<`, 15 578 at 160 000).
 
-**Its cost had to be checked against the ORDER, not against "faster".** The first `<…>` handling
-tested the region and then advanced a single character, so a body of bare `<` rescanned its own
-suffix once per bracket: 20 000 of them cost 187 ms, 40 000 688, 80 000 4 562 and 160 000
-15 578 — four times the work for twice the input, the signature this section already paid for
-once. A region that has just been tested and holds no reference can be resumed AFTER its `>`,
-since a `%name%` cannot straddle one, and a search that reaches the end of a span without
-finding `>` proves no later `<` in that span will either. Both together: 0 ms at every one of
-those sizes.
+None of it was necessary. By the time a permutation's body is judged, `ParsePermConfig` has run
+and the per-element separators are collected, so the EXACT fields the authority reads —
+`PermSep`, `PermLastSep` and each option's separator — are already in hand. `MakePerm` reads
+those with the authority's own `HasReferenceText`, and the prefilter walks only the body's option
+text, which is what a structural scan is for. Only a leading region is config and only a trailing
+one on a non-final part is a separator; everything else between angle brackets is option text.
+The prefilter itself no longer knows what a separator is. Measured on the angle-wrapped
+permutation chain: `EOutOfMemory` at 32 000 before, parses after.
 
-**And the angle test itself was a false positive at every ancestor, which put the retention
-quadratic straight back.** An ENUMERATION body has no config and no per-element separators, so
-an angle region there is ordinary text; flat-testing it anyway meant that in a shape like an
-enumeration holding one reference and wrapped in angle regions, every ancestor's region
-contained the whole subtree and every ancestor retained its body. Measured on exactly that
-shape, parse only: before, `EOutOfMemory` at 32 000 levels; after restricting the test to
-permutation bodies, it parses. The test is kept where it is the rule — a permutation's config
-and per-element separators — and dropped where it is not, which also makes the answer more
-accurate: a reference behind brackets in an enumeration's angle text belongs to the permutation
-those brackets make, and it is that construct which splices (`{a<[%S%]>b|c}` → `a<,>b`, measured
-against the reference).
-
-**What the prefilter buys is retention, and the spec says so rather than claiming more.** It is
-linear in a body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²),
-because each one's `FindMatchingClose` crosses its whole subtree — the angle shape above still
-costs 78 ms at 2 000 levels and 21 s at 32 000. `ScanInto`'s own `FindMatchingClose` gives the
-parse that order on such input anyway, so the prefilter adds a constant and not an order, and
-§5.6 already records that this engine and the reference are both quadratic on deep nesting with
-upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of one whole body
+**What the prefilter buys is retention, and nothing more is claimed for it.** It is linear in a
+body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²) TIME, because
+each one's `FindMatchingClose` crosses its subtree — the angle-wrapped permutation chain costs
+110 ms at 2 000 levels and 30 s at 32 000. `ScanInto`'s own `FindMatchingClose` gives the parse
+that order on such input anyway, so the prefilter adds a constant and not an order, and §5.6
+already records that this engine and the reference are both quadratic on deep nesting with
+upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of one retained body
 per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
 
-**The property is verified against a build with the prefilter compiled out**, since that is the
-only direction that would be a behaviour bug rather than a cost one. Four corpora, **12 720
-renders, all identical** to the prefilter-free build: the 1 760-document differential; 332
-adversarial shapes putting a reference in an option, a permutation element, `sep`, `lastsep`, a
-per-element separator, the single-separator form, either branch of a conditional, an inverted
-one, two conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the
-shapes where the reference sits inside a NESTED construct and the shapes with an unmatched
-bracket around it; and two sets of separator shapes — brackets and braces inside a separator,
-an unmatched quote, a quoted `>`, nested `<…>`, and bare `<` runs. None of it is a vacuous
-zero: the four corpora differ from the pre-splice engine in 3 218, 1 302, 48 and 48 renders.
+**The property is verified against a build with the prefilter AND the separator read compiled
+out**, since a false negative is the only direction that would be a behaviour bug. Four corpora,
+**12 720 renders, all identical**: the 1 760-document differential; 332 adversarial shapes
+putting a reference in an option, a permutation element, `sep`, `lastsep`, a per-element
+separator, the single-separator form, either branch of a conditional, an inverted one, two
+conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the shapes
+where the reference sits inside a NESTED construct and the shapes with an unmatched bracket
+around it; and two sets of separator shapes — brackets and braces in a separator, an unmatched
+quote, a quoted `>`, nested and bare angle brackets. None of it is a vacuous zero: the four
+corpora differ from the pre-splice engine in 3 218, 1 302, 48 and 48 renders.
 
-Nine local checks pin the separator and angle shapes and two pin a reference two conditionals
-deep, and each was confirmed capable of failing by building the mutant that would break it:
-disabling the `<…>` flat test fails exactly the three bracket ones; honouring only the config's
-quote grammar fails exactly the unmatched-quote one; and the two halves of the widened endpoint
-are pinned from opposite sides, since a reference hidden AFTER a quoted `>` fails if the config
-half is dropped just as the unmatched quote fails if the per-element half is. Stopping the walk
-from entering conditionals fails exactly the two nested-conditional checks plus the two
+Every local check in this family was confirmed capable of failing by building the mutant that
+breaks it. Removing the parsed-separator read fails exactly the six separator checks — including
+both quote-grammar ones and the reference hidden past a quoted `>` — and nothing else; stopping
+the walk from entering conditionals fails exactly the two nested-conditional checks plus the two
 branch-trimming ones.
 
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything

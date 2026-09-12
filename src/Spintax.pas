@@ -1412,77 +1412,44 @@ begin
   Result := False;
 end;
 
-{ Could this construct body hold a reference the sec.5.9 splice would act on? The PREFILTER
-  the parser applies before deciding to retain a body, and it exists purely for cost: the
-  authority is still the node walk in the finalize pass.
+{ Could this construct body hold a reference the sec.5.9 splice would act on, at THIS
+  construct's own level? The PREFILTER the parser applies before deciding to retain a body,
+  and it exists purely for cost: the authority is still the node walk in the finalize pass.
 
   Its one hard requirement is NO FALSE NEGATIVES -- a body wrongly rejected here loses its
-  Raw and renders the old, wrong output. False POSITIVES only waste memory, which is what
-  the whole prefilter is for, so it must skip exactly what the rule skips and no more.
+  Raw and renders the old, wrong output. False POSITIVES only waste memory, which is what the
+  whole prefilter is for, so it must skip exactly what the rule skips and no more.
 
   A flat "is there a %name% anywhere in this string" was the first cut and was wrong in the
-  way that matters for cost: in a chain of ancestors wrapped around one reference, every
-  ancestor's body contains that reference as a SUBSTRING, so every ancestor retained its
-  whole body and the Theta(n^2) came straight back with a single %x% in the document. The
-  measurement that was supposed to prove the prune could not see it, because its 100 000
-  level chain held no `%` at all -- a corpus that cannot express the counterexample
-  (Codex review). So this walks the body at the construct's OWN level: a nested
-  enumeration, permutation or plural is stepped over whole, because a reference inside one
-  of those is spliced when THAT construct renders, while a conditional IS entered, because
-  the reference resolves conditionals before it expands and a branch's text lands in this
-  body ahead of the split.
+  way that matters for cost: in a chain of ancestors wrapped around ONE reference, every
+  ancestor's body contains it as a substring, so every ancestor retained its whole body and
+  the Theta(n^2) came back with a single %x% in the document. The measurement meant to prove
+  the prune could not see it, because its chain held no `%` at all -- a corpus that cannot
+  express the counterexample (Codex review). So this walks the body at the construct's own
+  level: a nested enumeration, permutation or plural is stepped over whole, because a
+  reference inside one of those is spliced when THAT construct renders, while a conditional
+  IS entered, because the reference resolves conditionals before it expands and a branch's
+  text lands in this body ahead of the split. Its two branches are two spans, as the parser
+  parses them, so a brace in one cannot pair with a brace in the other and carry the walk
+  across the separator. An unmatched bracket is a literal here exactly as to the parser.
 
-  An unmatched bracket is a literal character here exactly as it is to the parser, so the
-  two agree on what counts as nesting. Two further traps, both found by review after the
-  first cut shipped them, and both FALSE NEGATIVES -- the direction that is a behaviour bug:
+  It says nothing about SEPARATORS. A permutation's config and per-element separators are
+  read from the parsed fields in MakePerm, exactly as the authority reads them; three cuts
+  that tried to spot separators in the raw text were each wrong somewhere, and the last was a
+  false positive on every angle region of ordinary option text.
 
-  In a PERMUTATION body a `<...>` region is separator TEXT, not structure. Brackets inside
-  it are characters, so skipping them the way this walk skips a nested construct hides a
-  reference the authority finds in PermSep: `[<sep="[%S%]">a|b]` rendered the separator
-  literally. Such a region is therefore flat-tested for a reference, and the walk resumes
-  AFTER it -- everything in it was just tested, and a %name% cannot straddle the closing
-  bracket, so resuming inside would only rescan.
-
-  `separatorsAreText` is False for an ENUMERATION, whose body has no config and no
-  per-element separators, so an angle region there is ordinary text the normal walk already
-  covers. Testing it anyway was a false positive at every ancestor of a shape like an
-  enumeration wrapped in angle regions -- each one's region contains the whole subtree --
-  and that put the Theta(n^2) retention straight back: 2 000 levels 94 ms, 4 000 375,
-  8 000 1 609, 16 000 7 797. A prefilter may err towards more work, but not towards the
-  very cost it exists to prevent (Codex review).
-
-  A conditional's branches are scanned as two separate spans, because that is how the
-  parser parses them. Over one combined span an opening brace in the then-branch could pair
-  with a closing brace in the else-branch and carry the walk across the separator.
-
-  Iterative, like every walk here. }
-function MayHoldDirectReference(const s: string; separatorsAreText: Boolean): Boolean;
-var span: TArray<Integer>; top, i, upto, endp, j, k, kPlain, kQuoted: Integer;
-    head: TCondHead; inQuote, noClose: Boolean;
+  Linear in a body's own level; over NESTED constructs the per-construct calls sum to
+  Theta(n^2) TIME, because each FindMatchingClose crosses its subtree -- the order the parse
+  already has on such input (spec sec.5.11). What it removes is the Theta(n^2) MEMORY of
+  one retained body per level. Iterative, like every walk here. }
+function MayHoldDirectReference(const s: string): Boolean;
+var span: TArray<Integer>; top, i, upto, endp, j: Integer; head: TCondHead;
 
   procedure PushSpan(from, upTo_: Integer);
   begin
     if from >= upTo_ then Exit;
     if top + 2 > Length(span) then SetLength(span, Length(span) * 2);
     span[top] := from; span[top + 1] := upTo_; Inc(top, 2);
-  end;
-
-  { A `%name%` anywhere in s[from .. upTo_ - 1], brackets and all. }
-  function FlatRefIn(from, upTo_: Integer): Boolean;
-  var a, b: Integer;
-  begin
-    a := from;
-    while a < upTo_ do
-    begin
-      if s[a] = '%' then
-      begin
-        b := a + 1;
-        while (b < upTo_) and IsAsciiWord(s[b]) do Inc(b);
-        if (b > a + 1) and (b < upTo_) and (s[b] = '%') then Exit(True);
-      end;
-      Inc(a);
-    end;
-    Result := False;
   end;
 
 begin
@@ -1493,48 +1460,8 @@ begin
   begin
     Dec(top, 2);
     i := span[top]; upto := span[top + 1];
-    { per SPAN: a failed search for `>` only rules out the rest of THIS range }
-    noClose := False;
     while i < upto do
     begin
-      if (s[i] = '<') and separatorsAreText then
-      begin
-        { Once a forward search has run to the end of this span without finding a `>`, no
-          LATER `<` in it can find one either -- remembering that is what keeps a body of
-          bare `<` from costing a scan each (Codex review; the first cut was quadratic and
-          the comment claimed one linear scan). }
-        if noClose then begin Inc(i); Continue; end;
-        { TWO grammars meet here and they disagree, so take the WIDER region. A config
-          stops at the first `>` OUTSIDE quotes, which is how ParsePermConfig reads it; a
-          per-element separator treats a quote as ordinary text and stops at the first `>`
-          at all, which is how extractTrailingSep reads it. Scanning only the config's way
-          made `[a <"[%S%]> | b]` look unterminated, so the walk fell through and skipped
-          the bracket pair -- and the separator rendered a literal %S%. }
-        kPlain := 0; kQuoted := 0; inQuote := False;
-        k := i + 1;
-        while k < upto do
-        begin
-          if s[k] = '"' then inQuote := not inQuote
-          else if s[k] = '>' then
-          begin
-            if kPlain = 0 then kPlain := k;
-            if not inQuote then begin kQuoted := k; Break; end;
-          end;
-          Inc(k);
-        end;
-        if (kPlain = 0) and (kQuoted = 0) then
-        begin
-          noClose := True;
-          Inc(i);
-          Continue;
-        end;
-        if kQuoted > kPlain then endp := kQuoted else endp := kPlain;
-        if FlatRefIn(i + 1, endp) then Exit(True);
-        { The whole region was just tested, and a `%name%` cannot straddle a `>`, so
-          resuming AFTER it loses nothing and makes the pass linear. }
-        i := endp + 1;
-        Continue;
-      end;
       if s[i] = '{' then
       begin
         endp := FindMatchingClose(s, i, '{', '}');
@@ -1973,7 +1900,7 @@ var
       And a deep chain where every level really does carry a direct reference stays
       quadratic in memory too -- the bodies are needed -- exactly as it does in the
       reference engine. }
-    if MayHoldDirectReference(content, False) then
+    if MayHoldDirectReference(content) then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -1985,7 +1912,7 @@ var
     content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep: string;
     parts: TStringList;
     i, k, openPos, q: Integer;
-    hasPending, hasTrailing, bail, looksHtml: Boolean;
+    hasPending, hasTrailing, bail, looksHtml, keepRaw: Boolean;
     opt: TPermOption;
     node: TNode;
   begin
@@ -2052,9 +1979,27 @@ var
     finally
       parts.Free;
     end;
-    { Same necessary-condition prune as the enumeration, over the FULL inner text, since a
-      permutation's separators are part of what the splice re-reads. }
-    if MayHoldDirectReference(rawInner, True) then
+    { A permutation's separators do not need approximating: ParsePermConfig has already run
+      and the per-element ones are collected above, so the EXACT fields the authority reads
+      are in hand -- and reading them beats every attempt to spot a separator in the raw
+      text. Three cuts of this tried the latter and each was wrong somewhere: brackets
+      inside a separator hid a reference, the config and per-element grammars disagreed
+      about a quote, and flat-testing every angle region made ordinary option text a false
+      positive at every ancestor, which is the retention quadratic all over again (Codex
+      review, three rounds). Only a leading region is config and only a trailing one on a
+      non-final part is a separator; the rest is option text, and option text is exactly
+      what the structural scan is for. }
+    keepRaw := HasReferenceText(node.PermSep) or
+               (node.PermHasLastSep and HasReferenceText(node.PermLastSep));
+    if not keepRaw then
+      for i := 0 to node.PermOptions.Count - 1 do
+        if node.PermOptions[i].HasSeparator and
+           HasReferenceText(node.PermOptions[i].Separator) then
+        begin
+          keepRaw := True;
+          Break;
+        end;
+    if keepRaw or MayHoldDirectReference(content) then
     begin
       node.Raw := rawInner;   { tentative -- the finalize pass decides }
       pend.Add(node);
