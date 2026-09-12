@@ -16,8 +16,8 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
 and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
 recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
-walk reachable, which is the first item below. The other two are family questions rather than
-local work.
+walk reachable, which is the first item below. The other is a family question rather than local
+work. The `plural.count-macro` multiplicity question was DECIDED on 2026-09-12 and is in Done.
 
 - [ ] **Make the render walk and the tree destructor iterative.** `ParseSequence` was made
       iterative on 2026-09-12 (spec §5.11) and is no longer the depth limit — an enumeration
@@ -34,24 +34,6 @@ local work.
       [spintax-js#68](https://github.com/investblog/spintax-js/issues/68); this port now
       differs from it only past 50 000 levels.
 
-- [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
-      in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
-      `#set %a% = {x|y}` + `#set %b% = {x|y}` + `{plural %a% %b%: one|two}` gives
-      `["plural.count-macro","plural.count-macro"]` from `@spintax/core` and one diagnostic
-      here — this loop `Break`s at the first tainted name, the reference's does not. Both
-      anchor at the same span, so the second is a duplicate at identical coordinates, and
-      the verdict is `invalid` either way. Not corpus-gated: expected diagnostics are matched
-      as a SUBSET, so one where two are expected passes. Pre-existing, unrelated to the
-      count-expansion work, and the same shape as the lesson AGENTS.md already records about
-      `detectCycle` — a diagnostic COUNT can be a property of the walk. Removing the `Break`
-      is the fix; it needs the two-cursor claim in §5.5 re-checked, since `count-macro` would
-      no longer fire at most once per block. **Filed upstream 2026-08-21 as
-      [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)** with the family
-      measurement: `@spintax/core` and `spintax-core` both emit one per tainted REFERENCE
-      (200 refs in one count slot give 200 diagnostics, all at the same anchor), this port
-      one per BLOCK. Verdict identical either way; waiting on the decision rather than
-      guessing, because it is the same question #59 answered for circular references.
-
 - [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
       tests only whether a variable is SET, so the dialect converter below expresses an
       n-way correlated choice as n−1 definitions and a chain of n−1 nested conditionals per
@@ -60,6 +42,36 @@ local work.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **`plural.count-macro`: one diagnostic per BLOCK, decided** (2026-09-12, by the owner
+      of the family contract, for [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)).
+      This port emits one per block and `@spintax/core` / `spintax-core` one per tainted
+      reference — 200 references in one count slot gave 200 diagnostics at a single anchor
+      there and one here. The verdict is `invalid` either way, and no fixture can see the
+      difference: the five `count-macro` fixtures each expect one, matched as a subset. The
+      entry that sat here said "waiting on the decision"; that was imprecise about WHO decides —
+      the family contract lives in `investblog/spintax-js`, which is the same owner, so there
+      was no outside party to wait on.
+
+      **Why per block.** Zero change in this engine; no run of identical diagnostics at one
+      position for an editor to list; and it is the #59 principle, one diagnostic per thing
+      rather than per step of the walk. The names of every tainted macro can go in that one
+      diagnostic's message, so nothing a reader needs is lost. Per reference was NOT the cheap
+      option here, whatever it costs elsewhere: simply dropping the `Break` would make every
+      count-macro of a block anchor at the same offset, send `curMacro` backwards and restart
+      it from offset 1 per call — the recurring cursor defect, the shape §5.5 measured at
+      523 ms against 11 ms on 2000 blocks.
+
+      **Nothing to do in this repository.** The alignment happens in `spintax-js` and
+      `spintax-py` (stop at the first tainted reference, record the rule in the conformance
+      README), with [spintax-js#74](https://github.com/investblog/spintax-js/issues/74) adding
+      exact multiplicity to the fixture schema so the decision cannot drift again.
+
+      **For the next session here: re-run the corpus as soon as #74 lands, before assuming
+      green.** Exact multiplicity gates EVERY diagnostic, not just this one, and subset
+      matching is what hid per-path circular references for eleven days; a count this port
+      gets wrong anywhere else will surface then, and it will be a real finding rather than a
+      flaky run.
 
 - [x] **`ParseSequence` is iterative** (2026-09-12, spec §5.11). The DEEPEST recursive walk in
       the engine, and the hazard §7 names in one line — not the last, which is what an earlier
