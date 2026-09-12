@@ -1282,27 +1282,48 @@ pass at the end clears it on the constructs that turned out not to hold one.
 `EnumHasDirectReference` and `PermHasDirectReference` read the construct's own options only, so
 by then they have everything they need.
 
-**That tentative `Raw` undid the fix, and a second review round caught it.** Retaining a
-construct's whole inner text until the finalize pass keeps one copy alive per level — the same
-Θ(n²) the recursion had, moved out of the stack frames and into the tree. It bought a bigger
-constant, not a better order, and the measurement said so plainly: the ceiling went from under
-20 000 to about 35 000, which is roughly the √3 that a threefold drop in bytes-per-level
-predicts, where a real fix removes the quadratic altogether. The cure is a cheap NECESSARY
-condition checked before retaining: a direct reference is literally a `%name%` token inside that
-body — in an option, in a conditional branch, or in a separator — so a body with no such token
-anywhere cannot have one. One linear scan, sound, and it cannot change the tree, because the
-finalize pass would have cleared `Raw` on exactly those constructs. A deep chain where every
-level really does carry a reference stays quadratic, and there the reference engine keeps the
-same bodies for the same reason.
+**That tentative `Raw` undid the fix, and two review rounds were needed to get it out.**
+Retaining a construct's whole inner text until the finalize pass keeps one copy alive per
+level — the same Θ(n²) the recursion had, moved out of the stack frames and into the tree. It
+bought a bigger constant, not a better order, and the measurement said so plainly: the ceiling
+went from under 20 000 to about 35 000, which is roughly the √3 that a threefold drop in
+bytes-per-level predicts, where a real fix removes the quadratic altogether. **A fix meant to
+change an order has to be checked against the order, not against "it got better".**
+
+The cure is a prefilter, `MayHoldDirectReference`, run before a body is retained, with the
+finalize pass still the authority. Its hard requirement is no FALSE NEGATIVES — a body wrongly
+rejected loses its `Raw` and renders the old, wrong output — while false positives cost only
+the memory the prefilter exists to save. The first cut of it tested whether a `%name%` token
+appeared anywhere in the body, and that is wrong in exactly the way that matters: in a chain of
+ancestors wrapped around ONE reference, every ancestor's body contains it as a substring, so
+every ancestor retained its body and the quadratic came straight back with a single `%x%` in
+the document. The measurement meant to prove the prune could not see it, because its
+100 000-level chain contained no `%` at all — a corpus that cannot express the counterexample,
+which is the trap §8 records twice and which caught this work twice more. Measured after the
+second round: one reference wrapped in 40 000 ancestors raised `EOutOfMemory` under the flat
+test and parses under the level-aware one.
+
+So the prefilter walks the body at the construct's OWN level — stepping over a nested
+enumeration, permutation or plural whole, entering a conditional's branches, and treating an
+unmatched bracket as the literal the parser treats it as. A deep chain where every level really
+does carry a direct reference stays quadratic, and there the reference engine keeps the same
+bodies for the same reason.
 
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
-is hung on it, and each owning list is reserved to its final size before it is filled, so an
-allocation that raises mid-construction leaves nothing detached for `Result.Free` to miss.
-`TNode.Destroy` and `TPermOption.Destroy` tolerate the nil fields that ordering leaves behind.
-The first cut had this backwards in five places — a conditional's two child lists, both owner
-lists, a permutation option, and worst of them a literal node holding the largest string the
-scan produces — all found by reading the invariant rather than trusting the comment that
-asserted it.
+is hung on it, each owning list is reserved to its final size before it is filled, and the
+attach itself goes through `AttachNode`, which frees the node if the list's own growth raises.
+`TNode.Destroy` and `TPermOption.Destroy` tolerate the nil fields that ordering leaves behind,
+and `pend` is allocated before the result list so that failing to allocate it cannot strand
+one. With all four in place `Result.Free` frees a half-built tree completely.
+
+It took two rounds to get there, and the first one is the lesson: the original code had the
+order backwards in five places — a conditional's two child lists, both owner lists, a
+permutation option, and worst of them a literal node holding the largest string the scan
+produces. Fixing those left a subtler hole, that `list.Add(node)` can grow the list and raise
+BEFORE taking ownership, so the one object the invariant could still lose was the very node
+being attached. Both were found by reading the invariant against the code rather than trusting
+the comment that asserted it, and neither could have been found by a test: they only show under
+a failing allocation.
 
 **Verified as a pure refactor, which is the only acceptable result for it.** The §5.9
 differential — 1 760 documents × 6 configurations, 10 560 renders — is **byte-identical** to the

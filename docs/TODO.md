@@ -61,8 +61,10 @@ local work.
 
 ## Done
 
-- [x] **`ParseSequence` is iterative** (2026-09-12, spec §5.11). The last recursive walk in the
-      engine, and the hazard §7 names in one line. It was closed in the splice release rather
+- [x] **`ParseSequence` is iterative** (2026-09-12, spec §5.11). The DEEPEST recursive walk in
+      the engine, and the hazard §7 names in one line — not the last, which is what an earlier
+      version of this entry wrongly said; the render walk and the destructor are the open item
+      above. It was closed in the splice release rather
       than after it because a Codex review would not pass §5.9 while the splice widened the
       reach of a recursive parser — a deep value in a branch the RNG did not pick is parsed
       now, where an unpicked option used to be skipped. **The cause was not the one the hazard

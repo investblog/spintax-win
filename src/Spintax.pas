@@ -1412,6 +1412,73 @@ begin
   Result := False;
 end;
 
+{ Could this construct body hold a reference the sec.5.9 splice would act on? The PREFILTER
+  the parser applies before deciding to retain a body, and it exists purely for cost: the
+  authority is still the node walk in the finalize pass.
+
+  Its one hard requirement is NO FALSE NEGATIVES -- a body wrongly rejected here loses its
+  Raw and renders the old, wrong output. False POSITIVES only waste memory, which is what
+  the whole prefilter is for, so it must skip exactly what the rule skips and no more.
+
+  A flat "is there a %name% anywhere in this string" was the first cut and was wrong in the
+  way that matters for cost: in a chain of ancestors wrapped around one reference, every
+  ancestor's body contains that reference as a SUBSTRING, so every ancestor retained its
+  whole body and the Theta(n^2) came straight back with a single %x% in the document. The
+  measurement that was supposed to prove the prune could not see it, because its 100 000
+  level chain held no `%` at all -- a corpus that cannot express the counterexample
+  (Codex review). So this walks the body at the construct's OWN level: a nested
+  enumeration, permutation or plural is stepped over whole, because a reference inside one
+  of those is spliced when THAT construct renders, while a conditional IS entered, because
+  the reference resolves conditionals before it expands and a branch's text lands in this
+  body ahead of the split.
+
+  An unmatched bracket is a literal character here exactly as it is to the parser, so the
+  two agree on what counts as nesting. Iterative, like every walk here. }
+function MayHoldDirectReference(const s: string): Boolean;
+var span: TArray<Integer>; top, i, upto, endp, j: Integer; head: TCondHead;
+begin
+  SetLength(span, 32);
+  span[0] := 1; span[1] := Length(s) + 1; top := 2;
+  while top > 0 do
+  begin
+    Dec(top, 2);
+    i := span[top]; upto := span[top + 1];
+    while i < upto do
+    begin
+      if s[i] = '{' then
+      begin
+        endp := FindMatchingClose(s, i, '{', '}');
+        { unmatched, or closing outside this span: a literal brace, step over it only }
+        if (endp = 0) or (endp >= upto) then begin Inc(i); Continue; end;
+        { a conditional's branches are part of THIS level; anything else is its own }
+        if (endp > i + 1) and (s[i + 1] = '?') and
+           RecognizeConditional(s, i + 1, endp, head) then
+        begin
+          if top + 2 > Length(span) then SetLength(span, Length(span) * 2);
+          span[top] := head.BodyStart; span[top + 1] := endp; Inc(top, 2);
+        end;
+        i := endp + 1;
+        Continue;
+      end;
+      if s[i] = '[' then
+      begin
+        endp := FindMatchingClose(s, i, '[', ']');
+        if (endp = 0) or (endp >= upto) then begin Inc(i); Continue; end;
+        i := endp + 1;
+        Continue;
+      end;
+      if s[i] = '%' then
+      begin
+        j := i + 1;
+        while (j < upto) and IsAsciiWord(s[j]) do Inc(j);
+        if (j > i + 1) and (j < upto) and (s[j] = '%') then Exit(True);
+      end;
+      Inc(i);
+    end;
+  end;
+  Result := False;
+end;
+
 { Does a construct body hold a `%var%` that expansion would splice at THIS construct's own
   level? One at the top level of an option counts, and so does one inside a conditional's
   branches: the reference engines resolve conditionals before they expand, so a branch's text
@@ -1689,10 +1756,12 @@ end;
   order jobs are drained in cannot matter -- each one writes only into its own list.
 
   The direct-reference marks cannot be decided during the scan, because a construct's
-  children do not exist yet. Every enumeration and permutation is recorded in `pend` with
-  Raw set tentatively, and one flat pass at the end clears Raw on the constructs that turned
-  out not to hold a direct reference. EnumHasDirectReference and PermHasDirectReference read
-  the construct's OWN options only, so by then they have everything they need. }
+  children do not exist yet. A construct whose body PASSES the MayHoldDirectReference
+  prefilter is recorded in `pend` with Raw set tentatively, and one flat pass at the end
+  clears Raw on those that turn out not to hold one. EnumHasDirectReference and
+  PermHasDirectReference read the construct's OWN options only, so by then they have
+  everything they need. The prefilter is not a nicety: retaining a body per level is the
+  same quadratic the recursion had, so only bodies that could possibly need one are kept. }
 function ParseSequence(const text: string): TNodeList;
 type
   TParseJob = record
@@ -1715,6 +1784,21 @@ var
     Inc(jobTop);
   end;
 
+  { Hand a node to the list that will own it, and own the failure too. Attaching first and
+    filling afterwards is what lets the except below free a half-built tree, but the Add
+    ITSELF can grow the list and raise, and then the node is owned by nobody -- so the one
+    object the invariant could still strand is the one being attached. Codex review; the
+    comment used to claim more than the code did. }
+  procedure AttachNode(list: TNodeList; node: TNode);
+  begin
+    try
+      list.Add(node);
+    except
+      node.Free;
+      raise;
+    end;
+  end;
+
   { A braced construct: a conditional, a plural, or an enumeration. }
   procedure MakeBrace(const content: string; list: TNodeList);
   const PLURAL_PREFIX = 'plural ';
@@ -1734,7 +1818,7 @@ var
         { Attached BEFORE anything is hung on it: an allocation that raises between here
           and the end of this procedure must leave the node reachable from Result, or the
           except below cannot free it. Destroy tolerates the nil fields that leaves. }
-        list.Add(node);
+        AttachNode(list, node);
         node.CondName := head.Name;
         node.CondInverted := head.Inverted;
         node.CondThen := TNodeList.Create(True);
@@ -1748,12 +1832,12 @@ var
     else if (Copy(content, 1, Length(PLURAL_PREFIX)) = PLURAL_PREFIX)
        and (Pos(':', Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)) > 0) then
     begin
-      list.Add(ParsePlural(Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)));
+      AttachNode(list, ParsePlural(Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)));
       Exit;
     end;
     node := TNode.Create;
     node.Kind := nkEnumeration;
-    list.Add(node);
+    AttachNode(list, node);
     node.EnumOptions := TObjectList<TNodeList>.Create(True);
     SplitTopLevel(content, parts);
     try
@@ -1779,7 +1863,7 @@ var
       finalize pass would have cleared Raw on exactly these. What stays quadratic is a deep
       chain where every level really does carry a reference, and there the reference engine
       keeps the same bodies for the same reason. }
-    if HasReferenceText(content) then
+    if MayHoldDirectReference(content) then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -1797,7 +1881,7 @@ var
   begin
     node := TNode.Create;
     node.Kind := nkPermutation;
-    list.Add(node);   { attached first -- see MakeBrace }
+    AttachNode(list, node);   { attached first -- see MakeBrace }
     node.PermOptions := TObjectList<TPermOption>.Create(True);
     ParsePermConfig(rawInner, node, content);
     SplitTopLevel(content, parts);
@@ -1860,7 +1944,7 @@ var
     end;
     { Same necessary-condition prune as the enumeration, over the FULL inner text, since a
       permutation's separators are part of what the splice re-reads. }
-    if HasReferenceText(rawInner) then
+    if MayHoldDirectReference(rawInner) then
     begin
       node.Raw := rawInner;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -1879,7 +1963,7 @@ var
         node := TNode.Create; node.Kind := nkLiteral;
         { Attached before the text is handed over: a literal node carries the largest
           string this loop produces, and an Add that raised afterwards would strand it. }
-        list.Add(node);
+        AttachNode(list, node);
         node.Text := literal.Finish;
         { Finish handed Data out as the node's text, so the buffer must let go of it rather
           than keep writing into a string it no longer owns. Reset, not Init: a flush is
@@ -1919,8 +2003,9 @@ var
         if (namelen > 0) and (j <= Length(t)) and (t[j] = '%') then
         begin
           FlushLiteral;
-          node := TNode.Create; node.Kind := nkVariable; node.Text := nm;
-          list.Add(node);
+          node := TNode.Create; node.Kind := nkVariable;
+          AttachNode(list, node);
+          node.Text := nm;
           i := j + 1; Continue;
         end;
       end;
@@ -1931,9 +2016,11 @@ var
   end;
 
 begin
-  Result := TNodeList.Create(True);
+  { pend first, so a failure to allocate IT cannot strand the result list. }
+  Result := nil;
   pend := TList<TNode>.Create;
   try
+    Result := TNodeList.Create(True);
     try
       SetLength(jobs, 32);
       jobTop := 0;
@@ -1960,8 +2047,10 @@ begin
         else if not PermHasDirectReference(fnode) then fnode.Raw := '';
       end;
     except
-      { Every list allocated above is already attached to the tree, so this frees all of
-        it -- the reason nodes are hung on their parent before their text is queued. }
+      { Everything allocated above is reachable from Result by the time it can raise --
+        nodes are attached before they are filled, AttachNode owns the failure of the
+        attach itself, and the owner lists are reserved to final size. So this frees the
+        half-built tree completely. }
       Result.Free;
       raise;
     end;

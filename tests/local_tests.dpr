@@ -1455,10 +1455,10 @@ begin
 
     The floor here is 5 000 for COST, not for confidence: a 20 000-level render takes 7.6 s
     and this suite runs twice on every push. The depths that actually separate the parsers --
-    20 000 and 30 000 answer now and raised on every earlier release, 40 000 still raises --
-    are measured in spec sec.5.9 rather than gated, the same way sec.5.6 keeps its
-    nesting-cost numbers out of the suite. What this check defends is the route: a regression
-    that made the unpicked branch raise again would fail here. }
+    20 000 through 50 000 answer now and raised on every earlier release, and parsing alone
+    reaches 100 000 -- are measured in spec sec.5.9 and sec.5.11 rather than gated, the same
+    way sec.5.6 keeps its nesting-cost numbers out of the suite. What this check defends is
+    the route: a regression that made the unpicked branch raise again would fail here. }
   r := '';
   for i := 1 to 5000 do r := r + '{q|';
   r := r + 'z';
