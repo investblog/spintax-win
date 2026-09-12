@@ -1341,6 +1341,17 @@ kept option's trimmed text — the very text pushed as that option's parse job a
 the authority. With the parsed separators on one side and the kept option texts on the other, the
 decision reads exactly what the authority reads, and nothing it does not.
 
+**Enumerations needed the same, and my argument that they did not was wrong.** An enumeration
+keeps every part, empty ones included, so its joined body looked equivalent to its option texts,
+and I asked the reviewer to confirm that. The equivalence fails on bracket counting:
+`SplitTopLevel` counts depth with a SIGN, so a stray `]` followed by a stray `[` inside an option
+leaves the next `|` a real cut, and that `[` is a literal in the part the parser reads — which
+makes the reference after it direct. A scan over the joined body starts a fresh count at the `[`,
+pairs it with a `]` in the NEXT option, and steps over the reference: `{][%L%|]}` rendered its
+value unsplit, where the reference offers `]`, `][x` and `y`. So an enumeration is judged per part
+too. **Both construct kinds now feed the prefilter exactly the strings their parse jobs receive**,
+which is the only form of the equivalence that holds by construction rather than by argument.
+
 **What the prefilter buys is retention, and nothing more is claimed for it.** It is linear in a
 body's own level, but over NESTED constructs the per-construct calls sum to Θ(n²) TIME, because
 each one's `FindMatchingClose` crosses its subtree — the angle-wrapped permutation chain costs
@@ -1351,10 +1362,10 @@ upstream calling such input a host job. What it removes is the Θ(n²) MEMORY of
 per level, which is what the recursion cost and what the tentative-`Raw` cut cost after it.
 
 **The property is verified against a build with the prefilter AND the separator read compiled
-out**, since a false negative is the only direction that would be a behaviour bug. Five corpora,
-**12 768 renders, all identical** — including a set of discarded-separator shapes (`||` after a
-separator, separators around empty parts, a leading empty part): the 1 760-document
-differential; 332 adversarial shapes
+out**, since a false negative is the only direction that would be a behaviour bug. Six corpora,
+**12 810 renders, all identical** — including a set of discarded-separator shapes (`||` after a
+separator, separators around empty parts, a leading empty part) and a set of signed-depth shapes
+(stray brackets straddling a pipe): the 1 760-document differential; 332 adversarial shapes
 putting a reference in an option, a permutation element, `sep`, `lastsep`, a per-element
 separator, the single-separator form, either branch of a conditional, an inverted one, two
 conditionals deep, and in pairs, each also wrapped one to three levels deep, plus the shapes

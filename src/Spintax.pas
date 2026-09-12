@@ -1826,7 +1826,7 @@ var
   procedure MakeBrace(const content: string; list: TNodeList);
   const PLURAL_PREFIX = 'plural ';
   var head: TCondHead; sep, i: Integer; body, thenRaw, elseRaw: string;
-      node: TNode; parts: TStringList; nl: TNodeList;
+      node: TNode; parts: TStringList; nl: TNodeList; keepRaw: Boolean;
   begin
     if (Length(content) > 0) and (content[1] = '?') then
     begin
@@ -1869,11 +1869,22 @@ var
     try
       { Reserve once, so Add cannot reallocate and lose a list created but not yet held. }
       node.EnumOptions.Capacity := parts.Count;
+      keepRaw := False;
       for i := 0 to parts.Count - 1 do
       begin
         nl := TNodeList.Create(True);
         node.EnumOptions.Add(nl);
         PushJob(parts[i], nl);
+        { Per PART, never over the joined body. SplitTopLevel counts depth with a SIGN, so a
+          stray close bracket followed by a stray open one inside an option leaves the pipe
+          after them a real cut, and the part is then parsed on its own, where that open
+          bracket has no match and is a literal. A scan over the whole body starts a fresh
+          count at the open bracket, pairs it with a close bracket in the NEXT option, and
+          steps over the reference in between -- so a value placed there rendered whole,
+          unsplit. I had argued the two were equivalent and asked a reviewer to check the
+          argument; it was wrong (Codex review). Scanning the exact text each part's parse
+          job receives makes it equivalent by construction. }
+        if not keepRaw then keepRaw := MayHoldDirectReference(parts[i]);
       end;
     finally
       parts.Free;
@@ -1900,7 +1911,7 @@ var
       And a deep chain where every level really does carry a direct reference stays
       quadratic in memory too -- the bodies are needed -- exactly as it does in the
       reference engine. }
-    if MayHoldDirectReference(content) then
+    if keepRaw then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
       pend.Add(node);

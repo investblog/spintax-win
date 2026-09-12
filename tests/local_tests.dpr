@@ -1457,6 +1457,15 @@ begin
   Check('splice/config-separator-with-the-reference-past-a-quoted-angle-bracket',
         RenderVars('[<sep="a>[%S%]">x|y]', ['S'], [', '], True), 'xa>[, ]y');
 
+  { SplitTopLevel counts depth with a SIGN, so `][` in an option is a stray close then a stray
+    open, the `|` after it is a real cut, and that `[` is a literal in the part the parser
+    reads -- which makes %L% a direct reference. A retention check run over the joined body
+    paired the `[` with the `]` in the next option and stepped over the reference, and the
+    value rendered unsplit. Measured against @spintax/core 0.7.0, 2026-09-12: the outcome set
+    is `]`, `][x` and `y`, so first-pick shows the split. }
+  Check('splice/signed-depth-stray-brackets-still-split',
+        RenderVars('{][%L%|]}', ['L'], ['x|y'], False), '][x');
+
   { An ENUMERATION has no config and no per-element separators, so an angle region in its
     body is ordinary text: a reference inside brackets there belongs to the permutation the
     brackets make, and it is that construct which splices. Both measured against
