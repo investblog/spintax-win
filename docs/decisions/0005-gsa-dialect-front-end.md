@@ -190,9 +190,21 @@ corpus, and it is in the backlog as one.
   assertions are unaffected by anything in this ADR, because nothing in it is in the engine.
 - The form the feature request described is **not** supported, and that is a measurement
   rather than a judgement — see below.
-- The tag encoding is verbose, and that is a symptom: `{?VAR?a|b}` tests only whether a
-  variable is set. A value-equality conditional would reduce a group to one definition and
-  one test per block. It is in the backlog as a family question, not a local edit.
+- The tag encoding is verbose: `{?VAR?a|b}` tests only whether a variable is set, so an
+  n-way group becomes n−1 weighted definitions and a chain of n−1 conditionals in every
+  block. It is correct — measured 2026-09-12 over 3000 seeds, a three-way group never mixes
+  branches across blocks and lands 1015 / 970 / 1015 — and it is **not going to be changed.**
+
+  *Corrected 2026-09-12.* This bullet used to say a value-equality conditional
+  `{?VAR=x?a|b}` would reduce a group to one definition and one test per block, and to put
+  that in the backlog as a family question. The second half was false for any group larger
+  than two: equality would replace the weighted definitions with a single plain `{1|2|3}`,
+  but a block would still need n−1 tests, and one test per block needs a select construct
+  on top. The backlog item it spawned was a proposal to change the syntax of five engines
+  that nobody had requested, to shorten output that is generated and handed straight back
+  to SER and that no person reads. The owner struck it. **Reopen only on an external
+  request** — an issue from SER's side asking to integrate — and not because a session
+  rediscovers that the encoding is long.
 - Emitted definitions are **appended**, because a directive leaves its line break behind, so
   the blank lines land after the document instead of shifting it down. `PostProcess=True`
   removes them.

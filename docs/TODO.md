@@ -16,8 +16,9 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
 and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
 recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
-walk reachable, which is the first item below. The other is a family question rather than local
-work. The `plural.count-macro` multiplicity question was DECIDED on 2026-09-12 and is in Done.
+walk reachable, which is the item below. Two things left this list on 2026-09-12 and are in
+Done: the `plural.count-macro` multiplicity question, decided, and the value-equality
+conditional proposal, struck.
 
 - [ ] **Make the render walk and the tree destructor iterative. NEXT SESSION** (decided by the
       owner, 2026-09-12). Where to start, so that session does not rediscover it:
@@ -54,14 +55,24 @@ work. The `plural.count-macro` multiplicity question was DECIDED on 2026-09-12 a
       [spintax-js#68](https://github.com/investblog/spintax-js/issues/68); this port now
       differs from it only past 50 000 levels.
 
-- [ ] **A value-equality conditional would collapse the GSA tag encoding.** `{?VAR?a|b}`
-      tests only whether a variable is SET, so the dialect converter below expresses an
-      n-way correlated choice as n−1 definitions and a chain of n−1 nested conditionals per
-      block. With `{?VAR=x?a|b}` it would be one definition and one test — readable output
-      instead of generated noise. A family syntax change: reference and corpus first, and
-      worth raising only if something other than this converter wants it too.
-
 ## Done
+
+- [x] **Struck: a value-equality conditional to shorten the GSA tag encoding** (2026-09-12,
+      by the owner). **Do not re-raise it.** The item said `{?VAR?a|b}` tests only whether a
+      variable is SET, so the converter spells an n-way tag group as n−1 weighted definitions
+      and a chain of n−1 conditionals per block, and that `{?VAR=x?a|b}` would make it "one
+      definition and one test". Provenance: the claim was written into ADR 0005 and the
+      `Spintax.Gsa.pas` header on 2026-08-06, and the ADR put it "in the backlog as a family
+      question", which is how it became an item.
+
+      Measured today, the first half is true and harmless: a three-way group never mixes
+      branches across blocks over 3000 seeds and lands 1015 / 970 / 1015. The second half was
+      false for any group larger than two — equality removes the weighted definitions but a
+      block still needs n−1 tests, and one test per block needs a select construct as well.
+      And it was never a task: a syntax change across five engines that nobody asked for, to
+      shorten output that is generated and handed straight back to SER. Both the ADR and the
+      unit header are corrected. **The trigger to revisit is an external request — an issue
+      from SER's side asking to integrate — not a session noticing that the output is long.**
 
 - [x] **`plural.count-macro`: one diagnostic per BLOCK, decided** (2026-09-12, by the owner
       of the family contract, for [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)).
