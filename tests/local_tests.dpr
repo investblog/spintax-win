@@ -1438,27 +1438,27 @@ begin
   Check('splice/neutralized-value-still-splits-on-its-pipe-first',
         RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], False), 'b], [a');
 
-  { Deep nesting with a reference in every level answers instead of overflowing: the
-    direct-reference walk and the re-read are both iterative. ParseSequence itself is NOT
-    -- see the next check. }
+  { Deep nesting with a reference in every level answers instead of overflowing. Every walk
+    it touches is iterative now: the direct-reference scan, the re-read, and ParseSequence
+    itself (spec sec.5.11). }
   r := '';
   for i := 1 to 5000 do r := r + '{%x%|';
   r := r + 'z';
   for i := 1 to 5000 do r := r + '}';
   Check('splice/deep-nesting-answers', RenderVars(r, ['x'], ['a'], False), 'a');
 
-  { A deeply nested RUNTIME VALUE in a branch the RNG does not pick. Before the splice
-    this cost nothing -- an unpicked option was never walked, so the value was never
-    parsed. The re-read expands the body BEFORE the pick, exactly as the reference does,
-    so the value now reaches ParseSequence whichever option wins.
+  { A deeply nested RUNTIME VALUE in a branch the RNG does not pick. Before the splice this
+    cost nothing -- an unpicked option was never walked, so the value was never parsed. The
+    re-read expands the body BEFORE the pick, exactly as the reference does, so the value
+    reaches ParseSequence whichever option wins. That widened the reach of what was then a
+    recursive parser, which is why sec.5.11 rewrote it in the same release.
 
-    ParseSequence recurses one frame per nesting level, so there IS a depth beyond which
-    this raises where the old engine returned. Measured 2026-09-12: both engines answer at
-    10 000 and raise EOutOfMemory at 20 000 when the value is PICKED, so the ceiling is
-    pre-existing and unchanged -- what the splice widened is which templates reach it. The
-    reference answers at 20 000 (its parser is iterative, family issue #68) and dies at
-    50 000 on the heap. Spec sec.5.9 records it and the backlog carries the parser.
-    This check pins the floor at 5 000: a regression that lowered it would fail here. }
+    The floor here is 5 000 for COST, not for confidence: a 20 000-level render takes 7.6 s
+    and this suite runs twice on every push. The depths that actually separate the parsers --
+    20 000 and 30 000 answer now and raised on every earlier release, 40 000 still raises --
+    are measured in spec sec.5.9 rather than gated, the same way sec.5.6 keeps its
+    nesting-cost numbers out of the suite. What this check defends is the route: a regression
+    that made the unpicked branch raise again would fail here. }
   r := '';
   for i := 1 to 5000 do r := r + '{q|';
   r := r + 'z';

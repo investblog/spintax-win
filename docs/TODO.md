@@ -14,25 +14,10 @@ The single list of open work.
 All three of the 2026-07-25 divergence sweep are closed, all on 2026-08-06 — the
 unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
-and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. What is
-left open is **one engine change** — the recursive parser below, which is the only item here
-that a release is waiting on — plus one syntax proposal and one known ordering difference,
-both of them family questions rather than local work.
-
-- [ ] **Make `ParseSequence` iterative.** It is the last recursive walk in this engine, one
-      stack frame per nesting level, and spec §5.9 now carries the measurement: a 20 000-deep
-      runtime value raises `EOutOfMemory` out of `SpRender`, which §9.2 says never happens on
-      content. The ceiling is not new and needs no variable to reach: a plain 20 000-deep
-      TEMPLATE already raised on the old engine, so a host taking an untrusted template was
-      always exposed. What the splice widened is the set of routes to it — the re-read expands
-      a construct's body before the RNG picks, so a deep value in an unpicked branch is parsed
-      now where it used to be skipped. `@spintax/core` clears 20 000 and only dies at 50 000
-      on the heap; its parser was made iterative for family issue
-      [spintax-js#68](https://github.com/investblog/spintax-js/issues/68), and the Python port
-      paid for the same lesson. Not done in the splice release on purpose: `ParseSequence` is
-      the parser behind render, validate, extract and compile, so it wants its own change with
-      its own differential rather than a rider on a behaviour fix. `TestSplice` pins the floor
-      at 5 000 meanwhile, so a regression that lowered it fails.
+and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The last
+engine item here — the recursive parser — was closed on 2026-09-12 and is in Done. What is left
+open is one syntax proposal and one known ordering difference, both of them family questions
+rather than local work.
 
 - [ ] **`plural.count-macro` is reported once per BLOCK here and once per tainted REFERENCE
       in the reference.** Measured 2026-08-18 while adopting spintax-js#66:
@@ -60,6 +45,23 @@ both of them family questions rather than local work.
       worth raising only if something other than this converter wants it too.
 
 ## Done
+
+- [x] **`ParseSequence` is iterative** (2026-09-12, spec §5.11). The last recursive walk in the
+      engine, and the hazard §7 names in one line. It was closed in the splice release rather
+      than after it because a Codex review would not pass §5.9 while the splice widened the
+      reach of a recursive parser — a deep value in a branch the RNG did not pick is parsed
+      now, where an unpicked option used to be skipped. **The cause was not the one the hazard
+      predicts:** the failure was `EOutOfMemory`, not a stack overflow, because every level
+      copies its inner text out and a recursive walk keeps every ancestor's copy alive until
+      the subtree finishes — quadratic in the document, on the order of 450 MB for 20 000
+      levels of a 60 KB template. A bigger stack would have fixed nothing. One explicit job
+      stack of `(text, target list)`, nodes attached to the tree before their text is queued
+      (so an exception frees all of it, and drain order cannot matter), each level's text
+      released as soon as it is scanned. Verified as a pure refactor: byte-identical over
+      10 560 renders while the same harness reports 3 218 differences against the pre-splice
+      engine. 20 000 levels now parse and render in every shape, including two that never
+      worked in any release; the remaining ceiling is between 30 000 and 40 000, in the parse
+      phase, against the reference's just past 40 000, and is recorded as not diagnosed.
 
 - [x] **A `%var%` directly inside `{…}`/`[…]` is spliced as text before the split**
       (2026-09-12, engine issue [#5](https://github.com/investblog/spintax-win/issues/5),

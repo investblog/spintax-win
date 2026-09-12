@@ -1184,35 +1184,33 @@ about 3.4× faster than the reference on the triggered shape. An undefined refer
 level costs less than a defined one (516 ms at 4 000), because the fixpoint changes nothing and
 the re-read returns without parsing.
 
-**What the splice widened, and did not create: a deep runtime value now reaches the parser from
-a branch the RNG did not pick.** The re-read expands the body BEFORE the pick, exactly as the
-reference does, so `{ok|%deep%}` parses `%deep%` whichever option wins; before, an unpicked
-option was never walked. `ParseSequence` recurses one frame per nesting level, so there is a
-depth at which this raises where the old engine returned. Measured 2026-09-12, first-pick RNG:
+**What the splice widened, and what §5.11 then fixed: a deep runtime value reaches the parser
+from a branch the RNG did not pick.** The re-read expands the body BEFORE the pick, exactly as
+the reference does, so `{ok|%deep%}` parses `%deep%` whichever option wins; before, an unpicked
+option was never walked. That was a new route to a cliff this engine already had, and a review
+correctly refused to let it ship as one — so the parser was made iterative in the same release
+(§5.11). Measured 2026-09-12, first-pick RNG, three builds:
 
-| shape | before | as shipped | `@spintax/core` 0.7.0 |
-|---|---|---|---|
-| 10 000 levels, every shape below | renders | renders | renders |
-| 20 000-deep value, unpicked branch | renders | **`EOutOfMemory`** | renders |
-| 20 000-deep value, PICKED | **`EOutOfMemory`** | `EOutOfMemory` | renders |
-| **20 000-deep plain TEMPLATE, no variables at all** | **`EOutOfMemory`** | `EOutOfMemory` | renders |
-| 50 000-deep value | — | — | heap abort |
+| shape | before the splice | splice, recursive parser | **as shipped** | `@spintax/core` 0.7.0 |
+|---|---|---|---|---|
+| 10 000 levels, every shape below | renders | renders | renders | renders |
+| 20 000-deep value, unpicked branch | renders | **`EOutOfMemory`** | **renders** | renders |
+| 20 000-deep value, PICKED | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
+| 20 000-deep plain TEMPLATE, no variables | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
+| 30 000 levels, plain template | `EOutOfMemory` | `EOutOfMemory` | **renders** | renders |
+| 40 000 levels | `EOutOfMemory` | `EOutOfMemory` | `EOutOfMemory` | renders |
+| 50 000 levels | `EOutOfMemory` | `EOutOfMemory` | `EOutOfMemory` | heap abort |
 
-So the ceiling is **pre-existing, unchanged, and reachable without any variable**: a plain nested
-template with nothing else in it raised `EOutOfMemory` on the old engine at the same depth, so
-any host taking an untrusted TEMPLATE was already exposed, and the same value one option to the
-left already raised. What this release moved is one more route to the same cliff — an untrusted
-VALUE in a branch the RNG did not pick — not the cliff. (`SpValidate` clears 20 000 on the same
-input and is not affected.) The reference clears every row because its parser is iterative
-(family issue #68) and only dies at 50 000, on the heap rather than the stack.
-
-This is the hazard §7 already names: *follow nesting iteratively where input depth is unbounded*.
-`ParseSequence` is the last recursive walk in this engine, and it is the parser behind render,
-validate, extract and compile, so making it iterative is in the backlog as its own change with
-its own differential rather than a rider on a behaviour fix — §9.2's promise that render never
-throws on content is the thing it would be changed to keep, and that promise is already broken
-for a plain deep template today. `TestSplice` pins the floor at 5 000 so a regression that
-lowered it fails.
+Two things that table is worth reading for. The cliff was **never created by the splice**: a
+plain nested template with no variables in it at all raised on the old engine at the same depth,
+so any host taking an untrusted TEMPLATE was already exposed. And the fix did not merely restore
+the old reach — every shape at 20 000 renders now, including the two that never worked. The
+remaining ceiling sits **between 30 000 and 40 000** — 30 000 parses and renders, 40 000 does
+not — against the reference's own wall just past 40 000; what consumes the memory there is in
+the parse phase (`SpCompile` alone raises) and is **deliberately recorded as not diagnosed
+further**. `SpValidate` is unaffected at any depth here — it never builds a node tree, which is
+also why its clearing 100 000 levels says nothing about the parser and must not be quoted as if
+it did.
 
 ### 5.10 A one-option construct must not cost an RNG draw
 
@@ -1251,6 +1249,55 @@ number on both halves: 410 of 1 800 renders in the stratum built from one-option
 more where a spliced plain value produced one, and **zero** across 6 360 renders of every class
 without one. An empty **permutation** was already neutral (`total = 0` returns before any draw)
 and is unchanged.
+
+### 5.11 The parser is iterative, and the wall was memory rather than the stack
+
+Rewritten 2026-09-12, in the same release as §5.9, because a Codex review would not let the
+splice ship while it widened the reach of a recursive parser. `ParseSequence` was the last
+recursive walk in this engine — the hazard §7 names in one line, *follow nesting iteratively
+where input depth is unbounded*, and the one the Python port paid for before us.
+
+**The cause was not the one the hazard predicts, and that decided the design.** A recursive
+descent costs a stack frame per level, so the expected failure is a stack overflow. This engine
+raised **`EOutOfMemory`**, and the reason is that every level copies its own inner text out with
+`Copy` and a recursive walk keeps EVERY ancestor's copy alive in its frame until the whole
+subtree finishes. An option holding the rest of the document is then quadratic in the document:
+20 000 levels of a 60 KB template held on the order of 450 MB of substrings. Enlarging the stack
+would have fixed nothing. Reading the exception class rather than assuming the textbook failure
+is what pointed at the right fix.
+
+**The shape.** One explicit stack of jobs, each a `(text, target list)` pair, drained to
+exhaustion. A construct's node and its child lists are created and attached to the tree
+**immediately**; only the child TEXT is deferred. Two consequences fall out of that ordering:
+the whole tree is reachable from the result at every moment, which is what lets the `except`
+free all of it rather than leak the part already built, and the order jobs are drained in cannot
+matter, because each one writes only into its own list. Each level's text is released as soon as
+that level is scanned — the job slot first, the local right after — so what stays live is the
+current text and its siblings instead of every ancestor at once.
+
+The direct-reference marks of §5.9 cannot be decided during the scan, since a construct's
+children do not exist yet. Every enumeration and permutation is recorded with `Raw` set
+tentatively and one flat pass at the end clears it on the constructs that turned out not to hold
+one. `EnumHasDirectReference` and `PermHasDirectReference` read the construct's own options only,
+so by then they have everything they need.
+
+**Verified as a pure refactor, which is the only acceptable result for it.** The §5.9
+differential — 1 760 documents × 6 configurations, 10 560 renders — is **byte-identical** to the
+previous build across every class, while the same harness reports 3 218 differences against the
+pre-splice engine, so it is not blind. The corpus, both local suites and both GSA suites pass
+unchanged. What moved is only the depth table in §5.9: 20 000 levels now parse and render in
+every shape, including the two that never worked in any earlier release.
+
+Where it still stops is recorded rather than explained: 30 000 levels parse and render, 40 000
+raise, and the phase is the parse (`SpCompile` alone is enough). The node tree's own footprint
+is the obvious suspect and was **not** confirmed, so it is written here as undiagnosed instead
+of as a cause. The reference clears 40 000 and dies at 50 000, so this port is within a factor
+on the same wall rather than level with it.
+
+**The deep depths are measured, not gated**, and deliberately so: a 20 000-level render costs
+7.6 s and the local suite runs twice on every push. The suite pins the ROUTE at 5 000 — a
+regression that made an unpicked branch raise again fails there — while the numbers that
+separate the two parsers live here, the same arrangement §5.6 uses for its nesting-cost table.
 
 ## 6. Trust model
 

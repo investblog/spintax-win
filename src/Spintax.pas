@@ -1488,23 +1488,6 @@ begin
   Result.PluralFormsRaw := Copy(afterPrefix, colon + 1, MaxInt);
 end;
 
-function TryParseConditional(const content: string): TNode;
-var sep: Integer; head: TCondHead; body, thenRaw, elseRaw: string;
-begin
-  Result := nil;
-  if not RecognizeConditional(content, 1, Length(content) + 1, head) then Exit;
-  body := Copy(content, head.BodyStart, MaxInt);
-  if head.SepIndex = 0 then sep := 0 else sep := head.SepIndex - head.BodyStart + 1;
-  if sep < 1 then begin thenRaw := body; elseRaw := ''; end
-  else begin thenRaw := Copy(body, 1, sep - 1); elseRaw := Copy(body, sep + 1, MaxInt); end;
-  Result := TNode.Create;
-  Result.Kind := nkConditional;
-  Result.CondName := head.Name;
-  Result.CondInverted := head.Inverted;
-  Result.CondThen := ParseSequence(thenRaw);
-  Result.CondElse := ParseSequence(elseRaw);
-end;
-
 { Permutation config parse (faithful-enough: key form or single-separator form,
   with the family's HTML-start-tag guard in front). }
 procedure ParsePermConfig(const raw: string; node: TNode; out content: string);
@@ -1686,166 +1669,277 @@ begin
   end;
 end;
 
-function ParsePermutation(const rawInner: string): TNode;
+{ The parser is ITERATIVE -- one explicit job stack, no frame per nesting level.
+
+  Why it had to stop recursing, and what actually broke. A recursive descent costs a stack
+  frame per level, which is the hazard sec.7 names; but on this engine the wall came from
+  MEMORY rather than from the stack, and the distinction decided the design. Every level
+  copies its own inner text out with Copy, and a recursive walk keeps EVERY ancestor's copy
+  alive in its frame until the whole subtree finishes. An option holding the rest of the
+  document is therefore quadratic in the document: 20 000 levels of a 60 KB template held
+  on the order of 450 MB of substrings and raised EOutOfMemory out of SpRender, which spec
+  sec.9.2 says never happens on content. That is why the exception was EOutOfMemory and not
+  a stack overflow, and why simply enlarging the stack would have fixed nothing. Draining a
+  job stack releases each level's text as soon as that level is scanned, so what stays live
+  is the current text and its siblings rather than every ancestor at once.
+
+  A job is (text, target list). A construct's node and its child lists are created and
+  attached to the tree IMMEDIATELY; only the child TEXT is deferred. So the tree is always
+  reachable from Result, which is what makes freeing it on an exception complete, and the
+  order jobs are drained in cannot matter -- each one writes only into its own list.
+
+  The direct-reference marks cannot be decided during the scan, because a construct's
+  children do not exist yet. Every enumeration and permutation is recorded in `pend` with
+  Raw set tentatively, and one flat pass at the end clears Raw on the constructs that turned
+  out not to hold a direct reference. EnumHasDirectReference and PermHasDirectReference read
+  the construct's OWN options only, so by then they have everything they need. }
+function ParseSequence(const text: string): TNodeList;
+type
+  TParseJob = record
+    Text: string;
+    Target: TNodeList;
+  end;
 var
-  content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep: string;
-  parts: TStringList;
-  i, k, openPos, q: Integer;
-  hasPending, hasTrailing, bail, looksHtml: Boolean;
-  opt: TPermOption;
-begin
-  Result := TNode.Create;
-  Result.Kind := nkPermutation;
-  Result.PermOptions := TObjectList<TPermOption>.Create(True);
-  ParsePermConfig(rawInner, Result, content);
-  SplitTopLevel(content, parts);
-  try
-    pendingSep := ''; hasPending := False;
-    for i := 0 to parts.Count - 1 do
+  jobs: array of TParseJob;
+  jobTop, fi: Integer;
+  pend: TList<TNode>;
+  curText: string;
+  curList: TNodeList;
+  fnode: TNode;
+
+  procedure PushJob(const t: string; target: TNodeList);
+  begin
+    if jobTop = Length(jobs) then SetLength(jobs, Length(jobs) * 2);
+    jobs[jobTop].Text := t;
+    jobs[jobTop].Target := target;
+    Inc(jobTop);
+  end;
+
+  { A braced construct: a conditional, a plural, or an enumeration. }
+  procedure MakeBrace(const content: string; list: TNodeList);
+  const PLURAL_PREFIX = 'plural ';
+  var head: TCondHead; sep, i: Integer; body, thenRaw, elseRaw: string;
+      node: TNode; parts: TStringList; nl: TNodeList;
+  begin
+    if (Length(content) > 0) and (content[1] = '?') then
     begin
-      part := parts[i];
-      trailingSep := ''; hasTrailing := False;
-      if i < parts.Count - 1 then
+      if RecognizeConditional(content, 1, Length(content) + 1, head) then
       begin
-        // extractTrailingSep: trailing < sep > that is not an HTML tag
-        rt := PhpRtrim(part);
-        if (Length(rt) > 0) and (rt[Length(rt)] = '>') then
+        body := Copy(content, head.BodyStart, MaxInt);
+        if head.SepIndex = 0 then sep := 0 else sep := head.SepIndex - head.BodyStart + 1;
+        if sep < 1 then begin thenRaw := body; elseRaw := ''; end
+        else begin thenRaw := Copy(body, 1, sep - 1); elseRaw := Copy(body, sep + 1, MaxInt); end;
+        node := TNode.Create;
+        node.Kind := nkConditional;
+        node.CondName := head.Name;
+        node.CondInverted := head.Inverted;
+        node.CondThen := TNodeList.Create(True);
+        node.CondElse := TNodeList.Create(True);
+        list.Add(node);
+        PushJob(thenRaw, node.CondThen);
+        PushJob(elseRaw, node.CondElse);
+        Exit;
+      end;
+      { malformed -- falls through to an enumeration, as the reference does }
+    end
+    else if (Copy(content, 1, Length(PLURAL_PREFIX)) = PLURAL_PREFIX)
+       and (Pos(':', Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)) > 0) then
+    begin
+      list.Add(ParsePlural(Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)));
+      Exit;
+    end;
+    node := TNode.Create;
+    node.Kind := nkEnumeration;
+    node.EnumOptions := TObjectList<TNodeList>.Create(True);
+    list.Add(node);
+    SplitTopLevel(content, parts);
+    try
+      for i := 0 to parts.Count - 1 do
+      begin
+        nl := TNodeList.Create(True);
+        node.EnumOptions.Add(nl);
+        PushJob(parts[i], nl);
+      end;
+    finally
+      parts.Free;
+    end;
+    node.Raw := content;   { tentative -- the finalize pass decides }
+    pend.Add(node);
+  end;
+
+  procedure MakePerm(const rawInner: string; list: TNodeList);
+  var
+    content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep: string;
+    parts: TStringList;
+    i, k, openPos, q: Integer;
+    hasPending, hasTrailing, bail, looksHtml: Boolean;
+    opt: TPermOption;
+    node: TNode;
+  begin
+    node := TNode.Create;
+    node.Kind := nkPermutation;
+    node.PermOptions := TObjectList<TPermOption>.Create(True);
+    list.Add(node);
+    ParsePermConfig(rawInner, node, content);
+    SplitTopLevel(content, parts);
+    try
+      pendingSep := ''; hasPending := False;
+      for i := 0 to parts.Count - 1 do
+      begin
+        part := parts[i];
+        trailingSep := ''; hasTrailing := False;
+        if i < parts.Count - 1 then
         begin
-          openPos := 0; bail := False;
-          for k := Length(rt) - 1 downto 1 do
+          // extractTrailingSep: trailing < sep > that is not an HTML tag
+          rt := PhpRtrim(part);
+          if (Length(rt) > 0) and (rt[Length(rt)] = '>') then
           begin
-            if rt[k] = '<' then begin openPos := k; Break; end;
-            if rt[k] = '>' then begin bail := True; Break; end;
-          end;
-          if (not bail) and (openPos > 0) then
-          begin
-            sepInner := Copy(rt, openPos + 1, Length(rt) - 1 - openPos);
-            innerTrim := PhpTrim(sepInner);
-            looksHtml := (Length(innerTrim) > 0) and
-              ((innerTrim[1] = '/') or (innerTrim[Length(innerTrim)] = '/'));
-            // per-elem html: ^[A-Za-z][A-Za-z0-9]*\s
-            if (not looksHtml) and (Length(innerTrim) >= 2) and (CharInSet(innerTrim[1], ['A'..'Z','a'..'z'])) then
+            openPos := 0; bail := False;
+            for k := Length(rt) - 1 downto 1 do
             begin
-              q := 2;
-              while (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], ['A'..'Z','a'..'z','0'..'9'])) do Inc(q);
-              { PER_ELEM_HTML_RE = /^[a-zA-Z][a-zA-Z0-9]*\s/ -- the ASCII \s set, VT and FF
-                included; this had the same four-character gap the config keys had }
-              if (q <= Length(innerTrim)) and
-                 (CharInSet(innerTrim[q], [' ', #9, #10, #11, #12, #13])) then looksHtml := True;
+              if rt[k] = '<' then begin openPos := k; Break; end;
+              if rt[k] = '>' then begin bail := True; Break; end;
             end;
-            if not looksHtml then
+            if (not bail) and (openPos > 0) then
             begin
-              part := Copy(rt, 1, openPos - 1);
-              trailingSep := sepInner; hasTrailing := True;
+              sepInner := Copy(rt, openPos + 1, Length(rt) - 1 - openPos);
+              innerTrim := PhpTrim(sepInner);
+              looksHtml := (Length(innerTrim) > 0) and
+                ((innerTrim[1] = '/') or (innerTrim[Length(innerTrim)] = '/'));
+              // per-elem html: ^[A-Za-z][A-Za-z0-9]*\s
+              if (not looksHtml) and (Length(innerTrim) >= 2) and (CharInSet(innerTrim[1], ['A'..'Z','a'..'z'])) then
+              begin
+                q := 2;
+                while (q <= Length(innerTrim)) and (CharInSet(innerTrim[q], ['A'..'Z','a'..'z','0'..'9'])) do Inc(q);
+                { PER_ELEM_HTML_RE = /^[a-zA-Z][a-zA-Z0-9]*\s/ -- the ASCII \s set, VT and FF
+                  included; this had the same four-character gap the config keys had }
+                if (q <= Length(innerTrim)) and
+                   (CharInSet(innerTrim[q], [' ', #9, #10, #11, #12, #13])) then looksHtml := True;
+              end;
+              if not looksHtml then
+              begin
+                part := Copy(rt, 1, openPos - 1);
+                trailingSep := sepInner; hasTrailing := True;
+              end;
             end;
           end;
         end;
+        trimmed := PhpTrim(part);
+        if trimmed <> '' then
+        begin
+          opt := TPermOption.Create;
+          opt.Nodes := TNodeList.Create(True);
+          opt.Separator := pendingSep; opt.HasSeparator := hasPending;
+          node.PermOptions.Add(opt);
+          PushJob(trimmed, opt.Nodes);
+        end;
+        pendingSep := trailingSep; hasPending := hasTrailing;
       end;
-      trimmed := PhpTrim(part);
-      if trimmed <> '' then
+    finally
+      parts.Free;
+    end;
+    node.Raw := rawInner;   { tentative -- the finalize pass decides }
+    pend.Add(node);
+  end;
+
+  { The character scan of ONE job's text. Everything it meets that has children becomes a
+    node here and a job for later; nothing below this call descends. }
+  procedure ScanInto(const t: string; list: TNodeList);
+  var i, j, endp, namelen: Integer; ch: Char; nm: string; node: TNode; literal: TStrBuf;
+
+    procedure FlushLiteral;
+    begin
+      if literal.Len > 0 then
       begin
-        opt := TPermOption.Create;
-        opt.Nodes := ParseSequence(trimmed);
-        opt.Separator := pendingSep; opt.HasSeparator := hasPending;
-        Result.PermOptions.Add(opt);
+        node := TNode.Create; node.Kind := nkLiteral; node.Text := literal.Finish;
+        list.Add(node);
+        { Finish handed Data out as the node's text, so the buffer must let go of it rather
+          than keep writing into a string it no longer owns. Reset, not Init: a flush is
+          usually the LAST thing a scan does -- every option of an enumeration ends with
+          one -- and reserving for a literal that never comes was an allocation per option. }
+        literal.Reset;
       end;
-      pendingSep := trailingSep; hasPending := hasTrailing;
     end;
-    if PermHasDirectReference(Result) then Result.Raw := rawInner;
-  finally
-    parts.Free;
-  end;
-end;
 
-function ParseBraceConstruct(const content: string): TNode;
-var parts: TStringList; i: Integer; nl: TNodeList; cond: TNode;
-const PLURAL_PREFIX = 'plural ';
-begin
-  if (Length(content) > 0) and (content[1] = '?') then
   begin
-    cond := TryParseConditional(content);
-    if cond <> nil then Exit(cond);
-    // malformed -> fall through to enumeration
-  end
-  else if (Copy(content, 1, Length(PLURAL_PREFIX)) = PLURAL_PREFIX)
-     and (Pos(':', Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)) > 0) then
-  begin
-    Exit(ParsePlural(Copy(content, Length(PLURAL_PREFIX) + 1, MaxInt)));
-  end;
-  // enumeration
-  Result := TNode.Create;
-  Result.Kind := nkEnumeration;
-  Result.EnumOptions := TObjectList<TNodeList>.Create(True);
-  SplitTopLevel(content, parts);
-  try
-    for i := 0 to parts.Count - 1 do
+    literal.Init(Length(t) + 16); i := 1;
+    while i <= Length(t) do
     begin
-      nl := ParseSequence(parts[i]);
-      Result.EnumOptions.Add(nl);
+      ch := t[i];
+      if ch = '{' then
+      begin
+        endp := FindMatchingClose(t, i, '{', '}');
+        if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
+        FlushLiteral;
+        MakeBrace(Copy(t, i + 1, endp - i - 1), list);
+        i := endp + 1; Continue;
+      end;
+      if ch = '[' then
+      begin
+        endp := FindMatchingClose(t, i, '[', ']');
+        if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
+        FlushLiteral;
+        MakePerm(Copy(t, i + 1, endp - i - 1), list);
+        i := endp + 1; Continue;
+      end;
+      if ch = '%' then
+      begin
+        // %(\w+)%
+        namelen := 0; nm := '';
+        j := i + 1;
+        while (j <= Length(t)) and IsAsciiWord(t[j]) do begin nm := nm + t[j]; Inc(j); Inc(namelen); end;
+        if (namelen > 0) and (j <= Length(t)) and (t[j] = '%') then
+        begin
+          FlushLiteral;
+          node := TNode.Create; node.Kind := nkVariable; node.Text := nm;
+          list.Add(node);
+          i := j + 1; Continue;
+        end;
+      end;
+      literal.AppendChar(ch);
+      Inc(i);
     end;
-    if EnumHasDirectReference(Result) then Result.Raw := content;
-  finally
-    parts.Free;
-  end;
-end;
-
-function ParseSequence(const text: string): TNodeList;
-var i, j, endp, namelen: Integer; ch: Char; nm: string; node: TNode; literal: TStrBuf;
-
-  procedure FlushLiteral;
-  begin
-    if literal.Len > 0 then
-    begin
-      node := TNode.Create; node.Kind := nkLiteral; node.Text := literal.Finish;
-      Result.Add(node);
-      { Finish handed Data out as the node's text, so the buffer must let go of it rather
-        than keep writing into a string it no longer owns. Reset, not Init: a flush is
-        usually the LAST thing this parse does -- every option of an enumeration ends with
-        one -- and reserving for a literal that never comes was an allocation per option. }
-      literal.Reset;
-    end;
+    FlushLiteral;
   end;
 
 begin
   Result := TNodeList.Create(True);
-  literal.Init(Length(text) + 16); i := 1;
-  while i <= Length(text) do
-  begin
-    ch := text[i];
-    if ch = '{' then
-    begin
-      endp := FindMatchingClose(text, i, '{', '}');
-      if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
-      FlushLiteral;
-      Result.Add(ParseBraceConstruct(Copy(text, i + 1, endp - i - 1)));
-      i := endp + 1; Continue;
-    end;
-    if ch = '[' then
-    begin
-      endp := FindMatchingClose(text, i, '[', ']');
-      if endp = 0 then begin literal.AppendChar(ch); Inc(i); Continue; end;
-      FlushLiteral;
-      Result.Add(ParsePermutation(Copy(text, i + 1, endp - i - 1)));
-      i := endp + 1; Continue;
-    end;
-    if ch = '%' then
-    begin
-      // %(\w+)%
-      namelen := 0; nm := '';
-      j := i + 1;
-      while (j <= Length(text)) and IsAsciiWord(text[j]) do begin nm := nm + text[j]; Inc(j); Inc(namelen); end;
-      if (namelen > 0) and (j <= Length(text)) and (text[j] = '%') then
+  pend := TList<TNode>.Create;
+  try
+    try
+      SetLength(jobs, 32);
+      jobTop := 0;
+      PushJob(text, Result);
+      while jobTop > 0 do
       begin
-        FlushLiteral;
-        node := TNode.Create; node.Kind := nkVariable; node.Text := nm;
-        Result.Add(node);
-        i := j + 1; Continue;
+        Dec(jobTop);
+        curText := jobs[jobTop].Text;
+        curList := jobs[jobTop].Target;
+        { Let the stack slot go before scanning, and the local right after: holding every
+          ancestor's copy alive is exactly what made the recursive parser quadratic. }
+        jobs[jobTop].Text := '';
+        ScanInto(curText, curList);
+        curText := '';
       end;
+      { One flat pass, now that every construct has its children. }
+      for fi := 0 to pend.Count - 1 do
+      begin
+        fnode := pend[fi];
+        if fnode.Kind = nkEnumeration then
+        begin
+          if not EnumHasDirectReference(fnode) then fnode.Raw := '';
+        end
+        else if not PermHasDirectReference(fnode) then fnode.Raw := '';
+      end;
+    except
+      { Every list allocated above is already attached to the tree, so this frees all of
+        it -- the reason nodes are hung on their parent before their text is queued. }
+      Result.Free;
+      raise;
     end;
-    literal.AppendChar(ch);
-    Inc(i);
+  finally
+    pend.Free;
   end;
-  FlushLiteral;
 end;
 
 { ─── render ──────────────────────────────────────────────────────────────── }
