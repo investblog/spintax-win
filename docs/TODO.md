@@ -20,8 +20,34 @@ walk reachable, which is the item below. Two things left this list on 2026-09-12
 Done: the `plural.count-macro` multiplicity question, decided, and the value-equality
 conditional proposal, struck.
 
-- [ ] **Make the render walk and the tree destructor iterative. NEXT SESSION** (decided by the
-      owner, 2026-09-12). Where to start, so that session does not rediscover it:
+- [ ] **Catch up with `@spintax/core` 0.8.0 and the corpus on `spintax-js` main** (opened
+      2026-09-16, ahead of the render walk below by the owner's call). The unchanged tree
+      (`e169363`) measured `PASS=296 FAIL=33 SKIP=4` against today's corpus, identically in CI
+      (a re-run of the last `main` job, since CI's corpus checkout is unpinned) and locally.
+      In order:
+      - [x] The runner asserts `diagnosticCount` (spintax-js#74) — exact count per code. It
+            turned `validate/plural-count-macro-per-reference` red (`want=3 got=1`) while
+            `validate/cycle-diamond-terminates` (22) stayed green, so the check fails and
+            passes where it should.
+      - [x] `plural.count-macro` once per tainted REFERENCE (spintax-js#73). This REVERSES the
+            "per block" entry in Done below: the family's corpus pinned per reference, naming
+            this port as the one that differed, and the owner chose the corpus (2026-09-16).
+      - [x] Conditional truthiness over PCRE2's UCP `\s` (spec §5.7): U+0085 and U+180E blank,
+            U+FEFF truthy. Three local checks had pinned JavaScript's answer.
+      - [ ] Post-process character classes as PCRE2 UCP (`\s`, `\d`, `\w`, `\b`; the decimal
+            shield stays ASCII) — 13 fixtures; and #79, a TLD in one case plus the punycode
+            class with U+017F/U+212A, and `\p{Ll}` after a block tag NOT case-folded — 5. This
+            reverses the charter's `/giu/` folded-predicate note for the domain patterns.
+      - [ ] #80: a reference anywhere in a raw `<config>`, and any whole `{?…}` directly in a
+            construct, its config or a per-element separator, marks the re-read; a permutation
+            element is its rendered text trimmed, an empty one dropped along with its
+            separator — 13 fixtures. Touches the §5.9 prefilter.
+      - [ ] Probe the post-process and template-scan DoS shapes the reference measured (a long
+            email-local word, a dotted chain, `#set`-doubled `[<` / `{?a?` / `/#`). Not gated.
+      - [ ] Release as a MINOR, on the owner's command.
+
+- [ ] **Make the render walk and the tree destructor iterative.** (decided by the
+      owner, 2026-09-12; deferred behind the catch-up above on 2026-09-16). Where to start, so that session does not rediscover it:
       - **The walks.** `RenderNodes` → `RenderNode` → `RenderEnumeration` /
         `RenderPermutation` / `RenderConditional` / `RenderPlural` → `RenderNodes`, plus the
         re-entries through `SpliceConstruct` and `ResolveVariable`; and `TNode.Destroy` /
@@ -76,6 +102,9 @@ conditional proposal, struck.
 
 - [x] **`plural.count-macro`: one diagnostic per BLOCK, decided** (2026-09-12, by the owner
       of the family contract, for [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)).
+      **REVERSED 2026-09-16:** the corpus pinned one per tainted REFERENCE through
+      `diagnosticCount`, and this port now emits that (see Open). Kept below as the record of
+      why per block looked right; its cursor warning is what the new code honours.
       This port emits one per block and `@spintax/core` / `spintax-core` one per tainted
       reference — 200 references in one count slot gave 200 diagnostics at a single anchor
       there and one here. The verdict is `invalid` either way, and no fixture can see the
@@ -237,7 +266,9 @@ conditional proposal, struck.
       the reference,
       with U+200B / U+0085 / U+3164 as the controls that keep the class from widening into
       "non-ASCII". Spec §5.7. Worth reporting upstream only as a note — the reference is the
-      one that is right here.
+      one that is right here. **Superseded 2026-09-16:** the reference was right about NBSP and
+      wrong about the class — it is PCRE2's UCP `\s`, not JavaScript's, so U+0085 is now blank,
+      U+FEFF truthy, and `IsJsSpaceCp` is `IsUcpSpaceCp` (see Open, and spec §5.7).
 
 - [x] **Caught up with the family's two plural fixes** (2026-08-18), corpus
       `PASS=254 FAIL=0 SKIP=4`, 542 local checks in both builds.

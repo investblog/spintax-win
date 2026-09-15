@@ -2276,26 +2276,28 @@ begin
   end;
 end;
 
-{ JavaScript's `\s`, written out.
+{ PCRE2's `\s` under UCP, written out: the Unicode Z property plus `\h` and `\v`.
 
-  Every other engine in the family decides conditional truthiness with `/\S/u` -- the two
-  PHP ones, the Python port and the reference alike -- so a variable holding only U+00A0 is
-  FALSY to all of them. This port tested six ASCII characters, BYTE by byte, and called it
-  truthy: the other branch rendered. Spec sec.3 names conditional truthiness as
-  parity-REQUIRED, and no fixture carries a Unicode space, so nothing caught it until a
-  Codex review of the count-slot work pointed at the predicate the new pass had started
-  calling too.
+  The plugin decides conditional truthiness with `/\S/u`, and `/u` turns on PCRE2_UCP, so
+  THIS is the class -- not JavaScript's, which this function copied until 2026-09-16 (the
+  reference's `charclass.ts` `UCP_SPACE`, `@spintax/core` 0.8.0). The two disagree on exactly
+  three code points: U+0085 and U+180E are whitespace here and not to JavaScript, U+FEFF the
+  other way round. Pinned by conditional/nel-only-is-falsy and conditional/bom-only-is-truthy.
+
+  History worth keeping: before 2026-08-18 this port tested six ASCII characters byte by
+  byte, so a variable holding one U+00A0 rendered the OTHER branch; the fix then took the
+  reference's JavaScript class, which was itself the wrong one. Asking "which regex dialect
+  does the ORIGIN compile this in" is the question both steps skipped.
 
   Enumerated rather than taken from the RTL, for the same reason the Unicode tables are
   baked: the answer must not depend on which Unicode version the host was built against.
-  U+200B, U+0085 and U+3164 are deliberately NOT here -- measured against the reference,
-  all three are non-space and make a variable truthy. }
-function IsJsSpaceCp(cp: LongWord): Boolean;
+  U+200B and U+3164 are deliberately NOT here -- measured against the reference, both are
+  non-space and make a variable truthy. }
+function IsUcpSpaceCp(cp: LongWord): Boolean;
 begin
-  Result := (cp = $09) or (cp = $0A) or (cp = $0B) or (cp = $0C) or (cp = $0D) or (cp = $20)
-         or (cp = $A0) or (cp = $1680) or ((cp >= $2000) and (cp <= $200A))
-         or (cp = $2028) or (cp = $2029) or (cp = $202F) or (cp = $205F) or (cp = $3000)
-         or (cp = $FEFF);
+  Result := ((cp >= $09) and (cp <= $0D)) or (cp = $20) or (cp = $85)
+         or (cp = $A0) or (cp = $1680) or (cp = $180E) or ((cp >= $2000) and (cp <= $200A))
+         or (cp = $2028) or (cp = $2029) or (cp = $202F) or (cp = $205F) or (cp = $3000);
 end;
 
 { Truthy = the raw var value is set and holds a non-whitespace char (plugin is_truthy).
@@ -2314,7 +2316,7 @@ begin
     i := 1;
     while i <= Length(val) do
     begin
-      if not IsJsSpaceCp(SpCodePointAt(val, i, cpLen)) then
+      if not IsUcpSpaceCp(SpCodePointAt(val, i, cpLen)) then
       begin
         baseTruthy := True; Break;
       end;
@@ -5078,7 +5080,7 @@ var base: string; arity, defArity, i, k, cnt, m: Integer;
     formCache: TDictionary<string, Integer>;
     expanded: TFormCount; cached: Integer;
     starts: TList<Integer>;
-    hasBracket: Boolean;
+    hasBracket, firstMacro: Boolean;
     curMacro, curForms: TSourceCursor;
 begin
   base := '';
@@ -5128,23 +5130,33 @@ begin
       one of the others, and both anchor at the same start -- so after the first call left
       the cursor at start+8, the second asks for start again and CursorLineCol restarts from
       offset 1. Correct, and quadratic: 2000 such blocks measured 523 ms through one cursor
-      and 11 ms through these two. Each is monotonic on its own, since count-macro fires at
-      most once per block and nested-brackets / arity / locale-missing are mutually
-      exclusive. Codex review, 2026-08-18, measured before and after. }
+      and 11 ms through these two. Each is monotonic on its own, since count-macro is
+      positioned once per block (its further copies do not touch the cursor) and
+      nested-brackets / arity / locale-missing are mutually exclusive. Codex review, 2026-08-18, measured before and after. }
     InitSourceCursor(curMacro);
     InitSourceCursor(curForms);
     for i := 0 to counts.Count - 1 do
     begin
       { every plural diagnostic anchors at the block's '{plural ' (8-char prefix span) }
-      // count-macro: a tainted #set name referenced in the count slot
+      { count-macro: ONE PER TAINTED REFERENCE in the count slot, a repeated name counted each
+        time -- the reference's matchAll loop, both PHP validators and spintax-core, and
+        contract since validate/plural-count-macro-per-reference pins the count (spintax-js#73,
+        #74). This port emitted one per block until then. Every one shares the block's anchor,
+        so only the first is positioned through the cursor and the rest copy it: asking the
+        cursor for the same start again would restart the walk from offset 1 per reference. }
       refs := TStringList.Create;
       try
-        DirectReferences(counts[i], refs);
+        RawReferences(counts[i], refs);
+        firstMacro := True;
         for k := 0 to refs.Count - 1 do
           if tainted.ContainsKey(refs[k]) then
           begin
-            AddDiagAtOrdered(res, 'plural.count-macro', 'error', src, map,
-              starts[i], starts[i] + 8, curMacro); Break;
+            if firstMacro then
+              AddDiagAtOrdered(res, 'plural.count-macro', 'error', src, map,
+                starts[i], starts[i] + 8, curMacro)
+            else
+              res.Add(res[res.Count - 1]);
+            firstMacro := False;
           end;
       finally
         refs.Free;

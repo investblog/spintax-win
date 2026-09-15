@@ -111,7 +111,7 @@ var
   diags: TSpDiagList;
   knownInc: TStringList;
   expDiags: TJsonNode;
-  j: Integer;
+  j, cnt: Integer;
   found: Boolean;
 begin
   id := JGetStr(c, 'id', '');
@@ -157,6 +157,27 @@ begin
                 begin found := True; Break; end;
             if not found then
               begin pass := False; reason := 'missing diag ' + wantCode; Break; end;
+          end;
+        end;
+        { diagnosticCount (spintax-js#74): the EXACT number of diagnostics per code, where
+          multiplicity is contract. The subset match above says nothing about how many --
+          which is how per-path circular references reached two million behind a green case. }
+        if pass and (JFind(expect, 'diagnosticCount') <> nil) then
+        begin
+          expDiags := JFind(expect, 'diagnosticCount');
+          for i := 0 to JCount(expDiags) - 1 do
+          begin
+            wantCode := JName(expDiags, i);
+            cnt := 0;
+            for j := 0 to diags.Count - 1 do
+              if diags[j].Code = wantCode then Inc(cnt);
+            if cnt <> JInt(JItem(expDiags, i)) then
+            begin
+              pass := False;
+              reason := 'count ' + wantCode + ' want=' + IntToStr(JInt(JItem(expDiags, i))) +
+                ' got=' + IntToStr(cnt);
+              Break;
+            end;
           end;
         end;
       finally

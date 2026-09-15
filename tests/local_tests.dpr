@@ -1134,6 +1134,16 @@ begin
         DiagPosAll('#set %n% = {a|b}'#10'{plural %n%: a|b|c}'#10'x {plural %n%: a|b|c}', '',
                    'plural.locale-missing'),
         'warning @2:1..2:9; warning @3:3..3:11');
+  { count-macro is one per tainted REFERENCE, a repeated name counted each time
+    (spintax-js#73, pinned by the corpus through diagnosticCount since #74). The corpus gates
+    the count; this pins what it cannot -- that every copy carries the block's coordinates,
+    on a second block too, since only the first of each block goes through the cursor. An
+    untainted reference in the same slot adds nothing. }
+  Check('count-macro/per-reference-positions',
+        DiagPosAll('#set %m0% = {a|b}'#10'#set %m1% = {c|d}'#10'#def %p% = 1'#10 +
+                   '{plural %m0% %p% %m1% %m0%: one|two}'#10'x {plural %m1%: one|two}', 'en',
+                   'plural.count-macro'),
+        'error @4:1..4:9; error @4:1..4:9; error @4:1..4:9; error @5:3..5:11');
 
   { The two shapes that made the raw count wrong, now counted the way the renderer counts:
     variables expanded first, then split. They were pinned here on 2026-08-18 with the
@@ -1594,9 +1604,10 @@ end;
   and none of the 500 checks beside this one did either; found by Codex review of the
   count-slot work, which had just given the predicate a second caller.
 
-  Every line below is the reference's own answer, measured 2026-08-18 case for case. The
-  three at the end are the negative controls that keep the class from being widened into
-  "anything non-ASCII": all three are non-space to the reference. }
+  Every line below is the reference's own answer, measured 2026-08-18 case for case and
+  re-measured 2026-09-16, when the family moved the class from JavaScript's `\s` to PCRE2's
+  UCP one (`@spintax/core` 0.8.0). The controls at the end keep the class from being widened
+  into "anything non-ASCII". }
 procedure TestConditionalTruthiness;
   function Cp(c: LongWord): string;
   begin
@@ -1630,11 +1641,17 @@ begin
   Check('truthy/narrow-nbsp',     Branch(Cp($202F)),  #10'ELSE');
   Check('truthy/medium-math',     Branch(Cp($205F)),  #10'ELSE');
   Check('truthy/ideographic',     Branch(Cp($3000)),  #10'ELSE');
-  Check('truthy/bom',             Branch(Cp($FEFF)),  #10'ELSE');
+  { The three code points where PCRE2's UCP class and JavaScript's disagree. The class is
+    PCRE2's (`/\S/u` in the plugin), and until 2026-09-16 this file pinned JavaScript's
+    answer for all three -- measured then against a reference that had the same defect, which
+    is how a "measured" expectation can still be the wrong one. Re-measured against
+    `@spintax/core` main, 2026-09-16, through a #set value and through the context alike. }
+  Check('truthy/next-line',       Branch(Cp($0085)),  #10'ELSE');
+  Check('truthy/mongolian-vs',    Branch(Cp($180E)),  #10'ELSE');
+  Check('truthy/bom',             Branch(Cp($FEFF)),  #10'THEN');
   { Negative controls: NOT whitespace, so the variable is truthy. A class widened to
-    "non-ASCII" would fail all three. }
+    "non-ASCII" would fail both, and so does the BOM above. }
   Check('truthy/zero-width-space', Branch(Cp($200B)), #10'THEN');
-  Check('truthy/next-line',        Branch(Cp($0085)), #10'THEN');
   Check('truthy/hangul-filler',    Branch(Cp($3164)), #10'THEN');
   { A space among real text is still text, and inversion still inverts. }
   Check('truthy/space-then-text',  Branch(Cp($00A0) + 'x'), #10'THEN');

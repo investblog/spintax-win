@@ -820,8 +820,12 @@ arrive in source order, but a single block can raise `plural.count-macro` **and*
 others at the same anchor, and the second call then asks for an offset the cursor has already
 passed, so `CursorLineCol` restarts from 1. Answers stay correct; the cost comes back. 2000
 blocks raising both measured **523 ms** through one cursor and **11 ms** through two. Each is
-monotonic on its own — `count-macro` fires at most once per block, and nested-brackets /
-arity / locale-missing are mutually exclusive. `TestPluralLocaleMissing` pins that shape's
+monotonic on its own — `count-macro` is positioned once per block, and nested-brackets /
+arity / locale-missing are mutually exclusive. Since 2026-09-16 `count-macro` is emitted once
+per tainted **reference** (spintax-js#73, pinned by `diagnosticCount` in
+`validate/plural-count-macro-per-reference`); the further copies of a block reuse the first
+one's coordinates instead of asking the cursor for the same anchor again, which would restart
+it from offset 1 per reference. `TestPluralLocaleMissing` pins that shape's
 COORDINATES and nothing else: the single-cursor version answered them correctly too, since a
 cursor asked for an offset it has passed restarts rather than lying. Only this measurement
 separates the two, which is why it is written down here.
@@ -902,7 +906,20 @@ rather than trust Python's Unicode `\s`. This port tested six ASCII characters, 
 byte**, so a variable holding one U+00A0 was truthy here and falsy everywhere else, and the
 other branch rendered.
 
-Fixed 2026-08-18: `IsJsSpaceCp` enumerates JavaScript's `\s` — `\t \n \v \f \r`, space,
+**Corrected 2026-09-16: the class is PCRE2's, not JavaScript's.** `/u` turns on PCRE2_UCP,
+so the plugin's `\S` is the complement of `\p{Z}` ∪ `\h` ∪ `\v`, and the 2026-08-18 fix below
+copied the reference's JavaScript `\s`, which the reference itself had wrong (`@spintax/core`
+0.8.0, `charclass.ts`). They differ on three code points: U+0085 and U+180E are whitespace,
+U+FEFF is not. `IsUcpSpaceCp` now enumerates `\t \n \v \f \r`, space, U+0085, U+00A0,
+U+1680, U+180E, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, pinned by
+`conditional/nel-only-is-falsy` and `conditional/bom-only-is-truthy` and by the flipped local
+checks, re-measured against the reference through a `#set` value and through the context.
+**The "measured against the reference" below was true and still pinned a wrong answer:** a
+measurement agrees with its instrument, and here the instrument had the defect. Read the rest
+of this section with that in mind — U+0085 is no longer a control, and the differential's
+zero was taken against JavaScript's class.
+
+Fixed 2026-08-18: `IsJsSpaceCp` enumerated JavaScript's `\s` — `\t \n \v \f \r`, space,
 U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF — and
 `ConditionalTakesThen` walks the value as CODE POINTS through `SpCodePointAt`. A byte scan
 sees NBSP as `$C2 $A0`, neither of which is an ASCII space, which is exactly how the
@@ -910,12 +927,14 @@ divergence survived. The ASCII half of the class is unchanged, so nothing that p
 moves.
 
 The class is enumerated, not taken from the RTL, for the reason the Unicode tables are
-baked: the answer must not depend on which Unicode version the host compiler shipped. U+200B,
-U+0085 and U+3164 are deliberately **outside** it — all three are non-space to the reference
-and make a variable truthy, and they are in `TestConditionalTruthiness` as the controls that
-stop the class drifting into "anything non-ASCII".
+baked: the answer must not depend on which Unicode version the host compiler shipped. U+200B
+and U+3164 are deliberately **outside** it — both are non-space to the reference and make a
+variable truthy, and they are in `TestConditionalTruthiness` as the controls that stop the
+class drifting into "anything non-ASCII". (Until 2026-09-16 U+0085 was a third control; under
+the UCP class it is whitespace, see the correction at the top of this section.)
 
-**Why nothing caught it.** No corpus fixture carries a Unicode space, and neither did any of
+**Why nothing caught it.** No corpus fixture carried a Unicode space then (two do since
+2026-09-13), and neither did any of
 the 520-odd local checks of that day. It surfaced when a Codex review of the §5.6 work noticed the count slot
 had given the predicate a second caller. The nearest thing to a justification for leaving it
 was a line in the agent charter calling the ASCII narrowing a family convention — true of the
