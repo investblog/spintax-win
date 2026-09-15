@@ -1452,17 +1452,45 @@ begin
   Check('splice/frozen-leftover-in-a-nested-construct',
         RenderVars('#set %b% = x%b%y'#10'[{%b%}|z]', [], [], True), #10 + x51 + '%b%' + y51 + ' z');
 
-  { Two consequences a TRIGGERED construct inherits from PHP, both new to a tree walk and
-    both absent from the untriggered path, which keeps its tree: a conditional's taken
-    branch is trimmed at the element's edge, and an element that became empty is dropped
-    before the shuffle. The third check is the control -- no direct reference, no re-read,
-    the empty element kept. }
+  { Two consequences a re-read construct inherits from PHP, both new to a tree walk: a
+    conditional's taken branch is trimmed at the element's edge, and an element that became
+    empty is dropped before the shuffle.
+
+    The third was the CONTROL until 2026-09-16 and pinned the opposite answer: a conditional
+    with no reference in it did not mark the construct, so the empty element survived and
+    printed its separator. spintax-js#80 makes a conditional mark ON SIGHT -- the plugin
+    resolves it before any bracket is read, so an empty branch leaves an empty element
+    whatever the branch holds -- and the reference renders `a c` here too (re-measured
+    2026-09-16 through its own pipeline with the `last` strategy). An element that renders
+    empty is dropped by the same rule now, re-read or not, so the two paths agree. }
   Check('splice/taken-branch-trimmed-at-the-edge',
         RenderVars('#set %f% = 1'#10'[{?f? %L% |y}|c]', ['L'], ['x'], True), #10'x c');
   Check('splice/empty-element-dropped',
         RenderVars('#set %f% = 1'#10'[a|{?f?%E%|x}|c]', ['E'], [''], True), #10'a c');
-  Check('splice/untriggered-empty-element-kept',
-        RenderVars('#set %f% = 1'#10'[a|{?f?|x}|c]', [], [], True), #10'a  c');
+  Check('splice/conditional-marks-with-no-reference-in-it',
+        RenderVars('#set %f% = 1'#10'[a|{?f?|x}|c]', [], [], True), #10'a c');
+
+  { A config that is an HTML start tag is CONTENT, so the header holds nothing -- and the
+    reference in it still marks the construct, as part of the first element's text. The two
+    paths to a mark, header and option, agree here. }
+  Check('splice/html-tag-config-reference-still-marks',
+        RenderVars('[<li class="%s%">a|b]', ['S'], [', '], True), 'ali class=", "b');
+  { A trailing `<...>` on the LAST part is not a per-element separator (there is no element
+    after it), so a conditional written there is ordinary option text -- and marks as one. }
+  Check('splice/conditional-in-a-last-part-separator-is-text',
+        RenderVars('[a|b<{?f?,|;}>]', ['f'], ['1'], True), 'a b<,>');
+
+  { A reference the expansion does not substitute is copied WHOLE, so its closing `%` cannot
+    open the next one. The reference is a global `%(\w+)%` replace and its matches do not
+    overlap; this port's fixpoint advanced one character there, so with `b` defined
+    `%nope%b%nope%` came out `%nopeanope%` -- the overlapping `%b%` substituted, a name the
+    author never wrote. Reachable only on the re-read path, where this text is scanned rather
+    than parsed, which is why the tree path renders it correctly and no fixture caught it.
+    Found by review, 2026-09-16; as old as the fixpoint. Measured against the reference. }
+  Check('splice/unsubstituted-reference-is-copied-whole',
+        RenderVars('{%nope%b%nope%|c}', ['b'], ['a'], False), '%nope%b%nope%');
+  Check('splice/unsubstituted-reference-in-a-permutation',
+        RenderVars('[%nope%b%nope%|c]', ['b'], ['a'], False), 'c %nope%b%nope%');
 
   { The single-separator config form is text to the reference too. }
   Check('splice/single-separator-form-from-a-variable',
@@ -1628,6 +1656,18 @@ begin
     leaves the stream where it found it }
   Check('draw/gsa-escape-shape-spins', SeqRender('{{}?a?b|c} {x|y}', [0, 0, 1]), '?a?b x');
   Check('draw/gsa-escape-shape-second-option', SeqRender('{{}?a?b|c} {x|y}', [1, 0, 1]), 'c x');
+
+  { A permutation element that renders empty is dropped BEFORE the shuffle (spintax-js#80),
+    so it does not spend the draw it would have. The same instrument as above, for the same
+    reason: an outcome-set check cannot see a draw that was not taken. The pair runs ONE
+    sequence over one shape and differs only in whether the nested spin picks its empty
+    option. Measured against the reference's own pipeline, 2026-09-16. }
+  Check('draw/dropped-element-spends-fewer-draws', SeqRender('[a|{x|}|b|c]', [1, 1, 0, 0]), 'c a b');
+  Check('draw/nothing-dropped-spends-them-all', SeqRender('[a|{x|w}|b|c]', [1, 1, 0, 0]), 'c b a w');
+  { ...and the size pick counts what REMAINS: two elements here, so a maxsize of 3 cannot ask
+    for three. The corpus pins the equal-bounds form; this pins a range. }
+  Check('draw/dropped-element-narrows-a-range',
+        SeqRender('[<minsize=1;maxsize=3>a|{x|}|b]', [2, 0, 1]), 'a');
 end;
 
 { Conditional truthiness over the FULL whitespace class.

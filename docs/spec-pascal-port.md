@@ -55,10 +55,13 @@ gone for good; leaving them costs a conditional in a handful of places.
 - `{?…}` truthiness
 - directive semantics: **`#set` is a macro** — re-rolled at every reference;
   **`#def` resolves once per render** and holds
-- **a `%var%` written directly inside `{…}`/`[…]` is spliced as TEXT before the construct
-  is split** — a pipe-joined value is a list of options or elements, a conditional's taken
-  branch lands in the body first, `<sep="%S%">` takes its value; a value at top level, with
-  no construct around it, is not split (§5.9)
+- **a `%var%` or a `{?…}` written directly inside `{…}`/`[…]`, in its raw `<config>` header or
+  in a per-element separator is resolved as TEXT before the construct is split** — a
+  pipe-joined value is a list of options or elements, a conditional's taken branch lands in the
+  body first and its pipe separates them, `minsize=%n%` and `<sep=%S%>` take their values; a
+  value at top level, with no construct around it, is not split (§5.9, §5.13)
+- **a permutation element is its rendered text, trimmed; one that renders empty is dropped**
+  along with the separator it carried, and the size pick counts what remains (§5.13)
 - the post-process pipeline — *to the extent it is implemented*, see §4
 
 **ALLOWED to diverge:** RNG selection results, internal architecture, diagnostic message
@@ -71,16 +74,18 @@ precisely so they do not depend on it.
 ## 4. Measured state
 
 Run on FPC 3.2.2 / i386-win32 against `spintax-js/packages/conformance/fixtures`
-(277 cases total, 2026-09-12 — the corpus grew on 2026-08-06 with the cases the family
+(333 cases total, 2026-09-16 — the corpus grew on 2026-08-06 with the cases the family
 pinned from this port's divergences, once more with `plural.locale-missing` (§5.5), again
-the next day with the two plural fixes §5.5 and §5.6 describe, and on 2026-09-12 with the
-nineteen `splice/*` cases §5.9 describes):
+the next day with the two plural fixes §5.5 and §5.6 describe, on 2026-09-12 with the
+nineteen `splice/*` cases §5.9 describes, and on 2026-09-13 with the 56 cases of
+`@spintax/core` 0.8.0 and #79 — the post-process classes (§5.12), the wider re-read key
+(§5.13), the prototype names and the first `diagnosticCount` assertions):
 
 | fixture file | cases | passing |
 |---|---|---|
-| render-semantics | 99 | 99 |
-| validate | 70 | 70 |
-| render-postprocess | 43 | 43 |
+| render-semantics | 124 | 124 |
+| validate | 77 | 77 |
+| render-postprocess | 67 | 67 |
 | render-deterministic | 16 | 16 |
 | comments | 13 | 13 |
 | extract | 12 | 12 |
@@ -88,7 +93,7 @@ nineteen `splice/*` cases §5.9 describes):
 | render-rng-selection | 10 | 10 |
 | render-rng | 4 | — skipped by design (within-engine reproducibility only) |
 
-**`PASS=273 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
+**`PASS=329 FAIL=0 SKIP=4`** — the whole corpus, the 4 skips being `kind:rng` render
 cases, which are engine-private by design.
 
 The same result was measured under a UTF-16 compiler when that portability was last
@@ -1562,6 +1567,86 @@ Recorded for the family, not changed here: the single-abbreviation lookbehind is
 the reference, where U+0345 counts as a folded letter. PCRE2 does not fold properties, so PHP
 probably shields `St.` after U+0345 where the reference and this port do not. Not measured: no
 PHP on this machine.
+
+### 5.13 A conditional, a size or a separator inside a construct is text too (#80)
+
+`@spintax/core` 0.8.0 widened the key that decides which constructs are re-read as text. §5.9
+marked a construct when a `%var%` sat directly in it; the plugin resolves more than that before
+it reads a bracket, and this port mirrored the narrow key. Thirteen fixtures, all failing here:
+
+| template | before | now, and in both PHP engines |
+|---|---|---|
+| `[<minsize=%n%;maxsize=%n%>a\|b\|c]`, `n=1` | all three elements | one element |
+| `[<sep=%S%>a\|b]`, `S=", "` | `b a` | `b, a` |
+| `[{?f?a\|b\|x}\|c]` | `c b\|x` — a raw pipe | three elements |
+| `[<sep=", ";lastsep=" and ">{?f?live casino}\|slots\|poker]` | `slots, poker and ` | `poker and slots` |
+| `[<sep=", ">slots\|{live casino\|}\|poker]`, empty option picked | `slots, , poker` | `slots, poker` |
+| `[a<1>\|{x\|}<2>\|b]` | `a12b` | `a2b` |
+
+Three rules, each read from the reference's own parser and renderer:
+
+- **A conditional marks ON SIGHT**, wherever a `%var%` would: at the top level of an option, in
+  a raw `<config>` header, in a per-element separator. Stage 6a resolves it before any bracket
+  is read, so its taken branch's pipe separates options, an empty branch leaves an empty
+  element, and whitespace at a branch's edge is the element's edge. The old key looked INSIDE
+  the branches for a reference, which found the one effect a reference has and missed those
+  three. `MayHoldDirectReference` therefore stops at a conditional instead of entering it, and
+  the authority (`ListHasTextualMark`) is a flat test of each option's top level.
+- **The header is read RAW**, not through the parsed config fields. A size reference never
+  reaches them (`minsize=%n%` is not digits, so it parses to nothing) and neither does an
+  unquoted `sep=%S%` (it parses to the default) — which is exactly why 0.7.0 never re-read
+  those. Per-element separators are read as extracted. A header or separator mark is decided
+  in `MakePerm` and is definitive, so such a node never joins the finalize pass.
+- **An element is its RENDERED text, PHP-trimmed, and one that renders empty is no element** —
+  dropped together with the separator it carried, while the separator written after it still
+  belongs to the next. The size pick and the shuffle count what remains. This applies whether
+  or not the construct was re-read: the plugin resolves nested spins before it splits.
+
+**What it does not move.** A construct whose re-read changes nothing structural draws exactly
+as its tree did — the corpus pins that with `splice/conditional-without-pipes-keeps-draws`, and
+`draw/dropped-element-spends-fewer-draws` pins the other half here: a dropped element does not
+spend the shuffle draw it would have, which an outcome-set check cannot see (§5.10).
+
+**Verified.** 140 000 generated construct-heavy templates (conditionals with empty, piped and
+padded branches, references and conditionals in configs and separators, overlapping `%…%`
+tokens, nested spins, HTML-tag configs), each rendered under three RNG strategies — `first`,
+`last` and an injected sequence: 420 000 renders, **0 differences** from the reference, against
+5 100 per 20 000 for the previous commit before the overlapping tokens were in the alphabet and
+12 400 after, which is the control that makes the zero mean something. The review added 30 072
+adversarial templates of its own, aimed at brace balance in headers and separators. One local check
+flipped: a conditional with no reference in it used to leave the empty element in place, and
+was the CONTROL for the narrow key; the reference now renders `a c` there too.
+
+**Cost: marking on sight made a template ABORT, and TIME was the wrong thing to measure.** A
+marked construct keeps its inner text, and a body contains every body below it, so a chain of
+marked constructs costs Θ(n²) memory — the very thing `MayHoldDirectReference` exists to bound.
+The first version of this section measured the nesting shapes in milliseconds, found them level
+with the previous commit and concluded the retention did not dominate. It dominated in the other
+dimension: on `[{?f?a|b}|` × 16 000 the heap went from 26 MB to 1 381 MB, and a 1.6 MB template
+of 4 000 padded levels raised `EOutOfMemory` out of `SpRender`, which §9.2 says never happens on
+content. Found by review, which measured the peak instead of the clock.
+
+`SP_PARSE_RAW_BUDGET` (64 MB per parse) bounds what one parse may retain; past it a construct
+keeps no body and renders the tree it was parsed into. Every shape above now completes with a
+peak heap of about 81 MB. It is a real divergence, not a free one — an engine built with the cap
+at 1 KB differs from the reference on 110 and 120 of 20 000 generated templates — and what makes
+it acceptable is distance: no generated template comes within three orders of magnitude of 64 MB,
+and the differential at the shipped cap is zero. **The argument that the cap only ever refuses
+harmless retentions was written into this section and then refuted by that 1 KB run**: bodies are
+refused across siblings too, not only down a chain. The proper fix is to parse over spans of one
+string instead of copies, which is the backlog item; then a retained body costs two integers.
+
+**The reference is no longer the same shape here either:** 0.8.0 made deep nesting linear with a
+side index and answers those chains in 43 ms and 111 ms against this port's 265 ms and 4.8 s.
+Performance, which §3 allows to diverge, and the one place where this port is now materially
+slower than the engine it mirrors.
+
+**One older defect surfaced with it.** `ExpandVarsFixpoint` advanced ONE character past a
+`%name%` it recognized but did not substitute — an unknown name, or one the budget refused — so
+the token's closing `%` could open the next reference: `%nope%b%nope%` with `b` defined rendered
+`%nopeanope%`, a name the author never wrote. The reference is a global `%(\w+)%` replace, whose
+matches cannot overlap. Only the re-read path scans that text instead of parsing it, which is why
+no fixture and no tree-path check could see it. Two local checks pin it.
 
 ## 6. Trust model
 

@@ -297,6 +297,34 @@ const
     its own suite instead. What IS the contract: render terminates, stays lenient, and
     leaves what it could not afford as a literal %name%. }
   SP_RENDER_EXPANSION_BUDGET = 1024 * 1024;
+
+  { How many code units of construct BODIES one parse may retain for the sec.5.9/5.13 re-read.
+
+    A marked construct keeps its inner text (TNode.Raw), and a body contains every body below
+    it, so a chain of marked constructs costs Theta(n^2) memory. The reference pays nothing
+    for this -- its `raw` is a SPAN of the one template string -- while this parser hands each
+    level its own copy. Ordinary templates retain a few KB; the shape that hurts is nesting
+    with a mark at every level, which #80 made much easier to write because a conditional now
+    marks on sight: 8 000 levels of a 472 KB template took 1.8 GB and aborted with
+    EOutOfMemory, which spec sec.9.2 says never happens on content (found by review).
+
+    Past the cap a construct keeps no body and renders the tree it was parsed into, which is
+    the PRE-#80 answer for it -- so the cap is a real divergence, not a free one, and the only
+    thing that makes it acceptable is how far out of reach it is. Measured: an engine built
+    with the cap at 1 KB differs from the reference on 110 and 120 of 20 000 generated
+    templates, while at 64 MB none of those 40 000 comes near it and the differential is 0.
+    (An earlier draft of this comment argued the refusals are always the harmless ones --
+    deepest first, where an ancestor's own re-read decides the subtree. The 1 KB run is what
+    refuted it: bodies are refused across SIBLINGS too, and a sibling that loses its body
+    renders the old output. The argument may still hold for descendants alone; it is not what
+    this cap does, so it is not claimed here.)
+
+    Not parity-gated, for the same reason the expansion budget above is not: the engines run
+    out of different resources in different places. The proper fix is to parse over SPANS of
+    one string instead of copies -- then a body costs two integers and the cap can go -- and
+    that is in the backlog with the reference's own version of it. }
+  SP_PARSE_RAW_BUDGET = 64 * 1024 * 1024;
+
   PHP_WS = [' ', #9, #10, #13, #0, #11];
 
 { Unicode tables for the post-process stage, generated from the reference's own Unicode
@@ -1413,7 +1441,39 @@ begin
   Result := False;
 end;
 
-{ Could this construct body hold a reference the sec.5.9 splice would act on, at THIS
+{ A whole conditional -- brace, `?`, head, branches, closing brace -- that the renderer's
+  conditional pass would resolve, written in a separator or a config header: the reference's
+  holdsConditional. Stage 6a resolves it there too, before any bracket is read. A bare `{?` is
+  not enough, and marking on one made every level of a nested config rescan its body for a
+  conditional that was not there (the reference's own review finding). }
+function HoldsConditional(const s: string): Boolean;
+var opens: TArray<Integer>; top, i: Integer; head: TCondHead;
+begin
+  Result := False;
+  if Pos('{?', s) = 0 then Exit;
+  SetLength(opens, Length(s));
+  top := 0;
+  for i := 1 to Length(s) do
+  begin
+    if s[i] = '{' then begin opens[top] := i; Inc(top); end
+    else if (s[i] = '}') and (top > 0) then
+    begin
+      Dec(top);
+      if (s[opens[top] + 1] = '?') and RecognizeConditional(s, opens[top] + 1, i, head) then
+        Exit(True);
+    end;
+  end;
+end;
+
+{ Text the reference engines resolve before they split a construct: a `%var%` reference or a
+  whole conditional, in a permutation's raw `<config>` header or in one of its per-element
+  separators. To the plugin that header is text like any other. }
+function HoldsTextForReread(const s: string): Boolean;
+begin
+  Result := HasReferenceText(s) or HoldsConditional(s);
+end;
+
+{ Could this construct body hold something the sec.5.9 splice would act on, at THIS
   construct's own level? The PREFILTER the parser applies before deciding to retain a body,
   and it exists purely for cost: the authority is still the node walk in the finalize pass.
 
@@ -1428,16 +1488,19 @@ end;
   the prune could not see it, because its chain held no `%` at all -- a corpus that cannot
   express the counterexample (Codex review). So this walks the body at the construct's own
   level: a nested enumeration, permutation or plural is stepped over whole, because a
-  reference inside one of those is spliced when THAT construct renders, while a conditional
-  IS entered, because the reference resolves conditionals before it expands and a branch's
-  text lands in this body ahead of the split. Its two branches are two spans, as the parser
-  parses them, so a brace in one cannot pair with a brace in the other and carry the walk
-  across the separator. An unmatched bracket is a literal here exactly as to the parser.
+  reference inside one of those is spliced when THAT construct renders. A conditional ENDS
+  the walk instead of being entered (spintax-js#80): Stage 6a resolves it before any bracket
+  is read, so whatever its taken branch carries -- a pipe, an empty branch, an edge space --
+  is this body's text, and the construct is re-read whatever the branches hold. Before #80
+  this entered the branches looking for a reference, which missed the other three effects.
+  An unmatched bracket is a literal here exactly as to the parser.
 
-  It says nothing about SEPARATORS. A permutation's config and per-element separators are
-  read from the parsed fields in MakePerm, exactly as the authority reads them; three cuts
-  that tried to spot separators in the raw text were each wrong somewhere, and the last was a
-  false positive on every angle region of ordinary option text.
+  It says nothing about a permutation's CONFIG or its separators. MakePerm judges those itself
+  and definitively: the RAW header, which is exactly the text ParsePermConfig consumed, and each
+  per-element separator as the parse extracted it (spintax-js#80 -- before it, the PARSED sep
+  and lastsep, which a size or an unquoted separator never reaches). Three earlier cuts tried to
+  spot separators inside the raw body and each was wrong somewhere, the last a false positive on
+  every angle region of ordinary option text; reading what the parse already produced ends that.
 
   It is NOT linear in time, in two ways, both of which the parse already shares: over nested
   constructs the per-construct calls sum to Theta(n^2), because each FindMatchingClose crosses
@@ -1447,125 +1510,72 @@ end;
   it removes is the Theta(n^2) MEMORY of one retained body per level. Iterative, like every
   walk here. }
 function MayHoldDirectReference(const s: string): Boolean;
-var span: TArray<Integer>; top, i, upto, endp, j: Integer; head: TCondHead;
-
-  procedure PushSpan(from, upTo_: Integer);
-  begin
-    if from >= upTo_ then Exit;
-    if top + 2 > Length(span) then SetLength(span, Length(span) * 2);
-    span[top] := from; span[top + 1] := upTo_; Inc(top, 2);
-  end;
-
+var i, upto, endp, j: Integer; head: TCondHead;
 begin
-  SetLength(span, 32);
-  top := 0;
-  PushSpan(1, Length(s) + 1);
-  while top > 0 do
-  begin
-    Dec(top, 2);
-    i := span[top]; upto := span[top + 1];
-    while i < upto do
-    begin
-      if s[i] = '{' then
-      begin
-        endp := FindMatchingClose(s, i, '{', '}');
-        { unmatched, or closing outside this span: a literal brace, step over it only }
-        if (endp = 0) or (endp >= upto) then begin Inc(i); Continue; end;
-        { a conditional's branches are part of THIS level; anything else is its own }
-        if (endp > i + 1) and (s[i + 1] = '?') and
-           RecognizeConditional(s, i + 1, endp, head) then
-        begin
-          if head.SepIndex = 0 then
-            PushSpan(head.BodyStart, endp)
-          else
-          begin
-            PushSpan(head.BodyStart, head.SepIndex);
-            PushSpan(head.SepIndex + 1, endp);
-          end;
-        end;
-        i := endp + 1;
-        Continue;
-      end;
-      if s[i] = '[' then
-      begin
-        endp := FindMatchingClose(s, i, '[', ']');
-        if (endp = 0) or (endp >= upto) then begin Inc(i); Continue; end;
-        i := endp + 1;
-        Continue;
-      end;
-      if s[i] = '%' then
-      begin
-        j := i + 1;
-        while (j < upto) and IsAsciiWord(s[j]) do Inc(j);
-        if (j > i + 1) and (j < upto) and (s[j] = '%') then Exit(True);
-      end;
-      Inc(i);
-    end;
-  end;
   Result := False;
+  i := 1; upto := Length(s) + 1;
+  while i < upto do
+  begin
+    if s[i] = '{' then
+    begin
+      endp := FindMatchingClose(s, i, '{', '}');
+      { unmatched: a literal brace, step over it only }
+      if endp = 0 then begin Inc(i); Continue; end;
+      if (endp > i + 1) and (s[i + 1] = '?') and
+         RecognizeConditional(s, i + 1, endp, head) then Exit(True);
+      i := endp + 1;
+      Continue;
+    end;
+    if s[i] = '[' then
+    begin
+      endp := FindMatchingClose(s, i, '[', ']');
+      if endp = 0 then begin Inc(i); Continue; end;
+      i := endp + 1;
+      Continue;
+    end;
+    if s[i] = '%' then
+    begin
+      j := i + 1;
+      while (j < upto) and IsAsciiWord(s[j]) do Inc(j);
+      if (j > i + 1) and (j < upto) and (s[j] = '%') then Exit(True);
+    end;
+    Inc(i);
+  end;
 end;
 
-{ Does a construct body hold a `%var%` that expansion would splice at THIS construct's own
-  level? One at the top level of an option counts, and so does one inside a conditional's
-  branches: the reference engines resolve conditionals before they expand, so a branch's text
-  lands in the body ahead of the split. Nested enumerations / permutations / plurals are
-  not entered -- a value inside them is spliced when THEY render, and a `|` it carries
-  belongs to them.
+{ Does one option list hold, at its TOP level, something the engines see as text before they
+  split the construct? A `%var%`, because expansion runs over the whole text before any
+  bracket is read; or a CONDITIONAL, because Stage 6a resolves it there and its taken branch
+  lands in the body ahead of the split -- on sight, whatever the branches hold
+  (spintax-js#80). Nested enumerations / permutations / plurals are not entered: a value
+  inside one is spliced when THAT construct renders, and a `|` it carries belongs to it.
 
-  `pending` is the caller's seed, the option lists of the construct being parsed, and is
-  drained iteratively like every walk here: a deep chain of conditionals is content, and
-  the parser must not overflow on content. }
-function DrainDirectReference(pending: TList<TNodeList>): Boolean;
-var list: TNodeList; i: Integer;
+  Flat, because a conditional marks rather than being descended into. Until #80 this drained
+  a stack of conditional branches looking for a reference, which found the one effect a
+  reference has and missed the three a branch has on its own: a pipe that separates options,
+  an empty branch that leaves an element to drop, and whitespace at the branch's edge. }
+function ListHasTextualMark(list: TNodeList): Boolean;
+var i: Integer;
 begin
-  while pending.Count > 0 do
-  begin
-    list := pending[pending.Count - 1];
-    pending.Delete(pending.Count - 1);
-    for i := 0 to list.Count - 1 do
-    begin
-      if list[i].Kind = nkVariable then Exit(True);
-      if list[i].Kind = nkConditional then
-      begin
-        pending.Add(list[i].CondThen);
-        pending.Add(list[i].CondElse);
-      end;
-    end;
-  end;
+  for i := 0 to list.Count - 1 do
+    if (list[i].Kind = nkVariable) or (list[i].Kind = nkConditional) then Exit(True);
   Result := False;
 end;
 
 function EnumHasDirectReference(node: TNode): Boolean;
-var pending: TList<TNodeList>; i: Integer;
+var i: Integer;
 begin
-  pending := TList<TNodeList>.Create;
-  try
-    for i := 0 to node.EnumOptions.Count - 1 do pending.Add(node.EnumOptions[i]);
-    Result := DrainDirectReference(pending);
-  finally
-    pending.Free;
-  end;
+  for i := 0 to node.EnumOptions.Count - 1 do
+    if ListHasTextualMark(node.EnumOptions[i]) then Exit(True);
+  Result := False;
 end;
 
-{ The reference engines expand the config and the per-element separators too -- to them it
-  is all text -- so a reference written there is as direct as one written in an element. }
 function PermHasDirectReference(node: TNode): Boolean;
-var pending: TList<TNodeList>; i: Integer;
+var i: Integer;
 begin
-  if HasReferenceText(node.PermSep) or
-     (node.PermHasLastSep and HasReferenceText(node.PermLastSep)) then Exit(True);
-  pending := TList<TNodeList>.Create;
-  try
-    for i := 0 to node.PermOptions.Count - 1 do
-    begin
-      if node.PermOptions[i].HasSeparator and HasReferenceText(node.PermOptions[i].Separator) then
-        Exit(True);
-      pending.Add(node.PermOptions[i].Nodes);
-    end;
-    Result := DrainDirectReference(pending);
-  finally
-    pending.Free;
-  end;
+  for i := 0 to node.PermOptions.Count - 1 do
+    if ListHasTextualMark(node.PermOptions[i].Nodes) then Exit(True);
+  Result := False;
 end;
 
 { forward }
@@ -1802,6 +1812,14 @@ var
   curText: string;
   curList: TNodeList;
   fnode: TNode;
+  rawLeft: Integer;
+
+  { Charge one retained body against SP_PARSE_RAW_BUDGET; False means do not retain it. }
+  function TakeRawBudget(n: Integer): Boolean;
+  begin
+    Result := n <= rawLeft;
+    if Result then Dec(rawLeft, n);
+  end;
 
   procedure PushJob(const t: string; target: TNodeList);
   begin
@@ -1915,7 +1933,7 @@ var
       And a deep chain where every level really does carry a direct reference stays
       quadratic in memory too -- the bodies are needed -- exactly as it does in the
       reference engine. }
-    if keepRaw then
+    if keepRaw and TakeRawBudget(Length(content)) then
     begin
       node.Raw := content;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -1924,10 +1942,10 @@ var
 
   procedure MakePerm(const rawInner: string; list: TNodeList);
   var
-    content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep: string;
+    content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep, header: string;
     parts: TStringList;
     i, k, openPos, q: Integer;
-    hasPending, hasTrailing, bail, looksHtml, keepRaw: Boolean;
+    hasPending, hasTrailing, bail, looksHtml, keepRaw, textMarks: Boolean;
     opt: TPermOption;
     node: TNode;
   begin
@@ -2001,30 +2019,39 @@ var
     finally
       parts.Free;
     end;
-    { A permutation's separators do not need approximating: ParsePermConfig has already run
-      and the per-element ones are collected above, so the EXACT fields the authority reads
-      are in hand -- and reading them beats every attempt to spot a separator in the raw
-      text. Three cuts of this tried the latter and each was wrong somewhere: brackets
-      inside a separator hid a reference, the config and per-element grammars disagreed
-      about a quote, and flat-testing every angle region made ordinary option text a false
-      positive at every ancestor, which is the retention quadratic all over again (Codex
-      review, three rounds). Only a leading region is config and only a trailing one on a
-      non-final part is a separator; the rest is option text, and option text is exactly
-      what the structural scan is for -- run, in the loop above, over each option's KEPT
-      text rather than the raw body, so a discarded separator cannot masquerade as one.
-      With both halves the decision reads exactly what the authority reads. }
-    if not keepRaw then
-      keepRaw := HasReferenceText(node.PermSep) or
-                 (node.PermHasLastSep and HasReferenceText(node.PermLastSep));
-    if not keepRaw then
+    { The separators and the config are judged on the text the engines read, which is the RAW
+      header -- everything ParsePermConfig consumed before the content -- and each per-element
+      separator as extracted above. Not the PARSED fields: a size reference never arrives there
+      (`minsize=%n%` is not digits, so it parses to nothing) and neither does an unquoted
+      `sep=%S%` (it parses to the default), and both take their value from the context in every
+      PHP engine. That was #80's second half, and it is why this reads `header` and not
+      node.PermSep. A whole conditional counts in either place for the same reason.
+
+      Only a leading region is config and only a trailing one on a non-final part is a
+      separator; the rest is option text, scanned in the loop above over each option's KEPT
+      text (never the raw body, which still holds separators the loop discards). Three earlier
+      cuts tried to spot separators in the raw body and each was wrong somewhere -- brackets
+      inside a separator hid a reference, the two grammars disagree about a quote, and flat
+      angle-region tests were a false positive at every ancestor (Codex review, three rounds).
+      Reading what the parse already produced avoids all of it.
+
+      A header or separator mark is DEFINITIVE, so the node does not join `pend`: the finalize
+      pass only decides the marks that depend on children. }
+    header := Copy(rawInner, 1, Length(rawInner) - Length(content));
+    textMarks := HoldsTextForReread(header);
+    if not textMarks then
       for i := 0 to node.PermOptions.Count - 1 do
         if node.PermOptions[i].HasSeparator and
-           HasReferenceText(node.PermOptions[i].Separator) then
+           HoldsTextForReread(node.PermOptions[i].Separator) then
         begin
-          keepRaw := True;
+          textMarks := True;
           Break;
         end;
-    if keepRaw then
+    if textMarks then
+    begin
+      if TakeRawBudget(Length(rawInner)) then node.Raw := rawInner;
+    end
+    else if keepRaw and TakeRawBudget(Length(rawInner)) then
     begin
       node.Raw := rawInner;   { tentative -- the finalize pass decides }
       pend.Add(node);
@@ -2104,6 +2131,7 @@ begin
     try
       SetLength(jobs, 32);
       jobTop := 0;
+      rawLeft := SP_PARSE_RAW_BUDGET;
       PushJob(text, Result);
       while jobTop > 0 do
       begin
@@ -2239,6 +2267,16 @@ begin
             begin
               res.AppendStr(val); changed := True; i := j + 1; Continue;
             end;
+          { Recognized but NOT substituted -- an unknown name, or a budget that refused it.
+            The whole token is copied and the scan resumes past it, because the reference is
+            a global `%(\w+)%` replace: its matches cannot overlap, so a token left standing
+            does not let its closing `%` open the next one. Advancing one character here made
+            `%nope%b%nope%` with `b` defined render `%nopeanope%` where every other engine
+            leaves it whole -- reachable only on the re-read path, where this text is scanned
+            instead of parsed. Found by review, 2026-09-16; as old as the fixpoint. }
+          res.AppendSlice(outp, i, j + 1 - i);
+          i := j + 1;
+          Continue;
         end;
       end;
       res.AppendChar(outp[i]); Inc(i);
@@ -2626,15 +2664,30 @@ var elems: array of TElem; total, i, j, min, max, pick: Integer; tmp: TElem;
     globalSep, globalLast, sep, spliced: string; buf: TStrBuf;
 begin
   if (node.Raw <> '') and SpliceConstruct(node.Raw, '[', ']', opts, spliced) then Exit(spliced);
-  total := node.PermOptions.Count;
-  if total = 0 then Exit('');
-  SetLength(elems, total);
-  for i := 0 to total - 1 do
+  if node.PermOptions.Count = 0 then Exit('');
+  { An element is its RENDERED text, TRIMMED, and one that renders empty is no element
+    (spintax-js#80). The plugin resolves every nested enumeration and permutation before it
+    splits this one, so the parts it splits are already that text: a permutation of three
+    elements whose middle one is a spin with an empty option has TWO elements once that
+    option is picked, where this engine kept a blank one and printed a separator around it,
+    turning a flag-gated list item into a stray comma in real copy. A dropped
+    element takes the per-element separator it carried with it, and the one written after it
+    still belongs to the next. The size pick and the shuffle count what remains.
+
+    The draws are unmoved: children render first, in order, and only then does the size pick
+    happen -- an element whose text is neither empty nor padded changes nothing. }
+  SetLength(elems, node.PermOptions.Count);
+  total := 0;
+  for i := 0 to node.PermOptions.Count - 1 do
   begin
-    elems[i].Text := RenderNodes(node.PermOptions[i].Nodes, opts);
-    elems[i].Sep := node.PermOptions[i].Separator;
-    elems[i].HasSep := node.PermOptions[i].HasSeparator;
+    spliced := PhpTrim(RenderNodes(node.PermOptions[i].Nodes, opts));
+    if spliced = '' then Continue;
+    elems[total].Text := spliced;
+    elems[total].Sep := node.PermOptions[i].Separator;
+    elems[total].HasSep := node.PermOptions[i].HasSeparator;
+    Inc(total);
   end;
+  if total = 0 then Exit('');
 
   if (node.PermMin >= 0) and (node.PermMax >= 0) then begin min := node.PermMin; max := node.PermMax; end
   else if node.PermMin >= 0 then begin min := node.PermMin; max := total; end

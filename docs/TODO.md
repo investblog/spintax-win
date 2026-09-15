@@ -45,15 +45,34 @@ conditional proposal, struck.
       - [ ] Report upstream: the single-abbreviation lookbehind is still `giu` in the reference,
             so U+0345 counts as a letter before an abbreviation where PCRE2 would not. Unmeasured
             on PHP (spec §5.12).
-      - [ ] #80: a reference anywhere in a raw `<config>`, and any whole `{?…}` directly in a
-            construct, its config or a per-element separator, marks the re-read; a permutation
-            element is its rendered text trimmed, an empty one dropped along with its
-            separator — 13 fixtures. Touches the §5.9 prefilter.
+      - [x] #80 (spec §5.13): a conditional marks the re-read on sight, the `<config>` header is
+            read raw, and an element that renders empty is dropped with its separator. All 13
+            fixtures pass — **corpus `PASS=329 FAIL=0 SKIP=4`, the whole thing**. 80 000
+            generated templates × 3 RNG strategies show 0 differences against the reference
+            (~5 100 per 20 000 for the commit before). One local check flipped: it was the
+            control for the narrow key.
       - [ ] Probe the remaining DoS shapes the reference measured. The post-process shields
             and capitalizers are done (spec §5.12). Still open: the NUL-path restore (one
             `StringReplace` per key), and the template scans (`#set`-doubled `[<` / `{?a?` /
             `/#`, a `#set` value holding a long whitespace run). Not gated.
       - [ ] Release as a MINOR, on the owner's command.
+
+- [ ] **Parse over SPANS of one string instead of copies.** Two things wait on it. (1) A marked
+      construct retains its whole body, so a chain of them is Θ(n²) MEMORY — #80 made that easy
+      to reach, a 1.6 MB template aborted with `EOutOfMemory`, and `SP_PARSE_RAW_BUDGET` is the
+      64 MB stopgap that keeps §9.2 (spec §5.13). With spans a retained body is two integers and
+      the cap can go. (2) The nesting cost below. The reference does both with one side table
+      built per text (`internal/text-index.ts`).
+
+- [ ] **Deep nesting is linear in the reference now, and quadratic here.** `@spintax/core` 0.8.0
+      answers a 16 000-level construct chain in 111 ms where this port takes 4.8 s (spec §5.13);
+      the cause is the parser's `FindMatchingClose` crossing each subtree, and the reference's
+      fix is a side index of bracket pairs, top-level pipes and quote parity built once per text
+      (`internal/text-index.ts`). Performance, so §3 allows the divergence — but it is now the
+      one place where this port is materially slower than the engine it mirrors, and the family
+      calls the shape a live denial of service for a host that renders untrusted templates.
+      Worth doing after the render walk, and worth measuring against a template that is
+      ORDINARY as well as one that is deep: the index costs memory on every parse.
 
 - [ ] **Make the render walk and the tree destructor iterative.** (decided by the
       owner, 2026-09-12; deferred behind the catch-up above on 2026-09-16). Where to start, so that session does not rediscover it:
