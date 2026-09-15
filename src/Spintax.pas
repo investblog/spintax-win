@@ -431,13 +431,14 @@ begin
   Result := InRangeTable(cp, L_RANGES);
 end;
 
-{ The reference does not use one flag set throughout: CAP_AFTER_BLOCK_RE is /giu/ and the
-  email / domain / single-abbreviation rules are /giu/ too, where a property escape is
-  CASE-FOLDED. Under /iu, Ll also matches titlecase letters and the Greek iota-subscript
-  forms -- 1446 extra code points, 32 with a differing uppercase -- and L gains U+0345.
-  Steps 8, 9 and 11 are /u/ or /gu/ and must stay strict. Two predicates, because the
-  reference has two; using the strict one for the block-tag step would leave a
-  titlecase letter after a block tag uncapitalised where the reference capitalises it. }
+{ Ll and L as JavaScript reads them under /iu, where a property escape is CASE-FOLDED: Ll
+  also matches titlecase letters and the Greek iota-subscript forms -- 1446 extra code
+  points, 32 with a differing uppercase -- and L gains U+0345.
+
+  Public API, and nearly unused inside the engine since 2026-09-16: PCRE2 does not fold a
+  property under /i, so the post-process's block-tag capitalizer and its email and domain
+  rules read letters STRICTLY now (spec sec.5.12). The single-abbreviation lookbehind is the
+  one internal caller left, because the reference still writes that pattern 'giu'. }
 function SpIsUniLowerFolded(cp: LongWord): Boolean;
 begin
   Result := InRangeTable(cp, LL_FOLD_RANGES);
@@ -2815,27 +2816,39 @@ end;
   passes, then restored, so those passes cannot corrupt them.
 
   The regexes are hand-scanned here because neither compiler has Unicode-property
-  matching. Each scanner mirrors one regex and is named after it. Whitespace is the
-  explicit ASCII set throughout, matching the reference: JS -s- is Unicode, PHP's is not,
-  and using either would diverge around NBSP and thin spaces. }
+  matching. Each scanner mirrors one regex and is named after it. The classes are PCRE2's
+  UCP ones, because the plugin writes the stage with /u (spec sec.5.12): whitespace is
+  UcpSpaceAt, the word boundary IsUcpBoundaryAt, and only the decimal shield, written
+  without /u, stays ASCII. This comment said the opposite until 2026-09-16, and so did the
+  reference it was copied from. }
 
 const
   SENTENCE_OPENER_1 = $00BF;   { inverted question mark }
   SENTENCE_OPENER_2 = $00A1;   { inverted exclamation mark }
 
-function IsPpWs(c: Char): Boolean;
+{ Whitespace at s[i] as the post-process reads it, one CODE POINT: PCRE2's UCP class.
+
+  Every pattern of the plugin's cosmetic stage carries /u, and /u turns on PCRE2_UCP, so its
+  whitespace takes NBSP, NEL and the rest of the Z property. This stage was written -- here
+  and in the reference it mirrors -- on the opposite belief, an ASCII set of six, and that is
+  how a no-break space before a comma survived and a line starting after NEL stayed lower
+  case while both PHP engines fixed them (`@spintax/core` 0.8.0, spec sec.5.12). The one
+  pattern PHP writes WITHOUT /u is the decimal shield, which keeps the ASCII boundary below. }
+function UcpSpaceAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
 begin
-  Result := (c = ' ') or (c = #9) or (c = #13) or (c = #10) or (c = #12) or (c = #11);
+  cpLen := 1;
+  if (i < 1) or (i > Length(s)) then Exit(False);
+  Result := IsUcpSpaceCp(SpCodePointAt(s, i, cpLen));
 end;
 
 { The set that terminates a URL or URI: whitespace, or one of  < > " ' )  ] }
-function IsUriStop(c: Char): Boolean;
+function IsUriStopAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
 begin
   { #0 stops a URI body. Nothing is shielded yet when this pass runs, so on ordinary
     input it never bites; it is there for a caller-supplied #0, which would otherwise
     let a URI match run through the delimiters of a placeholder minted after it. }
-  Result := IsPpWs(c) or (c = #0) or (c = '<') or (c = '>') or (c = '"') or (c = '''')
-            or (c = ')') or (c = ']');
+  Result := UcpSpaceAt(s, i, cpLen)
+            or CharInSet(s[i], [#0, '<', '>', '"', '''', ')', ']']);
 end;
 
 function LowerAsciiCh(c: Char): Char;
@@ -2897,17 +2910,20 @@ begin
   Result := p - i;
 end;
 
-{ JS -b- is ASCII: word chars are A-Za-z0-9 and underscore. }
+{ An ASCII word character: A-Za-z0-9 and underscore. }
 function IsBoundaryWordCh(const s: string; i: Integer): Boolean;
 begin
   Result := (i >= 1) and (i <= Length(s)) and IsAsciiWord(s[i]);
 end;
 
-{ A word boundary sits at index i when exactly one side of it is an ASCII word char.
-  Modelling it as merely "the char before is not a word char" is wrong in BOTH directions,
-  because -w- is ASCII even under -iu-: a Cyrillic domain like an all-Cyrillic label has
-  no boundary before it and the reference does NOT shield it, while an abbreviation
-  preceded by an underscore DOES have one and the reference does shield it. }
+{ An ASCII word boundary: exactly one side of index i is an ASCII word char.
+
+  The DECIMAL shield's only. PHP writes that one pattern without /u, so it runs in byte mode
+  and its boundary is ASCII; every other boundary of the stage is the UCP one below. Until
+  2026-09-16 the email, domain and multi-dot abbreviation shields used this too, on the
+  belief that the plugin's boundary was ASCII under /u -- which left an all-Cyrillic domain
+  unshielded (split and capitalised) and shielded an abbreviation after an underscore, both
+  the opposite of PHP. }
 function IsWordBoundaryAt(const s: string; i: Integer): Boolean;
 begin
   Result := IsBoundaryWordCh(s, i - 1) <> IsBoundaryWordCh(s, i);
@@ -2929,9 +2945,32 @@ begin
   {$ENDIF}
 end;
 
-{ Letter or digit at i, using the CASE-FOLDED tables. The email, domain and
-  single-abbreviation rules are all -giu- in the reference, and under -iu- a property
-  escape is folded, so the folded predicate is the faithful one there. }
+{ A PCRE2 UCP word character starts at i: a letter, a number, a non-spacing mark or connector
+  punctuation (the reference's UCP_WORD; PCRE2 10.43+, which the corpus's PHP 8.4 runs). }
+function IsUcpWordAt(const s: string; i: Integer): Boolean;
+var cpLen: Integer;
+begin
+  Result := (i >= 1) and (i <= Length(s))
+            and InRangeTable(SpCodePointAt(s, i, cpLen), UCP_WORD_RANGES);
+end;
+
+{ The code point before i is a UCP word character -- the lookbehind half of a boundary.
+  A leading boundary in front of a pattern that must start with a word character is exactly
+  the negation of this. }
+function PrecededByUcpWord(const s: string; i: Integer): Boolean;
+begin
+  Result := (i > 1) and IsUcpWordAt(s, PrevCodePointStart(s, i));
+end;
+
+{ A UCP word boundary at i: exactly one side is a word character. }
+function IsUcpBoundaryAt(const s: string; i: Integer): Boolean;
+begin
+  Result := PrecededByUcpWord(s, i) <> IsUcpWordAt(s, i);
+end;
+
+{ Letter or digit at i, using the CASE-FOLDED tables. Only the single-abbreviation
+  lookbehind reads it now: that rule is still -giu- in the reference, where a property
+  escape is folded. The email and domain rules lost their fold with 0.8.0. }
 function IsLetterOrNumFoldedAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
 var cp: LongWord;
 begin
@@ -2942,14 +2981,26 @@ begin
   Result := SpIsUniLetterFolded(cp) or SpIsUniNumber(cp);
 end;
 
-function IsLetterFoldedAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
+{ Strict letter or number: a domain label, which carries no -i- since 0.8.0. }
+function IsLetterOrNumStrictAt(const s: string; i: Integer; out cpLen: Integer): Boolean;
 var cp: LongWord;
 begin
   cpLen := 1;
   Result := False;
   if (i < 1) or (i > Length(s)) then Exit;
   cp := SpCodePointAt(s, i, cpLen);
-  Result := SpIsUniLetterFolded(cp);
+  Result := SpIsUniLetter(cp) or SpIsUniNumber(cp);
+end;
+
+{ A letter of one TLD case branch (#79). A TLD is a label in ONE case: the lower branch takes
+  Ll, Lm and Lo -- all letters but Lu and Lt -- and the upper branch Lu, Lt, Lm and Lo -- all
+  letters but Ll. Letters without case (CJK, Arabic, Thai) fit either, so a caseless TLD is
+  still a domain, while `compact.Game` and `foo.cOM` are not. }
+function IsTldCaseLetterCp(cp: LongWord; upper: Boolean): Boolean;
+begin
+  if not SpIsUniLetter(cp) then Exit(False);
+  if upper then Result := not SpIsUniLower(cp)
+  else Result := not InRangeTable(cp, LU_LT_RANGES);
 end;
 
 { Strict letter, for the multi-abbreviation rule, which is -gu- and not folded. }
@@ -2963,27 +3014,66 @@ begin
   Result := SpIsUniLetter(cp);
 end;
 
+{ The TLD of one case branch at p: a letter of that case, then 1..62 of letters of that case,
+  numbers or hyphens, longest first, backtracking the length to satisfy the end boundary as
+  the regex quantifier does. Returns the length in code units, or 0. }
+function ScanCasedTld(const s: string; p: Integer; upper, requireEndBoundary: Boolean): Integer;
+var q, n, m, cpLen: Integer; cp: LongWord; ends: array of Integer;
+begin
+  Result := 0;
+  if p > Length(s) then Exit;
+  if not IsTldCaseLetterCp(SpCodePointAt(s, p, cpLen), upper) then Exit;
+  q := p + cpLen;
+  n := 0;
+  SetLength(ends, 0);
+  while (n < 62) and (q <= Length(s)) do
+  begin
+    cp := SpCodePointAt(s, q, cpLen);
+    if not ((cp = Ord('-')) or SpIsUniNumber(cp) or IsTldCaseLetterCp(cp, upper)) then Break;
+    Inc(q, cpLen);
+    Inc(n);
+    SetLength(ends, n);
+    ends[n - 1] := q;
+  end;
+  for m := n - 1 downto 0 do
+    if (not requireEndBoundary) or IsUcpBoundaryAt(s, ends[m]) then
+      Exit(ends[m] - p);
+end;
+
 { One DOMAIN_PART: one or more dot-terminated labels followed by a TLD.
-    label = optional xn-- prefix, then letters/digits, then any number of
+    label = optional xn-- prefix (either case), then letters/digits, then any number of
             hyphen-joined letter/digit groups
-    tld   = xn-- plus 2..59 of a-z 0-9 hyphen, OR a letter followed by 1..62
-            letter / digit / hyphen
+    tld   = xn-- (either case) plus 2..59 code points of a-z A-Z 0-9 hyphen U+017F U+212A,
+            OR a label in ONE case (ScanCasedTld), lower branch tried before upper
   Greedy on the labels, with backtracking, because the last label can double as the TLD:
-  in example.com the regex takes example. as the label and com as the TLD. }
+  in example.com the regex takes example. as the label and com as the TLD.
+
+  2026-09-16 (`@spintax/core` 0.8.0 and #79): the pattern carries no -i- any more, so labels
+  read letters STRICTLY rather than folded; the TLD is one-case; the punycode class spells out
+  the two non-ASCII letters PCRE2's caseless [a-z] takes; and the boundary is UCP. }
 { requireEndBoundary: the callers all place a -b- after the domain, and the regex
   BACKTRACKS the TLD length to satisfy it. Taking the greedy length and testing the
   boundary once is not the same thing: in an email followed by a Cyrillic letter the
   greedy TLD swallows the letter -- it is a Unicode letter too -- the boundary then fails,
   and the whole match is lost where the reference simply stops at the shorter TLD. }
-function ScanDomainPart(const s: string; i: Integer; requireEndBoundary: Boolean): Integer;
+{ chainEnd: where the chain of labels starting at i ends -- the last label's end, dots
+  between labels included and a trailing one not -- or i when there is no label. ScanDomain
+  skips that far on a failed attempt (see there). It may come out SHORTER than the regex's
+  chain on a label the scan below breaks off early (a bare xn-- prefix), which only skips
+  less; it is never longer. }
+function ScanDomainPart(const s: string; i: Integer; requireEndBoundary: Boolean;
+  out chainEnd: Integer): Integer;
 var
   p, cpLen, labelEnd, tldLen, k, n, m: Integer;
+  cp: LongWord;
   dotEnds: array of Integer;
   ends: array of Integer;
   cnt: Integer;
 begin
   Result := 0;
-  SetLength(dotEnds, 0);
+  chainEnd := i;
+  { grown by doubling: one SetLength per label made a long dotted chain quadratic in copies }
+  SetLength(dotEnds, 16);
   cnt := 0;
   p := i;
   { collect as many dot-terminated labels as possible }
@@ -2992,20 +3082,21 @@ begin
     labelEnd := p;
     if MatchesAt(s, labelEnd, 'xn--') then Inc(labelEnd, 4);
     n := 0;
-    while IsLetterOrNumFoldedAt(s, labelEnd, cpLen) do begin Inc(labelEnd, cpLen); Inc(n); end;
+    while IsLetterOrNumStrictAt(s, labelEnd, cpLen) do begin Inc(labelEnd, cpLen); Inc(n); end;
     if n = 0 then Break;
     { hyphen-joined groups }
     while (labelEnd <= Length(s)) and (s[labelEnd] = '-') do
     begin
       k := labelEnd + 1;
       n := 0;
-      while IsLetterOrNumFoldedAt(s, k, cpLen) do begin Inc(k, cpLen); Inc(n); end;
+      while IsLetterOrNumStrictAt(s, k, cpLen) do begin Inc(k, cpLen); Inc(n); end;
       if n = 0 then Break;
       labelEnd := k;
     end;
+    chainEnd := labelEnd;
     if (labelEnd > Length(s)) or (s[labelEnd] <> '.') then Break;
     Inc(labelEnd);                       { consume the dot }
-    SetLength(dotEnds, cnt + 1);
+    if cnt = Length(dotEnds) then SetLength(dotEnds, cnt * 2);
     dotEnds[cnt] := labelEnd;
     Inc(cnt);
     p := labelEnd;
@@ -3019,50 +3110,34 @@ begin
     tldLen := 0;
     if MatchesAt(s, p, 'xn--') then
     begin
-      n := 0;
+      { Every acceptable end is recorded, then walked back longest first, exactly as the
+        regex backtracks the quantifier to satisfy the boundary. Counted in CODE POINTS:
+        U+017F and U+212A are two and three bytes here. }
+      SetLength(ends, 0);
       labelEnd := p + 4;
-      while (labelEnd <= Length(s))
-            and (CharInSet(s[labelEnd], ['a'..'z', 'A'..'Z', '0'..'9', '-'])) do
-      begin Inc(labelEnd); Inc(n); end;
-      while (n > 59) do begin Dec(labelEnd); Dec(n); end;
-      while (n >= 2) and requireEndBoundary and not IsWordBoundaryAt(s, labelEnd) do
-      begin Dec(labelEnd); Dec(n); end;
-      if (n >= 2) and (n <= 59) then tldLen := labelEnd - p;
-    end;
-    if tldLen = 0 then
-    begin
-      if IsLetterFoldedAt(s, p, cpLen) then
+      n := 0;
+      while (n < 59) and (labelEnd <= Length(s)) do
       begin
-        { Record every acceptable end position, longest first, so the boundary check can
-          walk back through them exactly as the regex backtracks the quantifier. }
-        SetLength(ends, 0);
-        labelEnd := p + cpLen;
-        n := 0;
-        while (n < 62) and (labelEnd <= Length(s)) do
-        begin
-          if n >= 1 then
-          begin
-            SetLength(ends, Length(ends) + 1);
-            ends[Length(ends) - 1] := labelEnd;
-          end;
-          if s[labelEnd] = '-' then begin Inc(labelEnd); Inc(n); end
-          else if IsLetterOrNumFoldedAt(s, labelEnd, cpLen) then
-            begin Inc(labelEnd, cpLen); Inc(n); end
-          else Break;
-        end;
-        if n >= 1 then
+        cp := SpCodePointAt(s, labelEnd, cpLen);
+        if not ((cp < 128) and CharInSet(Chr(cp), ['a'..'z', 'A'..'Z', '0'..'9', '-'])
+                or (cp = $017F) or (cp = $212A)) then Break;
+        Inc(labelEnd, cpLen);
+        Inc(n);
+        if n >= 2 then
         begin
           SetLength(ends, Length(ends) + 1);
           ends[Length(ends) - 1] := labelEnd;
         end;
-        for m := Length(ends) - 1 downto 0 do
-          if (not requireEndBoundary) or IsWordBoundaryAt(s, ends[m]) then
-          begin
-            tldLen := ends[m] - p;
-            Break;
-          end;
       end;
+      for m := Length(ends) - 1 downto 0 do
+        if (not requireEndBoundary) or IsUcpBoundaryAt(s, ends[m]) then
+        begin
+          tldLen := ends[m] - p;
+          Break;
+        end;
     end;
+    if tldLen = 0 then tldLen := ScanCasedTld(s, p, False, requireEndBoundary);
+    if tldLen = 0 then tldLen := ScanCasedTld(s, p, True, requireEndBoundary);
     if tldLen > 0 then Exit(p + tldLen - i);
   end;
 end;
@@ -3089,7 +3164,7 @@ end;
   Without this shield at all, the email and domain passes swallow the address, the bare
   prefix is left behind, and the space-after-colon rule splits it into a malformed href. }
 function ScanUri(const s: string; i: Integer): Integer;
-var p, k: Integer;
+var p, k, cpLen: Integer;
 begin
   Result := 0;
   if MatchesAt(s, i, 'https://') then p := i + 8
@@ -3102,7 +3177,7 @@ begin
     "https://" is not a URL. The old guard compared against a fixed length and let the
     empty ones through. }
   k := p;
-  while (p <= Length(s)) and not IsUriStop(s[p]) do Inc(p);
+  while (p <= Length(s)) and not IsUriStopAt(s, p, cpLen) do Inc(p, cpLen);
   if p > k then Result := p - i;
 end;
 
@@ -3116,32 +3191,60 @@ begin
     Result := 'URL';
 end;
 
+{ The local part is the plugin's [a-z0-9._%+-] as -iu- reads it: both cases, and the two
+  non-ASCII letters PCRE2's caseless match folds into the class, U+017F LONG S and U+212A
+  KELVIN SIGN -- the reference spells them out in isEmailLocalChar.
+
+  A NEGATIVE result is a failed attempt that also proves every start up to -Result code
+  units further on fails, and ShieldPass copies that stretch without trying it. Every start
+  inside one run of local-part characters reaches the same end -- the class holds no `@` --
+  so the run's first start matches or none of them does. Trying each start instead was
+  quadratic in a long run, and since the word boundary became UCP that is not only a Latin
+  word: 40 000 U+017F took 1.7 s where the reference takes 3 ms. }
 function ScanEmail(const s: string; i: Integer): Integer;
-var p, dom: Integer;
+var p, dom, cpLen, chainEnd: Integer; cp: LongWord;
 begin
   Result := 0;
   p := i;
-  while (p <= Length(s))
-        and CharInSet(s[p], ['a'..'z', 'A'..'Z', '0'..'9', '.', '_', '%', '+', '-']) do
-    Inc(p);
-  if (p = i) or (p > Length(s)) or (s[p] <> '@') then Exit;
-  Inc(p);
-  dom := ScanDomainPart(s, p, True);
-  if dom = 0 then Exit;
-  Inc(p, dom);
-  if not IsWordBoundaryAt(s, p) then Exit;
-  Result := p - i;
+  while p <= Length(s) do
+  begin
+    cp := SpCodePointAt(s, p, cpLen);
+    if not ((cp < 128) and CharInSet(Chr(cp), ['a'..'z', 'A'..'Z', '0'..'9', '.', '_', '%', '+', '-'])
+            or (cp = $017F) or (cp = $212A)) then Break;
+    Inc(p, cpLen);
+  end;
+  if p = i then Exit;
+  if (p > Length(s)) or (s[p] <> '@') then Exit(-(p - i));
+  dom := ScanDomainPart(s, p + 1, True, chainEnd);
+  if dom = 0 then Exit(-(p - i));
+  Result := p + 1 + dom - i;
 end;
 
+{ The plugin's leading boundary, in front of a pattern whose first character is a word
+  character: the code point before is not one.
+
+  A failed attempt skips the chain of labels it started (a negative result, see ScanEmail):
+  an attempt that fails at the start of a chain fails at every later start inside it,
+  because prefixing the chain's own labels to a match further in makes a match here -- same
+  TLD, same end, same boundary. That is the reference's own argument for its scanner, and
+  without it a dotted run was quadratic: 40 000 of a Cyrillic letter and a dot took 76 s
+  here, where the ASCII boundary used to reject every non-Latin start at once and the
+  reference takes 14 ms.
+
+  ONE exception to that argument, which the reference's scanner shares: a later start whose
+  own label begins `xn--` is not reachable by prefixing, because `a-` plus `xn--b` is no
+  label. In `a-xn--b.com` the plugin's regex shields `xn--b.com` and both scanners shield
+  `b.com`. The gap is the four characters `xn--`, whose `x` is always preceded by `-` -- so
+  it can never start a lead, and no pass of this stage can alter it. Measured over 40 025
+  adversarial strings during review: 48 shield-level differences against a per-start build,
+  every one holding `xn--`, and ZERO output differences. }
 function ScanDomain(const s: string; i: Integer): Integer;
-var dom: Integer;
+var chainEnd: Integer;
 begin
   Result := 0;
-  if not IsWordBoundaryAt(s, i) then Exit;
-  dom := ScanDomainPart(s, i, True);
-  if dom = 0 then Exit;
-  if not IsWordBoundaryAt(s, i + dom) then Exit;
-  Result := dom;
+  if PrecededByUcpWord(s, i) then Exit;
+  Result := ScanDomainPart(s, i, True, chainEnd);
+  if (Result = 0) and (chainEnd > i) then Result := -(chainEnd - i);
 end;
 
 function ScanDecimal(const s: string; i: Integer): Integer;
@@ -3160,12 +3263,14 @@ begin
 end;
 
 { Two or more groups of one-or-two letters each followed by a dot and optional
-  whitespace. This is the -gu- rule, so letters are strict, not folded. }
+  whitespace. This is the -gu- rule, so letters are strict, not folded; its leading boundary
+  and its whitespace are UCP, which is what lets a Cyrillic multi-dot abbreviation be shielded
+  at all -- under the ASCII boundary no Cyrillic letter ever had one in front of it. }
 function ScanMultiAbbr(const s: string; i: Integer): Integer;
 var p, cpLen, groups, letters, lastEnd: Integer;
 begin
   Result := 0;
-  if not IsWordBoundaryAt(s, i) then Exit;
+  if PrecededByUcpWord(s, i) then Exit;
   p := i; groups := 0; lastEnd := i;
   while True do
   begin
@@ -3174,7 +3279,7 @@ begin
     begin Inc(p, cpLen); Inc(letters); end;
     if (letters = 0) or (p > Length(s)) or (s[p] <> '.') then Break;
     Inc(p);
-    while (p <= Length(s)) and IsPpWs(s[p]) do Inc(p);
+    while UcpSpaceAt(s, p, cpLen) do Inc(p, cpLen);
     Inc(groups);
     lastEnd := p;
   end;
@@ -3240,11 +3345,15 @@ begin
     p := i + cpLen;
     if (p > Length(s)) or (s[p] <> '.') then Continue;
     Inc(p);
-    if (p > Length(s)) or IsPpWs(s[p]) or (s[p] = '<') then Exit(p - i);
+    if (p > Length(s)) or UcpSpaceAt(s, p, cpLen) or (s[p] = '<') then Exit(p - i);
   end;
 end;
 
 type
+  { > 0: a match of that many code units. 0: no match at this start. < 0: no match at this
+    start NOR at any start in the next -Result code units, which are copied as they are --
+    how a scanner that has proved a whole run fails keeps the pass linear (ScanEmail,
+    ScanDomain). The stretch must end on a code-point boundary. }
   TScanFn = function(const s: string; i: Integer): Integer;
 
 { Replace every match of one scanner with a placeholder, left to right. The key is
@@ -3258,7 +3367,7 @@ procedure ShieldPass(var text: string; scan: TScanFn; const prefix: string;
 var
   buf: TStrBuf;
   matched, key, suffix: string;
-  i, len, cut: Integer;
+  i, len, cut, cpLen: Integer;
 begin
   buf.Init(Length(text) + 16);
   i := 1;
@@ -3297,13 +3406,30 @@ begin
       end;
       Inc(i, len);
     end
+    else if len < 0 then
+    begin
+      buf.AppendSlice(text, i, -len);
+      Inc(i, -len);
+    end
     else
     begin
-      buf.AppendChar(text[i]);
-      Inc(i);
+      { A whole CODE POINT: no pattern can start inside one, and with UCP boundaries a
+        scanner started on a continuation byte would read half a character as its context. }
+      SpCodePointAt(text, i, cpLen);
+      buf.AppendSlice(text, i, cpLen);
+      Inc(i, cpLen);
     end;
   end;
   text := buf.Finish;
+end;
+
+{ The two spacing lookaheads' refusal, at i (a position inside the text): a decimal digit of
+  any script (UCP \d), UCP whitespace, or a tag. The end of the text is the caller's test. }
+function NoSpaceNeededAt(const s: string; i: Integer): Boolean;
+var cp: LongWord; cpLen: Integer;
+begin
+  cp := SpCodePointAt(s, i, cpLen);
+  Result := InRangeTable(cp, ND_RANGES) or IsUcpSpaceCp(cp) or (cp = Ord('<'));
 end;
 
 { Steps 6 and 7: collapse space runs, then punctuation spacing. }
@@ -3330,14 +3456,14 @@ begin
   end;
   s := buf.Finish;
 
-  { 7: remove whitespace before  , ; : ! ? .  }
+  { 7: remove whitespace before  , ; : ! ? .  -- the UCP class, so a no-break space goes too }
   buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
-    if IsPpWs(s[i]) then
+    if UcpSpaceAt(s, i, cpLen) then
     begin
       runEnd := i;
-      while (runEnd <= Length(s)) and IsPpWs(s[runEnd]) do Inc(runEnd);
+      while UcpSpaceAt(s, runEnd, cpLen) do Inc(runEnd, cpLen);
       if (runEnd <= Length(s)) and CharInSet(s[runEnd], [',', ';', ':', '!', '?', '.']) then
       begin
         i := runEnd;                 { drop the whitespace run entirely }
@@ -3347,19 +3473,22 @@ begin
       i := runEnd;
       Continue;
     end;
-    buf.AppendChar(s[i]);
-    Inc(i);
+    { By whole code points: a stray UTF-8 continuation byte decodes to itself, and $85 and
+      $A0 are NEL and NBSP -- stepping one byte would see whitespace inside any character
+      ending in one (Cyrillic capital DZE ends in $85, and most of the block ends in $A0..$BF). }
+    buf.AppendSlice(s, i, cpLen);
+    Inc(i, cpLen);
   end;
   s := buf.Finish;
 
-  { 7: a space after  , ; :  unless a digit, whitespace, end of text or a tag follows }
+  { 7: a space after  , ; :  unless a decimal digit, whitespace, end of text or a tag
+    follows. Digit and whitespace are the UCP classes: the Nd property, and UcpSpaceAt. }
   buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
     buf.AppendChar(s[i]);
     if CharInSet(s[i], [',', ';', ':']) and (i < Length(s))
-       and not CharInSet(s[i + 1], ['0'..'9']) and not IsPpWs(s[i + 1])
-       and (s[i + 1] <> '<') then
+       and not NoSpaceNeededAt(s, i + 1) then
       buf.AppendChar(' ');
     Inc(i);
   end;
@@ -3375,8 +3504,7 @@ begin
       runEnd := i;
       while (runEnd <= Length(s)) and CharInSet(s[runEnd], ['.', '!', '?']) do Inc(runEnd);
       buf.AppendSlice(s, i, runEnd - i);
-      if (runEnd <= Length(s)) and not CharInSet(s[runEnd], ['0'..'9'])
-         and not IsPpWs(s[runEnd]) and (s[runEnd] <> '<') then
+      if (runEnd <= Length(s)) and not NoSpaceNeededAt(s, runEnd) then
         buf.AppendChar(' ');
       i := runEnd;
       Continue;
@@ -3401,7 +3529,7 @@ begin
     buf.AppendSlice(s, i, cpLen);
     Inc(i, cpLen);
     if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) then
-      while (i <= Length(s)) and IsPpWs(s[i]) do Inc(i);
+      while UcpSpaceAt(s, i, cpLen) do Inc(i, cpLen);
   end;
   Result := buf.Finish;
 end;
@@ -3426,7 +3554,7 @@ begin
       p := k + 1;
       Continue;
     end;
-    if IsPpWs(s[p]) then begin Inc(p); Continue; end;
+    if UcpSpaceAt(s, p, cpLen) then begin Inc(p, cpLen); Continue; end;
     cp := SpCodePointAt(s, p, cpLen);
     if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) then
     begin Inc(p, cpLen); Continue; end;
@@ -3435,18 +3563,17 @@ begin
   Result := p - i;
 end;
 
-{ Uppercase the code point at i, if it is a lowercase letter. Folded chooses which
-  predicate applies: the block-tag step is -giu- in the reference and the others are not.
+{ Uppercase the code point at i, if it is a lowercase letter -- strict Ll for every
+  capitalizer, the block-tag one included (see step 10).
   Returns the replacement text and its source length, or 0 when nothing applies. }
-function CapAt(const s: string; i: Integer; folded: Boolean; out repl: string): Integer;
-var cp: LongWord; cpLen: Integer; isLow: Boolean;
+function CapAt(const s: string; i: Integer; out repl: string): Integer;
+var cp: LongWord; cpLen: Integer;
 begin
   Result := 0;
   repl := '';
   if (i < 1) or (i > Length(s)) then Exit;
   cp := SpCodePointAt(s, i, cpLen);
-  if folded then isLow := SpIsUniLowerFolded(cp) else isLow := SpIsUniLower(cp);
-  if not isLow then Exit;
+  if not SpIsUniLower(cp) then Exit;
   repl := SpUpperCodePoint(cp);
   Result := cpLen;
 end;
@@ -3458,25 +3585,109 @@ begin
   Result := (Length(s) >= Length(prefix)) and (Copy(s, 1, Length(prefix)) = prefix);
 end;
 
+{ Where the LEAD starting at each code-point start of s ends (the index itself when there is
+  none), and where the first `>` after each position is (0 when none) -- built once per pass,
+  from the right, as the reference's indexLeads does.
+
+  Why an index and not ScanLead at each boundary. A capitalizer's regex tries every start,
+  so when a boundary is followed by a lead and NO lowercase letter, the next attempt begins
+  one character after the boundary -- and a sentence end or a line break INSIDE that lead, in
+  a tag's attribute, is a boundary of its own. Steps 9 and 11 jumped over the whole lead
+  instead, so `Done. <img alt="Hello. world">` kept its lower-case `world` where the
+  reference and PHP capitalise it (found by review, 2026-09-16; as old as the capitalizers,
+  and reached more often once NBSP and NEL became lead whitespace). Resuming right after the
+  boundary with ScanLead would walk the same lead again from every boundary inside it, which
+  is quadratic on a run of line breaks; the index answers each in O(1). NextGt does the same
+  for the block-tag test, which scanned to the next `>` from every `<`.
+
+  A lead has exactly one reading: an opener or a whitespace character is one token, and a tag
+  is `<`, at least one character, then the FIRST `>`. So the lead from i is one token then the
+  lead from where it ends. Only code-point starts are indexed, found by a forward walk: a
+  stray UTF-8 continuation byte $85 or $A0 decodes to NEL or NBSP, and a backward walk would
+  disagree with the forward one on invalid input. }
+procedure IndexLeads(const s: string; out leadEnd, nextGt: TArray<Integer>);
+var n, i, k, cnt, gt, tokenEnd, cpLen: Integer; starts: TArray<Integer>; cp: LongWord;
+begin
+  n := Length(s);
+  leadEnd := nil; nextGt := nil; starts := nil;
+  SetLength(leadEnd, n + 2);
+  SetLength(nextGt, n + 2);
+  SetLength(starts, n + 1);
+  cnt := 0; i := 1;
+  while i <= n do
+  begin
+    starts[cnt] := i; Inc(cnt);
+    SpCodePointAt(s, i, cpLen);
+    Inc(i, cpLen);
+  end;
+  leadEnd[n + 1] := n + 1;
+  gt := 0;
+  for i := n downto 1 do
+  begin
+    nextGt[i] := gt;
+    if s[i] = '>' then gt := i;
+  end;
+  for k := cnt - 1 downto 0 do
+  begin
+    i := starts[k];
+    cp := SpCodePointAt(s, i, cpLen);
+    tokenEnd := 0;
+    if (cp = SENTENCE_OPENER_1) or (cp = SENTENCE_OPENER_2) or IsUcpSpaceCp(cp) then
+      tokenEnd := i + cpLen
+    else if (cp = Ord('<')) and (nextGt[i] > i + 1) then
+      tokenEnd := nextGt[i] + 1;
+    if tokenEnd = 0 then leadEnd[i] := i else leadEnd[i] := leadEnd[tokenEnd];
+  end;
+end;
+
 function CapitalizePasses(const input: string): string;
 var
   s, repl: string;
   buf: TStrBuf;
-  i, leadLen, capLen, k: Integer;
+  i, leadLen, capLen, k, e: Integer;
   cp: LongWord; cpLen: Integer;
+  leadEnd, nextGt: TArray<Integer>;
+
+  { Capitalise after the boundary that ended just before i, if the lead from i reaches a
+    lowercase letter: emit the lead and the capital and move past them. Otherwise emit
+    nothing and leave i alone, so the caller goes on scanning INSIDE the lead. }
+  procedure CapitalizeFrom;
+  begin
+    e := leadEnd[i];
+    capLen := CapAt(s, e, repl);
+    if capLen > 0 then
+    begin
+      buf.AppendSlice(s, i, e - i);
+      buf.AppendStr(repl);
+      i := e + capLen;
+    end;
+  end;
 
   function IsBlockTagAt(const t: string; at: Integer; out tagLen: Integer): Boolean;
-  var q, nameStart: Integer; name: string;
+  var q, nLen: Integer; name: string; ncp: LongWord;
   begin
     Result := False; tagLen := 0;
     if (at > Length(t)) or (t[at] <> '<') then Exit;
     q := at + 1;
     if (q <= Length(t)) and (t[q] = '/') then Inc(q);
-    nameStart := q;
-    while (q <= Length(t)) and CharInSet(t[q], ['a'..'z', 'A'..'Z', '0'..'9']) do Inc(q);
-    name := LowerAscii(Copy(t, nameStart, q - nameStart));
-    while (q <= Length(t)) and (t[q] <> '>') do Inc(q);
-    if q > Length(t) then Exit;
+    { The name is matched caselessly under -iu-, where U+212A KELVIN SIGN is a k -- so
+      a blockquote tag spelled with it is still one, in the reference and in PHP. Folded
+      into the ASCII name here; U+017F LONG S folds to s, which no alternative holds. }
+    name := '';
+    { Ten characters decide it -- the longest alternative is blockquote, and the name only has
+      to START with one (see below); the rest of the tag is the [^>]* scan. }
+    while (q <= Length(t)) and (Length(name) < 10) do
+    begin
+      ncp := SpCodePointAt(t, q, nLen);
+      if ncp = $212A then name := name + 'k'
+      else if (ncp < 128) and CharInSet(Chr(ncp), ['a'..'z', 'A'..'Z', '0'..'9']) then
+        name := name + LowerAsciiCh(Chr(ncp))
+      else Break;
+      Inc(q, nLen);
+    end;
+    { the [^>]* then the first `>` after the `<` -- the name holds none, so it is that one }
+    q := nextGt[at];
+    if q = 0 then Exit;
     { The reference alternation is followed by [^>]*, so the name only has to START with
       one of the alternatives: <pre> matches via "p", <thead> via "th", <link> via "li".
       Comparing the whole name for equality missed every one of those. }
@@ -3494,11 +3705,12 @@ begin
 
   { 8: the first letter, skipping the lead }
   leadLen := ScanLead(s, 1);
-  capLen := CapAt(s, 1 + leadLen, False, repl);
+  capLen := CapAt(s, 1 + leadLen, repl);
   if capLen > 0 then
     s := Copy(s, 1, leadLen) + repl + Copy(s, 1 + leadLen + capLen, MaxInt);
 
   { 9: after sentence punctuation, through the lead }
+  IndexLeads(s, leadEnd, nextGt);
   buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
@@ -3507,11 +3719,7 @@ begin
     begin
       buf.AppendSlice(s, i, cpLen);
       Inc(i, cpLen);
-      leadLen := ScanLead(s, i);
-      buf.AppendSlice(s, i, leadLen);
-      Inc(i, leadLen);
-      capLen := CapAt(s, i, False, repl);
-      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
+      CapitalizeFrom;
       Continue;
     end;
     buf.AppendSlice(s, i, cpLen);
@@ -3519,8 +3727,16 @@ begin
   end;
   s := buf.Finish;
 
-  { 10: after a block-level tag. This one is -giu- in the reference, so the CASE-FOLDED
-    predicate applies -- 1446 extra code points, 32 with a differing uppercase. }
+  { 10: after a block-level tag. The plugin writes this pass -ui-, but PCRE2 does not fold a
+    Unicode property, so its lowercase-letter test stays strict and only the TAG NAME is
+    caseless. This step read the letter folded until 2026-09-16, and a titlecase letter such
+    as U+01C5 after a paragraph tag was upper-cased where PHP keeps it.
+
+    When nothing is capitalised this resumes right after the tag, inside its lead, where the
+    regex resumes one character after the `<`. Equivalent here -- a block tag starting inside
+    this one ends at the same `>` and has the same lead end -- which is the review's argument,
+    and why this step never showed the steps-9-and-11 divergence. }
+  IndexLeads(s, leadEnd, nextGt);
   buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
@@ -3528,11 +3744,7 @@ begin
     begin
       buf.AppendSlice(s, i, k);
       Inc(i, k);
-      leadLen := ScanLead(s, i);
-      buf.AppendSlice(s, i, leadLen);
-      Inc(i, leadLen);
-      capLen := CapAt(s, i, True, repl);
-      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
+      CapitalizeFrom;
       Continue;
     end;
     buf.AppendChar(s[i]);
@@ -3541,6 +3753,7 @@ begin
   s := buf.Finish;
 
   { 11: after a line break }
+  IndexLeads(s, leadEnd, nextGt);
   buf.Init(Length(s) + 16); i := 1;
   while i <= Length(s) do
   begin
@@ -3548,11 +3761,7 @@ begin
     begin
       buf.AppendChar(s[i]);
       Inc(i);
-      leadLen := ScanLead(s, i);
-      buf.AppendSlice(s, i, leadLen);
-      Inc(i, leadLen);
-      capLen := CapAt(s, i, False, repl);
-      if capLen > 0 then begin buf.AppendStr(repl); Inc(i, capLen); end;
+      CapitalizeFrom;
       Continue;
     end;
     buf.AppendChar(s[i]);

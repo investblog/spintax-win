@@ -464,15 +464,19 @@ end;
   Pascal Trim standing in for JS trim, an empty tag treated as a tag, and a greedy TLD
   that never backtracked to satisfy the trailing boundary.
 
-  Expectations measured from the reference on 2026-07-22. }
+  Expectations measured from the reference on 2026-07-22, and ALL re-measured on 2026-09-16
+  against @spintax/core main when the stage moved to PCRE2's UCP classes: five had pinned the
+  ASCII reading and were rewritten from the reference's output -- a Cyrillic label or TLD is a
+  domain now, an underscore is a word character, NBSP is lead whitespace -- and renamed where
+  the old name stated the old answer. }
 procedure TestPostProcess;
 begin
   Check('pp/cyrillic-space-kept', RenderPP(U([$0441, $0443, $043F, $0020, $0433, $043E, $0440, $044F, $0447, $0438, $0439])), U([$0421, $0443, $043F, $0020, $0433, $043E, $0440, $044F, $0447, $0438, $0439]));
   Check('pp/cyrillic-comma', RenderPP(U([$0421, $0020, $0443, $0432, $0430, $0436, $0435, $043D, $0438, $0435, $043C, $002C, $0020, $0418, $0432, $0430, $043D])), U([$0421, $0020, $0443, $0432, $0430, $0436, $0435, $043D, $0438, $0435, $043C, $002C, $0020, $0418, $0432, $0430, $043D]));
   Check('pp/greek-first-letter', RenderPP(U([$03BF, $0020, $03BA, $03CC, $03C3, $03BC, $03BF, $03C2])), U([$039F, $0020, $03BA, $03CC, $03C3, $03BC, $03BF, $03C2]));
-  Check('pp/cyrillic-label-not-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0063, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0020, $0043, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079]));
-  Check('pp/cyrillic-tld-not-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0440, $0444, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0020, $0420, $0444, $0020, $0074, $006F, $0064, $0061, $0079]));
-  Check('pp/abbrev-after-underscore', RenderPP(U([$005F, $0442, $002E, $0434, $002E, $0020, $006D, $006F, $0072, $0065])), U([$005F, $0442, $002E, $0434, $002E, $0020, $006D, $006F, $0072, $0065]));
+  Check('pp/cyrillic-label-is-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0063, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $043F, $0440, $0438, $043C, $0435, $0440, $002E, $0063, $006F, $006D, $0020, $0074, $006F, $0064, $0061, $0079]));
+  Check('pp/cyrillic-tld-is-a-domain', RenderPP(U([$0076, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0440, $0444, $0020, $0074, $006F, $0064, $0061, $0079])), U([$0056, $0069, $0073, $0069, $0074, $0020, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0440, $0444, $0020, $0074, $006F, $0064, $0061, $0079]));
+  Check('pp/abbrev-after-underscore-not-shielded', RenderPP(U([$005F, $0442, $002E, $0434, $002E, $0020, $006D, $006F, $0072, $0065])), U([$005F, $0442, $002E, $0020, $0414, $002E, $0020, $004D, $006F, $0072, $0065]));
   Check('pp/uppercase-cyrillic-abbrev', RenderPP(U([$0421, $041C, $002E, $0020, $0440, $0438, $0441, $0443, $043D, $043E, $043A])), U([$0421, $041C, $002E, $0020, $0440, $0438, $0441, $0443, $043D, $043E, $043A]));
   Check('pp/single-letter-cyrillic-abbrev', RenderPP(U([$0413, $002E, $0020, $041C, $043E, $0441, $043A, $0432, $0430])), U([$0413, $002E, $0020, $041C, $043E, $0441, $043A, $0432, $0430]));
   Check('pp/bare-scheme-not-a-url', RenderPP(U([$0073, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0020, $0068, $0065, $0072, $0065])), U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $0020, $002F, $002F, $0020, $0068, $0065, $0072, $0065]));
@@ -483,11 +487,41 @@ begin
   Check('pp/lone-tab-kept', RenderPP(U([$0061, $0009, $0062])), U([$0041, $0009, $0062]));
   Check('pp/tab-after-newline', RenderPP(U([$0061, $000A, $0009, $0062])), U([$0041, $000A, $0009, $0042]));
   Check('pp/empty-tag-is-literal', RenderPP(U([$0061, $002E, $0020, $003C, $003E, $0062])), U([$0041, $002E, $0020, $003C, $003E, $0062]));
-  Check('pp/nbsp-is-trimmed', RenderPP(U([$00A0, $0068, $0065, $006C, $006C, $006F, $00A0])), U([$0068, $0065, $006C, $006C, $006F]));
+  Check('pp/nbsp-is-lead-and-trimmed', RenderPP(U([$00A0, $0068, $0065, $006C, $006C, $006F, $00A0])), U([$0048, $0065, $006C, $006C, $006F]));
   Check('pp/email-then-cyrillic', RenderPP(U([$006D, $0065, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $043F])), U([$006D, $0065, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $043F]));
-  Check('pp/domain-then-cyrillic', RenderPP(U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421])), U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421]));
+  Check('pp/domain-then-cyrillic-letter-no-boundary', RenderPP(U([$0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0421])), U([$0045, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0020, $0043, $006F, $006D, $0421]));
   Check('pp/url-keeps-sentence-stop', RenderPP(U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E])), U([$0053, $0065, $0065, $0020, $0068, $0074, $0074, $0070, $0073, $003A, $002F, $002F, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $002E]));
   Check('pp/sentence-run-at-end', RenderPP(U([$0057, $006F, $0077, $0021, $0021, $0021])), U([$0057, $006F, $0077, $0021, $0021, $0021]));
+
+  { The UCP classes (2026-09-16, @spintax/core 0.8.0 and #79), on shapes the corpus does not
+    carry, each measured against the reference and each chosen so the old reading renders
+    differently. The first two are a BYTE-string hazard only: a stray UTF-8 continuation byte
+    decodes to itself, and $85 and $A0 are NEL and NBSP, so a pass stepping one byte at a time
+    sees whitespace inside U+0405 and U+0420 and deletes half of the letter before punctuation.
+    The punycode pair counts CODE POINTS -- thirty U+017F are sixty bytes, past the 59 a byte
+    count would allow -- and the email pair makes the two letters PCRE2's caseless class folds
+    in decide whether the address is shielded at all. }
+  Check('pp/dze-before-comma-is-no-space', RenderPP(U([$0078, $0405, $002C, $0020, $0079])), U([$0058, $0405, $002C, $0020, $0079]));
+  Check('pp/er-before-stop-is-no-space', RenderPP(U([$0078, $0420, $002E, $0020, $0079])), U([$0058, $0420, $002E, $0020, $0059]));
+  Check('pp/mongolian-vs-is-whitespace', RenderPP(U([$0065, $006E, $0064, $002E, $180E, $006E, $0065, $0078, $0074])), U([$0045, $006E, $0064, $002E, $180E, $004E, $0065, $0078, $0074]));
+  Check('pp/arabic-indic-digit-after-stop', RenderPP(U([$0061, $002E, $0661, $0062])), U([$0041, $002E, $0661, $0062]));
+  Check('pp/kelvin-sign-in-block-tag-name', RenderPP(U([$003C, $0062, $006C, $006F, $0063, $212A, $0071, $0075, $006F, $0074, $0065, $003E, $0078])), U([$003C, $0062, $006C, $006F, $0063, $212A, $0071, $0075, $006F, $0074, $0065, $003E, $0058]));
+  Check('pp/email-local-kelvin', RenderPP(U([$006D, $0061, $0069, $006C, $0020, $0061, $0062, $002E, $212A, $0061, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0020, $006E, $006F, $0077])), U([$004D, $0061, $0069, $006C, $0020, $0061, $0062, $002E, $212A, $0061, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0020, $006E, $006F, $0077]));
+  Check('pp/email-local-long-s', RenderPP(U([$006D, $0061, $0069, $006C, $0020, $0061, $0062, $002E, $017F, $0041, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0020, $006E, $006F, $0077])), U([$004D, $0061, $0069, $006C, $0020, $0061, $0062, $002E, $017F, $0041, $0040, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0020, $006E, $006F, $0077]));
+  { A boundary INSIDE a lead is a boundary of its own. The capitalizer's regex resumes one
+    character after a failed start, so a sentence end or a line break inside a tag that sits
+    in the lead of an earlier boundary still capitalises what follows it; steps 9 and 11
+    jumped over the whole lead and missed it (found by review, 2026-09-16; as old as the
+    capitalizers). The last one only reached it once U+2028 became lead whitespace. Measured
+    against the reference; the byte-for-byte differential behind the fix is in spec sec.5.12. }
+  Check('pp/sentence-end-inside-a-lead-tag', RenderPP(U([$0059, $0065, $0073, $0021, $0020, $003C, $0020, $0036, $002E, $0020, $0074, $0068, $0065, $006E, $0020, $003C, $0062, $003E, $004F, $004B, $003C, $002F, $0062, $003E])), U([$0059, $0065, $0073, $0021, $0020, $003C, $0020, $0036, $002E, $0020, $0054, $0068, $0065, $006E, $0020, $003C, $0062, $003E, $004F, $004B, $003C, $002F, $0062, $003E]));
+  Check('pp/sentence-end-inside-an-attribute', RenderPP(U([$0044, $006F, $006E, $0065, $002E, $0020, $003C, $0069, $006D, $0067, $0020, $0061, $006C, $0074, $003D, $0022, $0048, $0065, $006C, $006C, $006F, $002E, $0020, $0077, $006F, $0072, $006C, $0064, $0022, $003E, $0020, $0032, $0030, $0032, $0034, $0020, $0077, $0061, $0073, $0020, $0067, $006F, $006F, $0064])), U([$0044, $006F, $006E, $0065, $002E, $0020, $003C, $0069, $006D, $0067, $0020, $0061, $006C, $0074, $003D, $0022, $0048, $0065, $006C, $006C, $006F, $002E, $0020, $0057, $006F, $0072, $006C, $0064, $0022, $003E, $0020, $0032, $0030, $0032, $0034, $0020, $0077, $0061, $0073, $0020, $0067, $006F, $006F, $0064]));
+  Check('pp/line-break-inside-an-attribute', RenderPP(U([$006C, $0069, $006E, $0065, $0020, $006F, $006E, $0065, $000A, $003C, $0073, $0070, $0061, $006E, $0020, $0074, $0069, $0074, $006C, $0065, $003D, $0022, $0061, $000A, $0062, $0022, $003E, $0058, $003C, $002F, $0073, $0070, $0061, $006E, $003E])), U([$004C, $0069, $006E, $0065, $0020, $006F, $006E, $0065, $000A, $003C, $0073, $0070, $0061, $006E, $0020, $0074, $0069, $0074, $006C, $0065, $003D, $0022, $0061, $000A, $0042, $0022, $003E, $0058, $003C, $002F, $0073, $0070, $0061, $006E, $003E]));
+  Check('pp/line-separator-lead-before-a-tag', RenderPP(U([$0065, $006E, $0064, $002E, $2028, $003C, $0061, $0020, $0074, $0069, $0074, $006C, $0065, $003D, $0022, $0078, $002E, $0020, $0079, $0022, $003E, $0032, $003C, $002F, $0061, $003E])), U([$0045, $006E, $0064, $002E, $2028, $003C, $0061, $0020, $0074, $0069, $0074, $006C, $0065, $003D, $0022, $0078, $002E, $0020, $0059, $0022, $003E, $0032, $003C, $002F, $0061, $003E]));
+  Check('pp/combining-mark-is-a-word-char', RenderPP(U([$0078, $0020, $0301, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0063, $006F, $006D, $0020, $0079])), U([$0058, $0020, $0301, $0065, $0078, $0061, $006D, $0070, $006C, $0065, $002E, $0020, $0043, $006F, $006D, $0020, $0079]));
+  Check('pp/connector-punct-before-abbreviation', RenderPP(U([$0078, $0020, $203F, $0442, $002E, $0434, $002E, $0020, $0079])), U([$0058, $0020, $203F, $0442, $002E, $0020, $0414, $002E, $0020, $0059]));
+  Check('pp/punycode-tld-counts-code-points', RenderPP(U([$0073, $0065, $0065, $0020, $0073, $0069, $0074, $0065, $002E, $0078, $004E, $002D, $002D, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $0041, $0020, $006E, $006F, $0077])), U([$0053, $0065, $0065, $0020, $0073, $0069, $0074, $0065, $002E, $0078, $004E, $002D, $002D, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $0041, $0020, $006E, $006F, $0077]));
+  Check('pp/punycode-tld-past-59-code-points', RenderPP(U([$0073, $0065, $0065, $0020, $0073, $0069, $0074, $0065, $002E, $0078, $004E, $002D, $002D, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $0041, $0020, $006E, $006F, $0077])), U([$0053, $0065, $0065, $0020, $0073, $0069, $0074, $0065, $002E, $0020, $0058, $004E, $002D, $002D, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $017F, $0041, $0020, $006E, $006F, $0077]));
 
   { The two branches of the abbreviation fold, pinned because the 2026-08-06 speed work
     added a fast path and a pre-filter that nothing in this suite could have caught.

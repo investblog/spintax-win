@@ -34,16 +34,25 @@ conditional proposal, struck.
             this port as the one that differed, and the owner chose the corpus (2026-09-16).
       - [x] Conditional truthiness over PCRE2's UCP `\s` (spec §5.7): U+0085 and U+180E blank,
             U+FEFF truthy. Three local checks had pinned JavaScript's answer.
-      - [ ] Post-process character classes as PCRE2 UCP (`\s`, `\d`, `\w`, `\b`; the decimal
-            shield stays ASCII) — 13 fixtures; and #79, a TLD in one case plus the punycode
-            class with U+017F/U+212A, and `\p{Ll}` after a block tag NOT case-folded — 5. This
-            reverses the charter's `/giu/` folded-predicate note for the domain patterns.
+      - [x] Post-process character classes as PCRE2 UCP, and #79's one-case TLD (spec §5.12):
+            all 18 failing `postprocess/*` fixtures pass, corpus `PASS=316 FAIL=13`. Five local
+            checks had pinned the ASCII reading and were rewritten from the reference's output;
+            fifteen added, two of them for a byte-stepping hazard the UCP class created, which a
+            mutation run confirmed they catch. Review found the UCP boundary had woken the
+            shields' quadratic (Cyrillic `а.` × 40 000: 81 ms → 75.8 s) and an old capitalizer
+            skip. The shields and capitalizers are linear now, and 80 000 differential strings
+            show 0 differences against the reference.
+      - [ ] Report upstream: the single-abbreviation lookbehind is still `giu` in the reference,
+            so U+0345 counts as a letter before an abbreviation where PCRE2 would not. Unmeasured
+            on PHP (spec §5.12).
       - [ ] #80: a reference anywhere in a raw `<config>`, and any whole `{?…}` directly in a
             construct, its config or a per-element separator, marks the re-read; a permutation
             element is its rendered text trimmed, an empty one dropped along with its
             separator — 13 fixtures. Touches the §5.9 prefilter.
-      - [ ] Probe the post-process and template-scan DoS shapes the reference measured (a long
-            email-local word, a dotted chain, `#set`-doubled `[<` / `{?a?` / `/#`). Not gated.
+      - [ ] Probe the remaining DoS shapes the reference measured. The post-process shields
+            and capitalizers are done (spec §5.12). Still open: the NUL-path restore (one
+            `StringReplace` per key), and the template scans (`#set`-doubled `[<` / `{?a?` /
+            `/#`, a `#set` value holding a long whitespace run). Not gated.
       - [ ] Release as a MINOR, on the owner's command.
 
 - [ ] **Make the render walk and the tree destructor iterative.** (decided by the

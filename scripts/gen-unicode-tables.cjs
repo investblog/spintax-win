@@ -48,8 +48,23 @@ const isN = (cp) => /\p{N}/u.test(String.fromCodePoint(cp));
 // which have a differing uppercase. EMAIL/DOMAIN/SINGLE_ABBR are 'giu' too, where \p{L}
 // gains exactly one: U+0345. Steps 8, 9 and 11 are 'u'/'gu' and stay strict.
 // Two predicates, because the reference has two.
+// (2026-09-16: @spintax/core 0.8.0 dropped both folds from the post-process -- PCRE2 does not
+// fold a property under /i, and the domain patterns lost `i` altogether. The single-abbreviation
+// lookbehind is still 'giu' in the reference and still reads L folded. The tables stay: they are
+// public API through SpIsUniLowerFolded / SpIsUniLetterFolded.)
 const isLlFold = (cp) => /\p{Ll}/iu.test(String.fromCodePoint(cp));
 const isLFold = (cp) => /\p{L}/iu.test(String.fromCodePoint(cp));
+
+// PCRE2's UCP word class, which is what `\b` and `\w` mean in every post-process pattern the
+// plugin writes with /u: letters, numbers, non-spacing marks and connector punctuation
+// (PCRE2 10.43+, the PHP 8.4 the corpus measures). The reference spells it `UCP_WORD` in
+// internal/charclass.ts. One table rather than four lookups, because every word boundary asks.
+const isUcpWord = (cp) => /[\p{L}\p{N}\p{Mn}\p{Pc}]/u.test(String.fromCodePoint(cp));
+// `\d` under UCP: any decimal digit, in the two spacing lookaheads.
+const isNd = (cp) => /\p{Nd}/u.test(String.fromCodePoint(cp));
+// Upper and titlecase letters. A TLD is a label in ONE case (#79): the lower branch is L minus
+// these, the upper branch is L minus Ll, and Lm/Lo -- letters without case -- fit either.
+const isLuLt = (cp) => /[\p{Lu}\p{Lt}]/u.test(String.fromCodePoint(cp));
 
 // Uppercase, split into the two shapes Pascal needs: arithmetic runs, and the handful of
 // code points whose uppercase is more than one character (sharp s -> SS, ligatures, ...).
@@ -176,6 +191,9 @@ const l = ranges(isL);
 const n = ranges(isN);
 const llFold = ranges(isLlFold);
 const lFold = ranges(isLFold);
+const ucpWord = ranges(isUcpWord);
+const nd = ranges(isNd);
+const luLt = ranges(isLuLt);
 
 const out = [];
 out.push('{ GENERATED FILE -- DO NOT EDIT BY HAND.');
@@ -198,10 +216,17 @@ out.push('');
 out.push(emitRanges('N_RANGES', n, 'Unicode N: all numbers (identical under /iu)'));
 out.push('');
 out.push(emitRanges('LL_FOLD_RANGES', llFold,
-  'Unicode Ll under case folding (/iu) -- used by the block-tag capitalization step ONLY'));
+  'Unicode Ll under case folding (/iu) -- public API only (SpIsUniLowerFolded)'));
 out.push('');
 out.push(emitRanges('L_FOLD_RANGES', lFold,
-  'Unicode L under case folding (/iu) -- email / domain / single-abbrev rules'));
+  'Unicode L under case folding (/iu) -- the single-abbreviation lookbehind'));
+out.push('');
+out.push(emitRanges('UCP_WORD_RANGES', ucpWord,
+  'PCRE2 UCP word characters: L, N, Mn, Pc -- the post-process word boundary'));
+out.push('');
+out.push(emitRanges('ND_RANGES', nd, 'Unicode Nd: decimal digits -- UCP \\d'));
+out.push('');
+out.push(emitRanges('LU_LT_RANGES', luLt, 'Unicode Lu and Lt -- the one-case TLD rule'));
 out.push('');
 out.push(emitRuns('UPPER_RUNS', upRuns));
 out.push('');

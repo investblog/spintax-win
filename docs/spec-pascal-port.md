@@ -118,9 +118,10 @@ Two things about it are easy to get wrong and are written down because they were
   capitalises inside `example.com` and after `e.g.`; `mailto:` must be shielded before
   the email rule or the address is carved out from under its prefix; the opener must bind
   to its word before capitalization, or the capitalizer sees a space.
-- **The reference does not use one flag set.** `CAP_AFTER_BLOCK_RE`, `EMAIL_RE`,
-  `DOMAIN_RE` and `SINGLE_ABBR_RE` are `/giu/`, where property escapes are case-folded;
-  the rest are strict. See §7 hazard 6.
+- **The classes are PCRE2's UCP ones, not JavaScript's and not ASCII** (since 2026-09-16,
+  §5.12). Whitespace takes NBSP and NEL, the word boundary sees every script, the spacing
+  digit is any `Nd`, a TLD is one case, and the lowercase test is strict everywhere. The
+  decimal shield alone is ASCII. See §7 hazard 5.
 - **The stage runs BEFORE the sentinel restore, so `neutralize` does not protect against
   it.** Neutralize shields structural characters from the PARSER; by the time the cosmetic
   passes run, a neutralized span is ordinary text to them, and only the characters that are
@@ -1462,6 +1463,106 @@ the reference itself aborts on the heap.
 regression that made an unpicked branch raise again fails there — while the numbers live here,
 the same arrangement §5.6 uses for its nesting-cost table.
 
+### 5.12 The post-process reads characters the way PHP does
+
+`@spintax/core` 0.8.0 (2026-09-13) and the unreleased #79 on its `main` moved the cosmetic stage
+to the classes of the PHP engines, measured on both of them. This port had copied the
+reference's belief that the plugin's patterns were ASCII ("no PCRE_UCP") and its JavaScript
+case folding, so it inherited every defect: `и т.д.` rendered `И т. Д.`, `пример.рф` rendered
+`пример. Рф`, and a no-break space before a comma survived. The corpus added 24
+`postprocess/*` fixtures; 18 failed here, and all 18 pass.
+
+| site | before | now |
+|---|---|---|
+| whitespace, every pass but step 6 | ASCII six | `UcpSpaceAt`: PCRE2 UCP, NBSP / NEL / U+180E in, U+FEFF out |
+| word boundary: email end, domain both ends, multi-dot abbreviation start | ASCII `\w` | `IsUcpBoundaryAt` / `PrecededByUcpWord`: L, N, Mn, Pc |
+| decimal shield | ASCII | unchanged — PHP writes it without `/u` |
+| digit in the two spacing lookaheads | `0-9` | `Nd` |
+| domain label letters | folded L | strict L |
+| TLD | a letter, then letters / digits / hyphens | ONE case (#79): L minus Lu/Lt, or L minus Ll; caseless scripts fit either |
+| punycode TLD | `[a-zA-Z0-9-]`, counted in bytes | plus U+017F and U+212A, counted in code points |
+| email local part | ASCII | plus U+017F and U+212A (PCRE2's caseless `[a-z]`) |
+| lowercase after a block tag | folded Ll | strict Ll; only the tag NAME is caseless, U+212A included |
+| single-abbreviation lookbehind | folded L | unchanged — the reference still writes it `giu` |
+
+Three new generated tables carry it (`UCP_WORD_RANGES`, `ND_RANGES`, `LU_LT_RANGES`), from Node
+24's Unicode 17.0 — the regenerated file is byte-identical to the old one in every existing
+table. **The accepted cost of #79**, pinned by the corpus so nobody files it: a Title-case second
+half reads as a sentence, `Yandex.Money` renders `Yandex. Money` and `info@example.Com` is not
+shielded.
+
+**A byte-string hazard the UCP class created.** `SpCodePointAt` decodes a stray UTF-8
+continuation byte to its own value, and `$85` and `$A0` are NEL and NBSP. Under the ASCII class
+that was harmless; under UCP, a pass stepping one byte at a time sees whitespace inside U+0405
+(`D0 85`) or U+0420 (`D0 A0`) and deletes half of the letter before punctuation. Every pass that
+tests the class now steps by code point, `ShieldPass` included, and two local checks pin it —
+confirmed by mutation: the byte-stepping version fails exactly those two. The UTF-16 build has
+no continuation units and cannot see it — the same shape as the Spanish-opener defect recorded
+at step 7a of `SpacingPasses`, where `$BF` read as an inverted question mark.
+
+Local suite: all 39 post-process checks were re-measured against the reference; five had pinned
+the ASCII reading and were rewritten from its output, and fifteen were added for shapes the
+corpus does not carry (U+180E, an Arabic-Indic digit, a Kelvin sign in a tag name and in an email,
+a combining mark and U+203F as word characters, the punycode code-point count past 59, and the
+four lead-boundary shapes below, which all fail against a mutant restoring the old skip). Cost on
+ordinary text, 1 MB best of three: Russian prose 125 → 141 ms, English 156 → 172, HTML 125 → 141
+(measured before the linearity work below). The reference paid a third on shield-heavy text for
+the same change.
+
+**The UCP boundary woke a dormant quadratic, so the shields are linear in the same change.**
+`ShieldPass` tries a scanner at every start, and the email and domain scanners walk a whole run
+from each one. Under the ASCII boundary a non-Latin start was rejected at once, so only Latin
+runs paid; under UCP every script does. Found by review before commit, one render of a single
+line:
+
+| shape | `v0.9.0` | UCP, first cut | now | reference |
+|---|---|---|---|---|
+| Cyrillic letter + `.` × 40 000 | 81 ms | 75.8 s | < 16 ms | 14 ms |
+| Cyrillic letter + `-` × 40 000 | 68 ms | 18.0 s | 16 ms | 4 ms |
+| U+017F × 40 000 (email local part) | 63 ms | 1.7 s | 16 ms | 3 ms |
+| `a.` × 40 000 (ASCII — quadratic in every release) | 48.5 s | 68.8 s | < 16 ms | 4 ms |
+
+The fix is the reference's own argument, not a new one. A scanner may return a NEGATIVE length,
+meaning "no match here nor anywhere in the next that many code units", and `ShieldPass` copies
+the stretch. Email: every start inside one run of local-part characters reaches the same `@` or
+none, so a failed run is skipped whole. Domain: an attempt that fails at the start of a chain of
+labels fails at every later start in it — prefix the chain's own labels to a later match and it
+matches here — so a failure skips the chain. The chain argument has one exception, which the
+reference's scanner shares: a later start whose own label begins `xn--` is not reachable by
+prefixing, so `a-xn--b.com` shields `b.com` here and `xn--b.com` in the plugin. Shield level
+only — the four characters left out cannot start a lead and no pass can alter them — and
+measured as such in review: 48 shield-level differences over 40 025 adversarial strings, zero
+output differences.
+
+At 640 000 repetitions every run shape measured renders in 0.2–0.6 s and scales linearly.
+
+**And a capitalizer defect as old as the stage, found by the same review.** After a sentence end
+or a line break, steps 9 and 11 skipped the whole lead when no lowercase letter followed it. The
+regex resumes ONE character after the boundary, so a `.` or a line break inside a tag in that lead
+is a boundary of its own: `Done. <img alt="Hello. world">` keeps `world` lower case here and
+capitalises it in the reference and PHP. UCP made it more reachable, since NBSP, NEL and U+2028
+now extend a lead. Resuming inside the lead with a fresh `ScanLead` per boundary would be
+quadratic on a run of line breaks, so `IndexLeads` builds the reference's index instead: the lead
+end for every code-point start and the next `>` for every position, once per pass. The block-tag
+test uses the same `>` index, and that removed two quadratics nobody had filed: at 640 000
+repetitions `<p` went from **143.9 s to 374 ms** and `.<` from **194.1 s to 405 ms**. The index
+costs three Integer arrays per pass, about 12 bytes per code unit while a pass runs.
+
+**Verified by differential.** 80 000 generated post-process strings over two seeds (Latin, Cyrillic
+and CJK letters, titlecase and modifier letters, U+0301 / U+203F / U+017F / U+212A, Arabic-Indic
+digits, every space the dialects disagree on, `.,;:!?…-@%+/`, tags and attributes, openers, URL
+schemes, abbreviations). Each string went through the reference and through an FPC probe from
+this tree: **0 differences**. The controls: `v0.9.0` differs on 15 419 and 15 324, and a mutant
+that restores the lead skip differs on 134 and 129. The generator's first cut produced negative
+indices and filled most strings with the word `undefined`, a narrower alphabet than intended.
+That was caught by reading its output, and every number above comes from the corrected run.
+The review's own run was 40 046 strings, 0 differences once the lead skip was patched.
+
+Recorded for the family, not changed here: the single-abbreviation lookbehind is still `giu` in
+the reference, where U+0345 counts as a folded letter. PCRE2 does not fold properties, so PHP
+probably shields `St.` after U+0345 where the reference and this port do not. Not measured: no
+PHP on this machine.
+
 ## 6. Trust model
 
 `SpNeutralize` is a utility the **host** applies to data-derived (T2) input. The engine
@@ -1496,12 +1597,14 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
    checks and passes silently without them. Suppress checks around such code with `$IFOPT`,
    so a host that wants them keeps them everywhere else. `build.sh` compiles the local
    suite a second time with `-Co -Cr`, which is what catches this.
-5. **The reference does not use one regex flag set.** `EMAIL_RE`, `DOMAIN_RE`,
-   `SINGLE_ABBR_RE` and `CAP_AFTER_BLOCK_RE` carry `/giu/`; the rest are `/gu/` or `/u/`.
-   Under `/iu` a property escape is CASE-FOLDED: Ll gains 1446 code points (32 with a
-   differing uppercase) and L gains U+0345. Use `SpIsUniLowerFolded` /
-   `SpIsUniLetterFolded` for those rules and the strict predicates everywhere else.
-   Check the flags before porting any regex; this was caught in review, not by the corpus.
+5. **A class is decided by the ORIGIN's regex dialect, then spelled as the reference spells
+   it.** PHP compiles a `/u` pattern with PCRE2_UCP (`\s`, `\d`, `\w`, `\b` Unicode) and does
+   not fold a property escape under `/i`; a pattern without `/u` is ASCII. JavaScript agrees
+   with neither, which is how the reference, and this port after it, read the post-process as
+   ASCII and folded (§5.12). This hazard used to say "use the folded predicates for the `/giu/`
+   rules" — a faithful reading of the JavaScript and a wrong one of the contract. Only the
+   single-abbreviation lookbehind still reads letters folded, because the reference still
+   writes it `giu`. Check the PHP flags before porting any pattern.
 6. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
    reference handles — the lesson the Python port already paid for. `ParseSequence` /
    `RenderNodes` are the places to watch.
