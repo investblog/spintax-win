@@ -16,62 +16,33 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
 and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
 recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
-walk reachable, which is the **render walk** item further down — the catch-up below was put
-ahead of it on the owner's call. Two things left this list on 2026-09-12 and are in
-Done: the `plural.count-macro` multiplicity question, decided (and REVERSED six days later,
-see the catch-up), and the value-equality conditional proposal, struck.
+walk reachable, which is the **render walk** item below — it was deferred once, behind the
+0.8.0 catch-up, on the owner's call. That catch-up is Done and released as `v0.10.0`
+(2026-09-16); the two sub-items that outlived it lead this list. Two things left on
+2026-09-12 and are in Done: the `plural.count-macro` multiplicity question, decided — and
+REVERSED four days later by the catch-up, which is why the Done entry contradicts the code —
+and the value-equality conditional proposal, struck.
 
-- [ ] **Catch up with `@spintax/core` 0.8.0 and the corpus on `spintax-js` main** (opened
-      2026-09-16, ahead of the render walk below by the owner's call). The unchanged tree
-      (`e169363`) measured `PASS=296 FAIL=33 SKIP=4` against today's corpus, identically in CI
-      (a re-run of the last `main` job, since CI's corpus checkout is unpinned) and locally.
-      In order:
-      - [x] The runner asserts `diagnosticCount` (spintax-js#74) — exact count per code. It
-            turned `validate/plural-count-macro-per-reference` red (`want=3 got=1`) while
-            `validate/cycle-diamond-terminates` (22) stayed green, so the check fails and
-            passes where it should.
-      - [x] `plural.count-macro` once per tainted REFERENCE (spintax-js#73). This REVERSES the
-            "per block" entry in Done below: the family's corpus pinned per reference, naming
-            this port as the one that differed, and the owner chose the corpus (2026-09-16).
-      - [x] Conditional truthiness over PCRE2's UCP `\s` (spec §5.7): U+0085 and U+180E blank,
-            U+FEFF truthy. Three local checks had pinned JavaScript's answer.
-      - [x] Post-process character classes as PCRE2 UCP, and #79's one-case TLD (spec §5.12):
-            all 18 failing `postprocess/*` fixtures pass, corpus `PASS=316 FAIL=13`. Five local
-            checks had pinned the ASCII reading and were rewritten from the reference's output;
-            fifteen added, two of them for a byte-stepping hazard the UCP class created, which a
-            mutation run confirmed they catch. Review found the UCP boundary had woken the
-            shields' quadratic (Cyrillic `а.` × 40 000: 81 ms → 75.8 s) and an old capitalizer
-            skip. The shields and capitalizers are linear now, and 80 000 differential strings
-            show 0 differences against the reference.
-      - [ ] Report upstream: the single-abbreviation lookbehind is still `giu` in the reference,
-            so U+0345 counts as a letter before an abbreviation where PCRE2 would not. Unmeasured
-            on PHP (spec §5.12).
-      - [x] #80 (spec §5.13): a conditional marks the re-read on sight, the `<config>` header is
-            read raw, and an element that renders empty is dropped with its separator. All 13
-            fixtures pass — **corpus `PASS=329 FAIL=0 SKIP=4`, the whole thing**. 140 000
-            generated templates × 3 RNG strategies (420 000 renders) show 0 differences against
-            the reference, against ~12 400 per 20 000 for the commit before, which is the
-            control. One local check flipped: it was the control for the narrow key. Review
-            found two defects in it — marking on sight retains a body per level, so a 1.6 MB
-            template aborted, and `ExpandVarsFixpoint` advanced one character past an
-            unsubstituted token, so `%nope%b%nope%` could render a name nobody wrote.
-      - [x] Retention made linear, and the 64 MB cap that was its first fix removed (`982ce78`,
-            spec §5.13). The cap was reachable at ordinary sizes — the reach is document SIZE ×
-            marked depth — and review built the 1.4 MB template on which it silently rendered a
-            raw `|` into finished text, which is #78's own defect. A descendant of a retained
-            construct now takes no body of its own; the prefilter is the authority computed
-            earlier, so `pend` and the finalize pass are gone. Peak 105 → 43 MB.
-      - [ ] Probe the remaining DoS shapes the reference measured. The post-process shields
-            and capitalizers are done (spec §5.12). Still open: the NUL-path restore (one
-            `StringReplace` per key), and the template scans (`#set`-doubled `[<` / `{?a?` /
-            `/#`, a `#set` value holding a long whitespace run). Not gated.
-      - [ ] Release as a MINOR, on the owner's command.
+- [ ] **Report upstream: U+0345 before an abbreviation.** The single-abbreviation lookbehind
+      is still `giu` in the reference, so a combining iota subscript counts as a letter there
+      where PCRE2 would not fold the property and the plugin would not. Unmeasured on PHP,
+      which is the first thing to do — the question is whether the reference or the plugin is
+      the odd one out (spec §5.12). Left over from the 0.8.0 catch-up, which shipped without
+      it because it is a family question, not a port defect.
+
+- [ ] **Probe the remaining DoS shapes the reference measured.** The post-process shields and
+      capitalizers were done in the catch-up (spec §5.12) and parse retention in `982ce78`.
+      Still unmeasured here: the NUL-path restore (one `StringReplace` per key) and the
+      template scans (`#set`-doubled `[<` / `{?a?` / `/#`, a `#set` value holding a long
+      whitespace run). Not gated, and worth doing with the peak sampler rather than the clock —
+      two of this session's three cost defects were invisible to timing.
 
 - [ ] **Parse over SPANS of one string instead of copies.** The MEMORY half is closed —
       retention is one body per marked chain since `982ce78` (spec §5.13) — so what waits on
       this is the nesting TIME cost below, plus the copies themselves: every retained body is
       still a copy of a slice of the template, where the reference holds two indices. The
-      reference does it with one side table built per text (`internal/text-index.ts`).
+      reference does it with one side table built per text (`internal/text-index.ts`), which is
+      the same table the item below needs, so the two are one job.
 
 - [ ] **Deep nesting is linear in the reference now, and quadratic here.** `@spintax/core` 0.8.0
       answers a 16 000-level construct chain in 111 ms where this port takes 4.8 s (spec §5.13);
@@ -120,6 +91,53 @@ see the catch-up), and the value-equality conditional proposal, struck.
 
 ## Done
 
+- [x] **Caught up with `@spintax/core` 0.8.0 and the corpus on `spintax-js` main** (opened and
+      closed 2026-09-16, ahead of the render walk by the owner's call; **released as
+      `v0.10.0`** on `0a61f40`). The unchanged tree (`e169363`) measured
+      `PASS=296 FAIL=33 SKIP=4` against that day's corpus, identically in CI (a re-run of the
+      last `main` job, since CI's corpus checkout is unpinned) and locally; the whole corpus
+      passes now. Two sub-items outlived it and are Open above: the U+0345 question upstream
+      and the remaining DoS probes. What was done, in order:
+      - [x] The runner asserts `diagnosticCount` (spintax-js#74) — exact count per code. It
+            turned `validate/plural-count-macro-per-reference` red (`want=3 got=1`) while
+            `validate/cycle-diamond-terminates` (22) stayed green, so the check fails and
+            passes where it should.
+      - [x] `plural.count-macro` once per tainted REFERENCE (spintax-js#73). This REVERSES the
+            "per block" entry in Done below: the family's corpus pinned per reference, naming
+            this port as the one that differed, and the owner chose the corpus (2026-09-16).
+      - [x] Conditional truthiness over PCRE2's UCP `\s` (spec §5.7): U+0085 and U+180E blank,
+            U+FEFF truthy. Three local checks had pinned JavaScript's answer.
+      - [x] Post-process character classes as PCRE2 UCP, and #79's one-case TLD (spec §5.12):
+            all 18 failing `postprocess/*` fixtures pass, corpus `PASS=316 FAIL=13`. Five local
+            checks had pinned the ASCII reading and were rewritten from the reference's output;
+            fifteen added, two of them for a byte-stepping hazard the UCP class created, which a
+            mutation run confirmed they catch. Review found the UCP boundary had woken the
+            shields' quadratic (Cyrillic `а.` × 40 000: 81 ms → 75.8 s) and an old capitalizer
+            skip. The shields and capitalizers are linear now, and 80 000 differential strings
+            show 0 differences against the reference.
+      - [x] #80 (spec §5.13): a conditional marks the re-read on sight, the `<config>` header is
+            read raw, and an element that renders empty is dropped with its separator. All 13
+            fixtures pass — **corpus `PASS=329 FAIL=0 SKIP=4`, the whole thing**. 140 000
+            generated templates × 3 RNG strategies (420 000 renders) show 0 differences against
+            the reference, against ~12 400 per 20 000 for the commit before, which is the
+            control. One local check flipped: it was the control for the narrow key. Review
+            found two defects in it — marking on sight retains a body per level, so a 1.6 MB
+            template aborted, and `ExpandVarsFixpoint` advanced one character past an
+            unsubstituted token, so `%nope%b%nope%` could render a name nobody wrote.
+      - [x] Retention made linear, and the 64 MB cap that was its first fix removed (`982ce78`,
+            spec §5.13). The cap was reachable at ordinary sizes — the reach is document SIZE ×
+            marked depth — and review built the 1.4 MB template on which it silently rendered a
+            raw `|` into finished text, which is #78's own defect. A descendant of a retained
+            construct now takes no body of its own; the prefilter is the authority computed
+            earlier, so `pend` and the finalize pass are gone. Peak 105 → 43 MB.
+      - [x] Comments that still described the deleted finalize pass (`0a61f40`). Three of them,
+            in the tree for one commit. Wrong reasoning beside right code is what the next
+            change is built on — this port exported exactly that mistake to two sibling engines
+            once.
+      - [x] Released as `v0.10.0` on the owner's command (2026-09-16). Tag-driven; CI green on
+            ubuntu and windows; the body was written by hand afterwards, because
+            `--generate-notes` lists PRs and this repo commits straight to `main`.
+
 - [x] **Struck: a value-equality conditional to shorten the GSA tag encoding** (2026-09-12,
       by the owner). **Do not re-raise it.** The item said `{?VAR?a|b}` tests only whether a
       variable is SET, so the converter spells an n-way tag group as n−1 weighted definitions
@@ -140,7 +158,8 @@ see the catch-up), and the value-equality conditional proposal, struck.
 - [x] **`plural.count-macro`: one diagnostic per BLOCK, decided** (2026-09-12, by the owner
       of the family contract, for [spintax-js#73](https://github.com/investblog/spintax-js/issues/73)).
       **REVERSED 2026-09-16:** the corpus pinned one per tainted REFERENCE through
-      `diagnosticCount`, and this port now emits that (see Open). Kept below as the record of
+      `diagnosticCount`, and this port now emits that (see the 0.8.0 catch-up above, released
+      as `v0.10.0`). Kept below as the record of
       why per block looked right; its cursor warning is what the new code honours.
       This port emits one per block and `@spintax/core` / `spintax-core` one per tainted
       reference — 200 references in one count slot gave 200 diagnostics at a single anchor

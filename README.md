@@ -100,16 +100,16 @@ cross-engine gate. Measured on this port:
 
 | corpus file            | cases | passed | note                                  |
 |------------------------|-------|--------|---------------------------------------|
-| render-semantics       | 99    | 99     | plurals, conditionals, permutations, variables, set/def, the text splice of a variable inside a construct |
-| validate               | 70    | 70     | bracket/directive/permutation/plural/variable diagnostics |
-| render-postprocess     | 43    | 43     | full 12-step pipeline                 |
+| render-semantics       | 124   | 124    | plurals, conditionals, permutations, variables, set/def, the text splice of a variable, a conditional or a config into a construct |
+| validate               | 77    | 77     | bracket/directive/permutation/plural/variable diagnostics, with exact counts |
+| render-postprocess     | 67    | 67     | full 12-step pipeline, read as PCRE2 reads it |
 | render-deterministic   | 16    | 16     | variable substitution, enumeration selection |
 | comments               | 13    | 13     | `/# … #/` stripping, including the unterminated opener |
 | extract                | 12    | 12     | ref / set / def / include enumeration |
 | neutralize             | 10    | 10     | T2 shielding round-trip               |
 | render-rng-selection   | 10    | 10     | selection semantics under injected RNG |
 
-Totals: **`PASS=273 FAIL=0 SKIP=4`** over 277 cases. Only `kind:rng` render cases
+Totals: **`PASS=329 FAIL=0 SKIP=4`** over 333 cases. Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 
