@@ -1794,11 +1794,34 @@ not survive the last one — a stack overflow inside a destructor takes the proc
 splice row at 200 000 was not run: its clock is the parse's quadratic, not the walk's depth, and
 600 s at 100 000 buys nothing the 100 000 row has not already said.
 
-**Peak memory FELL**, which is the measurement that could have gone the other way: the frame array,
-each frame's buffer and the retained `PendDone` strings are new memory held for the depth of the
-tree, so the peak was sampled rather than the clock (§5.13's lesson). At 50 000 levels an
-enumeration chain went 39 → **32 MB** and a permutation chain 47 → **37 MB**; the 200 000-level
-enumeration holds 103 MB. Seven or eight RTL frames per level cost more than one record.
+**Memory was the measurement that could have gone the other way**, since the frame array, each
+frame's buffer and the retained `PendDone` strings are new memory held for the depth of the tree —
+so the peak was sampled rather than the clock (§5.13's lesson). It did not go the other way, but
+the honest answer is smaller than the first one written here, and **the instrument is the reason**.
+
+Peak **working set** is not a property of the program: it is what the OS keeps resident, so it
+moves with the machine's memory pressure. A first pass sampled it once per shape and recorded
+39 → 32 MB for an enumeration chain and 47 → 37 MB for a permutation chain. Neither number
+reproduced: the same enumeration chain measured 42.5, 42.5 and 40.2 MB on the recursive build in
+three consecutive runs, and one run of the same command reported 27. Peak **private bytes** (commit
+charge) is the stable one. Both, at 50 000 levels, three runs each:
+
+| chain | recursive, private | iterative, private | recursive, working set | iterative, working set |
+|---|---|---|---|---|
+| enumeration | 21.5 / 21.4 / 34.7 | 21.8 / 21.2 / 23.2 | 42.5 / 42.5 / 40.2 | 31.7 / 31.7 / 31.9 |
+| conditional | 21.8 / 21.5 / 21.7 | 22.5 / 22.4 / 22.0 | 27.1 / 34.8 / 27.0 | 31.7 / 31.6 / 27.3 |
+| permutation | **36.0 / 36.0 / 36.0** | **31.2 / 31.2 / 31.2** | 46.9 / 46.9 / 46.9 | 36.5 / 36.5 / 36.5 |
+
+So: a **permutation** chain costs reproducibly less on both instruments — 36.0 → 31.2 MB committed,
+identical to the tenth of a megabyte across three runs, because a permutation's elements were held
+in Pascal frames and are now `PendDone` strings on one frame. An **enumeration** chain commits the
+same and keeps a third fewer pages resident. A **conditional** chain shows no change worth stating,
+and its working-set column is noise in both builds. The 200 000-level enumeration holds 103 MB.
+
+**The general claim "peak memory fell" is therefore not supported for every shape** — it is
+supported for the permutation, and for nothing else beyond residency. A single sample of peak
+working set is not evidence; if a claim about memory is worth making, it is worth three runs of
+commit charge.
 
 **Verified as a pure refactor, which is the only acceptable result for it.** 180 000 generated
 templates × 6 configurations (first / last / **sequence** RNG × post-process off and on) =

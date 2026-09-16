@@ -71,8 +71,13 @@ and the value-equality conditional proposal, struck.
       - **Measured.** Every chain shape — enumeration, conditional, permutation, splice, and a
         tree built and freed without ever being rendered — clears 50 000 / 60 000 / 100 000 /
         200 000; the recursive build raised `EStackOverflow` at 60 000 and did not survive it
-        in the destructor. Peak memory FELL, which is the number that could have gone the other
-        way: 39 → 32 MB for an enumeration chain at 50 000, 47 → 37 MB for a permutation chain.
+        in the destructor. Memory did not go the other way, which it could have — but the first
+        numbers written here (39 → 32 MB and 47 → 37 MB) were single samples of peak WORKING SET,
+        and that is what the OS keeps resident, not what the program asks for: the same command
+        reported 42.5, 42.5, 40.2 and once 27 MB. On commit charge, three runs each, only the
+        permutation chain moves reproducibly — 36.0 → 31.2 MB, identical to the tenth across
+        runs; an enumeration chain commits the same and keeps a third fewer pages resident; a
+        conditional chain shows nothing. Spec §5.14 has the table.
       - **Proof it is a refactor.** 180 000 templates × 6 configurations = 1 080 000 renders,
         byte-identical on four seeds, corpus generated once and fed to both builds. Four control
         mutants differ of 45 000: a one-option enumeration drawing again (18 224), the
