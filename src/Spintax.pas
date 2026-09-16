@@ -298,33 +298,6 @@ const
     leaves what it could not afford as a literal %name%. }
   SP_RENDER_EXPANSION_BUDGET = 1024 * 1024;
 
-  { How many code units of construct BODIES one parse may retain for the sec.5.9/5.13 re-read.
-
-    A marked construct keeps its inner text (TNode.Raw), and a body contains every body below
-    it, so a chain of marked constructs costs Theta(n^2) memory. The reference pays nothing
-    for this -- its `raw` is a SPAN of the one template string -- while this parser hands each
-    level its own copy. Ordinary templates retain a few KB; the shape that hurts is nesting
-    with a mark at every level, which #80 made much easier to write because a conditional now
-    marks on sight: 8 000 levels of a 472 KB template took 1.8 GB and aborted with
-    EOutOfMemory, which spec sec.9.2 says never happens on content (found by review).
-
-    Past the cap a construct keeps no body and renders the tree it was parsed into, which is
-    the PRE-#80 answer for it -- so the cap is a real divergence, not a free one, and the only
-    thing that makes it acceptable is how far out of reach it is. Measured: an engine built
-    with the cap at 1 KB differs from the reference on 110 and 120 of 20 000 generated
-    templates, while at 64 MB none of those 40 000 comes near it and the differential is 0.
-    (An earlier draft of this comment argued the refusals are always the harmless ones --
-    deepest first, where an ancestor's own re-read decides the subtree. The 1 KB run is what
-    refuted it: bodies are refused across SIBLINGS too, and a sibling that loses its body
-    renders the old output. The argument may still hold for descendants alone; it is not what
-    this cap does, so it is not claimed here.)
-
-    Not parity-gated, for the same reason the expansion budget above is not: the engines run
-    out of different resources in different places. The proper fix is to parse over SPANS of
-    one string instead of copies -- then a body costs two integers and the cap can go -- and
-    that is in the backlog with the reference's own version of it. }
-  SP_PARSE_RAW_BUDGET = 64 * 1024 * 1024;
-
   PHP_WS = [' ', #9, #10, #13, #0, #11];
 
 { Unicode tables for the post-process stage, generated from the reference's own Unicode
@@ -1543,40 +1516,11 @@ begin
   end;
 end;
 
-{ Does one option list hold, at its TOP level, something the engines see as text before they
-  split the construct? A `%var%`, because expansion runs over the whole text before any
-  bracket is read; or a CONDITIONAL, because Stage 6a resolves it there and its taken branch
-  lands in the body ahead of the split -- on sight, whatever the branches hold
-  (spintax-js#80). Nested enumerations / permutations / plurals are not entered: a value
-  inside one is spliced when THAT construct renders, and a `|` it carries belongs to it.
-
-  Flat, because a conditional marks rather than being descended into. Until #80 this drained
-  a stack of conditional branches looking for a reference, which found the one effect a
-  reference has and missed the three a branch has on its own: a pipe that separates options,
-  an empty branch that leaves an element to drop, and whitespace at the branch's edge. }
-function ListHasTextualMark(list: TNodeList): Boolean;
-var i: Integer;
-begin
-  for i := 0 to list.Count - 1 do
-    if (list[i].Kind = nkVariable) or (list[i].Kind = nkConditional) then Exit(True);
-  Result := False;
-end;
-
-function EnumHasDirectReference(node: TNode): Boolean;
-var i: Integer;
-begin
-  for i := 0 to node.EnumOptions.Count - 1 do
-    if ListHasTextualMark(node.EnumOptions[i]) then Exit(True);
-  Result := False;
-end;
-
-function PermHasDirectReference(node: TNode): Boolean;
-var i: Integer;
-begin
-  for i := 0 to node.PermOptions.Count - 1 do
-    if ListHasTextualMark(node.PermOptions[i].Nodes) then Exit(True);
-  Result := False;
-end;
+{ The node-walking authority that used to decide these marks after the parse -- "does an
+  option hold, at its TOP level, an nkVariable or an nkConditional" -- lived here until
+  2026-09-16. It is gone because MayHoldDirectReference answers the same question over the
+  same text before the children exist; ParseSequence's header has the reading that shows the
+  two walks make the same three decisions at the same positions. }
 
 { forward }
 function ParseSequence(const text: string): TNodeList; forward;
@@ -1792,40 +1736,62 @@ end;
   reachable from Result, which is what makes freeing it on an exception complete, and the
   order jobs are drained in cannot matter -- each one writes only into its own list.
 
-  The direct-reference marks cannot be decided during the scan, because a construct's
-  children do not exist yet. A construct whose body PASSES the MayHoldDirectReference
-  prefilter is recorded in `pend` with Raw set tentatively, and one flat pass at the end
-  clears Raw on those that turn out not to hold one. EnumHasDirectReference and
-  PermHasDirectReference read the construct's OWN options only, so by then they have
-  everything they need. The prefilter is not a nicety: retaining a body per level is the
-  same quadratic the recursion had, so only bodies that could possibly need one are kept. }
+  The sec.5.9/5.13 mark is decided HERE, before a construct's children exist, and it is
+  final. Until 2026-09-16 it could not be: the mark was set tentatively from the
+  MayHoldDirectReference prefilter, every candidate went into a `pend` list, and one flat
+  pass at the end asked the authority -- EnumHasDirectReference / PermHasDirectReference over
+  the parsed nodes -- and cleared Raw on those that turned out not to hold a mark. That pass
+  never cleared anything, because the two are the SAME predicate over the SAME strings:
+
+    - each option's parse job is pushed with exactly the text the prefilter is given
+      (parts[i] for an enumeration, the PHP-trimmed part for a permutation);
+    - ScanInto and the prefilter walk that text with the same three decisions -- a matched
+      `{` is a construct (a conditional if RecognizeConditional says so over the same span,
+      otherwise an enumeration or a plural, neither of which marks), a matched `[` is a
+      permutation, and `%` + one or more IsAsciiWord characters + `%` is a reference;
+    - an unmatched bracket and a `%` that starts no token advance one character in both.
+
+  So the prefilter is not a NECESSARY condition that the authority then refines, which is how
+  it was introduced and described: it is the authority, computed earlier. Two things follow,
+  and both are why this was worth proving rather than leaving as a safety net. A retained body
+  is now certain at the moment it is taken, so a child can be told its ancestor already holds
+  the text it would have held (the Anc flag below). And the flat pass, `pend`, and the two
+  node-walking predicates are gone.
+
+  A DESCENDANT OF A RETAINED CONSTRUCT NEVER NEEDS ITS OWN RAW. If an ancestor's re-read
+  fires, its whole subtree is re-parsed out of the spliced text and these nodes never render;
+  if it does not fire, the passes that left the ancestor's body unchanged cannot change a
+  descendant's body either, because a descendant's body is a SUBSTRING of it and the passes
+  (conditionals, the variable fixpoint, conditionals) are the same text transforms -- and a
+  subtree frozen for running out of hops is frozen for the descendant too. So retention costs
+  one body per marked CHAIN instead of one per marked LEVEL, which is what removes the
+  quadratic rather than bounding it: the shapes that took 1.8 GB and aborted now peak at
+  40 MB. A 64 MB cap stood here for one day in its place and is gone with this; it was a
+  real divergence, and review built the 1.4 MB template on which it silently rendered the
+  pre-#80 output. }
 function ParseSequence(const text: string): TNodeList;
 type
   TParseJob = record
     Text: string;
     Target: TNodeList;
+    { Some ancestor of this job's text retained its body, so nothing in here needs to. }
+    Anc: Boolean;
   end;
 var
   jobs: array of TParseJob;
-  jobTop, fi: Integer;
-  pend: TList<TNode>;
+  jobTop: Integer;
   curText: string;
   curList: TNodeList;
-  fnode: TNode;
-  rawLeft: Integer;
-
-  { Charge one retained body against SP_PARSE_RAW_BUDGET; False means do not retain it. }
-  function TakeRawBudget(n: Integer): Boolean;
-  begin
-    Result := n <= rawLeft;
-    if Result then Dec(rawLeft, n);
-  end;
+  curAnc: Boolean;
 
   procedure PushJob(const t: string; target: TNodeList);
   begin
     if jobTop = Length(jobs) then SetLength(jobs, Length(jobs) * 2);
     jobs[jobTop].Text := t;
     jobs[jobTop].Target := target;
+    { Inherited, so the flag reaches a whole subtree and not only the children a retaining
+      construct marks itself. }
+    jobs[jobTop].Anc := curAnc;
     Inc(jobTop);
   end;
 
@@ -1847,7 +1813,7 @@ var
   { A braced construct: a conditional, a plural, or an enumeration. }
   procedure MakeBrace(const content: string; list: TNodeList);
   const PLURAL_PREFIX = 'plural ';
-  var head: TCondHead; sep, i: Integer; body, thenRaw, elseRaw: string;
+  var head: TCondHead; sep, i, startTop, kk: Integer; body, thenRaw, elseRaw: string;
       node: TNode; parts: TStringList; nl: TNodeList; keepRaw: Boolean;
   begin
     if (Length(content) > 0) and (content[1] = '?') then
@@ -1892,6 +1858,7 @@ var
       { Reserve once, so Add cannot reallocate and lose a list created but not yet held. }
       node.EnumOptions.Capacity := parts.Count;
       keepRaw := False;
+      startTop := jobTop;
       for i := 0 to parts.Count - 1 do
       begin
         nl := TNodeList.Create(True);
@@ -1911,32 +1878,25 @@ var
     finally
       parts.Free;
     end;
-    { Retaining the body is what the sec.5.9 splice needs, and it is NOT free: a construct
-      keeps its whole inner text until the finalize pass. Holding one per level is
-      quadratic in the document all over again -- the first cut of the iterative parser did
-      exactly that and bought a bigger constant rather than a better order, which is why
-      40 000 reference-free levels still died (Codex review). So prune on a cheap NECESSARY
-      condition first: a direct reference is literally a %name% inside this body, in an
-      option, a conditional branch or a separator, so a body with no such token anywhere
-      cannot have one. It cannot change the tree -- the finalize pass would have cleared
-      Raw on exactly these.
+    { Retaining the body is what the sec.5.9 splice needs, and it is NOT free: a body contains
+      every body below it, so holding one per LEVEL is quadratic in the document -- the same
+      quadratic the recursive parser had, which the first iterative cut moved into the tree
+      instead of removing (Codex review). Two things keep it linear. The scan above asks
+      MayHoldDirectReference of each option, which is this construct's own mark decided
+      exactly as the node walk would decide it (see the header); and a construct under an
+      already-retained ancestor takes nothing, because that ancestor's body contains this one.
 
-      What it buys is RETENTION, and only that. It is linear in a body's own level, but
-      over NESTED constructs the per-construct calls sum to Theta(n^2), because each one's
-      FindMatchingClose crosses its whole subtree; ScanInto's own FindMatchingClose gives
-      the parse that order on such input anyway, so this adds a constant and not an order
-      (spec sec.5.6 records that this engine and the reference are both quadratic on deep
-      nesting, and that upstream calls bounding such input a host job). What it does remove
-      is the Theta(n^2) MEMORY of holding one whole body per level, which is what the
-      recursion cost and what the tentative-Raw cut cost after it.
-
-      And a deep chain where every level really does carry a direct reference stays
-      quadratic in memory too -- the bodies are needed -- exactly as it does in the
-      reference engine. }
-    if keepRaw and TakeRawBudget(Length(content)) then
+      What remains quadratic is TIME over nested constructs -- each FindMatchingClose crosses
+      its subtree -- which the parse itself already pays through ScanInto, so this adds a
+      constant and not an order (spec sec.5.6: this engine and the reference are both
+      quadratic on deep nesting, and upstream calls bounding such input a host job). The
+      reference is no longer: 0.8.0 indexes one text and makes its children SPANS of it, which
+      is both why it is linear there and the shape of the backlog item here. }
+    if keepRaw and (not curAnc) then
     begin
-      node.Raw := content;   { tentative -- the finalize pass decides }
-      pend.Add(node);
+      node.Raw := content;
+      { Every job this construct just pushed, and everything they push in turn. }
+      for kk := startTop to jobTop - 1 do jobs[kk].Anc := True;
     end;
   end;
 
@@ -1944,7 +1904,7 @@ var
   var
     content, pendingSep, part, trimmed, sepInner, rt, innerTrim, trailingSep, header: string;
     parts: TStringList;
-    i, k, openPos, q: Integer;
+    i, k, openPos, q, startTop, kk: Integer;
     hasPending, hasTrailing, bail, looksHtml, keepRaw, textMarks: Boolean;
     opt: TPermOption;
     node: TNode;
@@ -1959,6 +1919,7 @@ var
       node.PermOptions.Capacity := parts.Count;
       pendingSep := ''; hasPending := False;
       keepRaw := False;
+      startTop := jobTop;
       for i := 0 to parts.Count - 1 do
       begin
         part := parts[i];
@@ -2035,10 +1996,11 @@ var
       angle-region tests were a false positive at every ancestor (Codex review, three rounds).
       Reading what the parse already produced avoids all of it.
 
-      A header or separator mark is DEFINITIVE, so the node does not join `pend`: the finalize
-      pass only decides the marks that depend on children. }
+      A header or separator mark was always DEFINITIVE; since the option marks are decided
+      here too, the whole decision is, and `textMarks` and `keepRaw` are one answer. }
+    if curAnc then Exit;   { an ancestor's retained body already contains this one }
     header := Copy(rawInner, 1, Length(rawInner) - Length(content));
-    textMarks := HoldsTextForReread(header);
+    textMarks := keepRaw or HoldsTextForReread(header);
     if not textMarks then
       for i := 0 to node.PermOptions.Count - 1 do
         if node.PermOptions[i].HasSeparator and
@@ -2049,12 +2011,8 @@ var
         end;
     if textMarks then
     begin
-      if TakeRawBudget(Length(rawInner)) then node.Raw := rawInner;
-    end
-    else if keepRaw and TakeRawBudget(Length(rawInner)) then
-    begin
-      node.Raw := rawInner;   { tentative -- the finalize pass decides }
-      pend.Add(node);
+      node.Raw := rawInner;
+      for kk := startTop to jobTop - 1 do jobs[kk].Anc := True;
     end;
   end;
 
@@ -2123,47 +2081,31 @@ var
   end;
 
 begin
-  { pend first, so a failure to allocate IT cannot strand the result list. }
-  Result := nil;
-  pend := TList<TNode>.Create;
+  Result := TNodeList.Create(True);
   try
-    Result := TNodeList.Create(True);
-    try
-      SetLength(jobs, 32);
-      jobTop := 0;
-      rawLeft := SP_PARSE_RAW_BUDGET;
-      PushJob(text, Result);
-      while jobTop > 0 do
-      begin
-        Dec(jobTop);
-        curText := jobs[jobTop].Text;
-        curList := jobs[jobTop].Target;
-        { Let the stack slot go before scanning, and the local right after: holding every
-          ancestor's copy alive is exactly what made the recursive parser quadratic. }
-        jobs[jobTop].Text := '';
-        ScanInto(curText, curList);
-        curText := '';
-      end;
-      { One flat pass, now that every construct has its children. }
-      for fi := 0 to pend.Count - 1 do
-      begin
-        fnode := pend[fi];
-        if fnode.Kind = nkEnumeration then
-        begin
-          if not EnumHasDirectReference(fnode) then fnode.Raw := '';
-        end
-        else if not PermHasDirectReference(fnode) then fnode.Raw := '';
-      end;
-    except
-      { Everything allocated above is reachable from Result by the time it can raise --
-        nodes are attached before they are filled, AttachNode owns the failure of the
-        attach itself, and the owner lists are reserved to final size. So this frees the
-        half-built tree completely. }
-      Result.Free;
-      raise;
+    SetLength(jobs, 32);
+    jobTop := 0;
+    curAnc := False;
+    PushJob(text, Result);
+    while jobTop > 0 do
+    begin
+      Dec(jobTop);
+      curText := jobs[jobTop].Text;
+      curList := jobs[jobTop].Target;
+      curAnc := jobs[jobTop].Anc;
+      { Let the stack slot go before scanning, and the local right after: holding every
+        ancestor's copy alive is exactly what made the recursive parser quadratic. }
+      jobs[jobTop].Text := '';
+      ScanInto(curText, curList);
+      curText := '';
     end;
-  finally
-    pend.Free;
+  except
+    { Everything allocated above is reachable from Result by the time it can raise --
+      nodes are attached before they are filled, AttachNode owns the failure of the
+      attach itself, and the owner lists are reserved to final size. So this frees the
+      half-built tree completely. }
+    Result.Free;
+    raise;
   end;
 end;
 

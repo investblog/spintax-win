@@ -1496,6 +1496,36 @@ begin
   Check('splice/single-separator-form-from-a-variable',
         RenderVars('[<%S%>a|b]', ['S'], ['+'], True), 'a+b');
 
+  { A construct nested inside another one still gets its own re-read. Since 2026-09-16 it does
+    NOT get its own retained body when an ancestor kept one: the ancestor's body contains it,
+    so either the ancestor's splice fires and re-parses this subtree out of the spliced text,
+    or nothing the same passes could do to this body could have changed the ancestor's either.
+    That is what keeps retention one body per marked CHAIN instead of one per marked LEVEL.
+
+    The first three have an UNMARKED ancestor, which must suppress nothing; the rest have a
+    marked one, including the case the soundness argument turns on -- an outer mark that is a
+    name nothing defines, whose own re-read therefore changes only what the inner one would
+    have changed anyway.
+
+    Both directions are mutant-confirmed rather than argued. Marking descendants WITHOUT the
+    ancestor keeping anything fails exactly the first three (and moves 1 504 and 1 559 of
+    50 072 generated templates, so the differential sees it too); letting the re-read's own
+    parse INHERIT the flag, so a construct re-parsed out of a spliced body never splices again,
+    fails all six and fifteen older splice checks with them. Expectations measured against
+    @spintax/core through its own pipeline. }
+  Check('splice/nested-mark-under-an-unmarked-ancestor',
+        RenderVars('{{%L%z}}', ['L'], ['x|y'], False), 'x');
+  Check('splice/nested-mark-under-an-unmarked-ancestor-last',
+        RenderVars('{{%L%z}}', ['L'], ['x|y'], True), 'yz');
+  Check('splice/nested-mark-in-a-permutation-chain',
+        RenderVars('[[%L%z]]', ['L'], ['x|y'], False), 'yz x');
+  Check('splice/mark-inside-a-marked-ancestor',
+        RenderVars('{%L%{%L%z}}', ['L'], ['x|y'], True), 'yyz');
+  Check('splice/marked-ancestor-whose-own-reference-is-undefined',
+        RenderVars('{%nope%{%L%z}}', ['L'], ['x|y'], False), '%nope%x');
+  Check('splice/conditional-ancestor-with-a-reference-below-it',
+        RenderVars('{{?f?q}{%L%z}}', ['L', 'f'], ['x|y', '1'], False), 'qx');
+
   { A separator is TEXT, so a bracket inside it is a character and not nesting. These are the
     shapes that broke every attempt to spot separators in the RAW text before retaining a
     body -- skipping the bracket pair hid the reference, the body was never retained, and the
