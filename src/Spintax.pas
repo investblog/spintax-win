@@ -1371,8 +1371,9 @@ type
     CondThen, CondElse: TNodeList;
     // plural
     PluralCountRaw, PluralFormsRaw: string;
-    { enumeration / permutation: the inner text, kept ONLY when the construct holds a direct
-      `%var%` reference (EnumHasDirectReference / PermHasDirectReference). The renderer
+    { enumeration / permutation: the inner text, kept ONLY when the construct carries a
+      sec.5.9/5.13 mark and no ancestor already kept a body containing it (the decision is
+      MayHoldDirectReference plus MakePerm's header and separator read). The renderer
       splices such a value into the body as TEXT and re-reads the construct
       (SpliceConstruct), because a `|` inside a substituted value separates options in the
       reference engines -- their expansion runs before any bracket is read. Empty on every
@@ -1446,13 +1447,20 @@ begin
   Result := HasReferenceText(s) or HoldsConditional(s);
 end;
 
-{ Could this construct body hold something the sec.5.9 splice would act on, at THIS
-  construct's own level? The PREFILTER the parser applies before deciding to retain a body,
-  and it exists purely for cost: the authority is still the node walk in the finalize pass.
+{ Does this construct body hold something the sec.5.9/5.13 splice would act on, at THIS
+  construct's own level? This is the DECISION, not a prefilter in front of one. It was
+  introduced as a prefilter, with a node walk over the parsed options as the authority and a
+  flat pass at the end to clear what it had over-marked; that pass never cleared anything,
+  because the two are the same predicate over the same strings, and ParseSequence's header has
+  the reading that shows it. The pass is gone (2026-09-16) so that a taken mark is FINAL, which
+  is what lets a construct tell its children they need no body of their own.
 
-  Its one hard requirement is NO FALSE NEGATIVES -- a body wrongly rejected here loses its
-  Raw and renders the old, wrong output. False POSITIVES only waste memory, which is what the
-  whole prefilter is for, so it must skip exactly what the rule skips and no more.
+  A false NEGATIVE loses the Raw and renders the old, wrong output. A false POSITIVE is still
+  only a cost: the body is retained, its re-read finds nothing to change and returns False, and
+  a real mark below it -- which the descendant rule then denies a body of its own -- is covered
+  by that same re-read, because the ancestor's body contains it and the passes are the same.
+  So the requirement is the one it always was, NO FALSE NEGATIVES, and it must skip exactly
+  what the rule skips and no more.
 
   A flat "is there a %name% anywhere in this string" was the first cut and was wrong in the
   way that matters for cost: in a chain of ancestors wrapped around ONE reference, every
@@ -1481,7 +1489,11 @@ end;
   FindMatchingClose rescan the remaining suffix before it gives up. ScanInto calls the same
   function on the same text, so this adds a constant and not an order (spec sec.5.11). What
   it removes is the Theta(n^2) MEMORY of one retained body per level. Iterative, like every
-  walk here. }
+  walk here.
+
+  A plural is no exception to the descendant rule even though it queues no jobs: FillPlural
+  keeps both slots as RAW TEXT and the renderer expands and parses them itself, so nothing
+  inside a plural is retained at parse time in the first place. }
 function MayHoldDirectReference(const s: string): Boolean;
 var i, upto, endp, j: Integer; head: TCondHead;
 begin

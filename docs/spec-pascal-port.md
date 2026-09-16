@@ -1325,7 +1325,8 @@ bytes-per-level predicts, where a real fix removes the quadratic altogether. **A
 change an order has to be checked against the order, not against "it got better".**
 
 The cure is a prefilter, `MayHoldDirectReference`, run before a body is retained, with the
-finalize pass still the authority. Its hard requirement is no FALSE NEGATIVES — a body wrongly
+finalize pass then the authority (it is the authority itself since §5.13, which deletes that
+pass). Its hard requirement is no FALSE NEGATIVES — a body wrongly
 rejected loses its `Raw` and renders the old, wrong output — while false positives cost only
 the memory the prefilter exists to save. The first cut of it tested whether a `%name%` token
 appeared anywhere in the body, and that is wrong in exactly the way that matters: in a chain of
