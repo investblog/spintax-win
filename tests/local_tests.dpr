@@ -1422,7 +1422,7 @@ end;
   neutralize edge, and the compiled path. Every expectation measured against @spintax/core
   0.7.0 on 2026-09-12; the RNG is first- or last-pick, which the corpus itself uses. }
 procedure TestSplice;
-var chain, r, x51, y51: string; i: Integer; tpl: TSpTemplate; ctx: TSpContext;
+var chain, r, exp, x51, y51: string; i: Integer; tpl: TSpTemplate; ctx: TSpContext;
 begin
   { The untouched class: a value with no structural character re-reads to the very tree the
     parser built -- same element count, same draws, same order. }
@@ -1604,11 +1604,11 @@ begin
   Check('splice/neutralized-value-still-splits-on-its-pipe-first',
         RenderVars('[<sep=", ">%v%]', ['v'], [SpNeutralize('[a|b]')], False), 'b], [a');
 
-  { Deep nesting with a reference in every level answers instead of overflowing. The walks
-    on the PARSE side are all iterative now -- the direct-reference scan, the re-read, and
-    ParseSequence itself (spec sec.5.11) -- while the render walk and the tree's destructor
-    are still recursive and are what stops first at far greater depths (backlog). 5 000 is
-    comfortably inside both. }
+  { Deep nesting with a reference in every level answers instead of overflowing. Every walk
+    over the tree is iterative now -- the direct-reference scan, the re-read, ParseSequence
+    (spec sec.5.11), and since 2026-09-16 the render walk and the tree's destructor too. What
+    stops first is the heap, and at depths far past anything a suite should run: 5 000 is here
+    to defend the ROUTE, and the ceilings are measured in the spec rather than gated. }
   r := '';
   for i := 1 to 5000 do r := r + '{%x%|';
   r := r + 'z';
@@ -1622,17 +1622,57 @@ begin
     recursive parser, which is why sec.5.11 rewrote it in the same release.
 
     The floor here is 5 000 for COST, not for confidence: a 20 000-level render takes 7.6 s
-    and this suite runs twice on every push. The depths that actually separate the parsers --
-    20 000 through 50 000 answer now and raised on every earlier release, and parsing alone
-    reaches 100 000 -- are measured in spec sec.5.9 and sec.5.11 rather than gated, the same
-    way sec.5.6 keeps its nesting-cost numbers out of the suite. What this check defends is
-    the route: a regression that made the unpicked branch raise again would fail here. }
+    and this suite runs twice on every push. The depths that actually separate the walks are
+    measured in spec sec.5.9, sec.5.11 and sec.5.14 rather than gated, the same way sec.5.6
+    keeps its nesting-cost numbers out of the suite. What this check defends is the route: a
+    regression that made the unpicked branch raise again would fail here.
+
+    It is also the one shape that exercises the DESTRUCTOR on its own -- the tree is built by
+    the re-read and freed without ever being rendered. }
   r := '';
   for i := 1 to 5000 do r := r + '{q|';
   r := r + 'z';
   for i := 1 to 5000 do r := r + '}';
   Check('splice/deep-value-in-an-unpicked-branch-answers',
         RenderVars('{ok|%deep%}', ['deep'], [r], False), 'ok');
+
+  { Two more route shapes. A permutation nests through its ELEMENTS, which is the path whose
+    pending carries every option rather than one, and whose two draws must wait for the last of
+    them -- that one cost Pascal frames per level before 2026-09-16.
+
+    The spliced chain is here for a different reason, and the reason it is NOT here is worth
+    recording: a chain of constructs each carrying a reference in its separator does not stack
+    re-reads, because the fixpoint runs over the whole body and the first splice resolves every
+    separator below it at once (the recursive walk answered 50 000 of these). What it does
+    exercise is a marked construct rendering a re-parsed body at depth, on the walk's own stack.
+
+    The expectations are derived rather than typed, and the derivation was confirmed against
+    @spintax/core at depths 1..4 through its own pipeline: a two-element permutation makes no
+    size draw (min = max) and its one shuffle step swaps under a first-pick RNG, so every level
+    puts its `q` in front -- and in the spliced chain each level's own separator appears, which
+    is what keeps this check from passing vacuously if the re-read stopped firing. The
+    separator is QUOTED on purpose: unquoted, `sep=%s1%` parses to the default and the splice
+    would leave no trace in the output (spec sec.5.13). }
+  r := '';
+  for i := 1 to 5000 do r := r + '[';
+  r := r + 'z';
+  for i := 1 to 5000 do r := r + '|q]';
+  exp := '';
+  for i := 1 to 5000 do exp := exp + 'q ';
+  Check('render/deep-permutation-chain-answers', RenderVars(r, [], [], False), exp + 'z');
+
+  r := '';
+  for i := 1 to 2000 do
+    if Odd(i) then r := r + '[<sep="%S1%">' else r := r + '[<sep="%S2%">';
+  r := r + 'z';
+  for i := 1 to 2000 do r := r + '|q]';
+  { The loop above writes the OUTERMOST level first, so the separators come out in the order
+    they were written -- level 1's, then level 2's, down to the innermost. }
+  exp := '';
+  for i := 1 to 2000 do
+    if Odd(i) then exp := exp + 'q - ' else exp := exp + 'q + ';
+  Check('render/deep-splice-chain-answers',
+        RenderVars(r, ['S1', 'S2'], [' - ', ' + '], False), exp + 'z');
 
   { The compiled path keeps the raw body across the compile, so a compiled template splices
     exactly as SpRender does. }

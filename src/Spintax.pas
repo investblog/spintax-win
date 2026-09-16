@@ -1400,6 +1400,118 @@ begin
   inherited;
 end;
 
+{ Free a whole tree ITERATIVELY. Every tree in this unit is freed through here; nothing calls
+  Free on a TNodeList that still holds its children.
+
+  The destructors above are correct and recursive, and the recursion is not even in this file:
+  every owning container is a TObjectList with OwnsObjects, so freeing a list frees its nodes,
+  and freeing a node frees its lists -- about seven or eight RTL frames per level of nesting.
+  That overflowed the stack at 60 000 levels, the same depth the render walk did, which is
+  exactly the depth a document reaches once the parser stopped being the limit (spec sec.5.11).
+  A tree that renders and then kills the process on the way out is no better than one that
+  never rendered.
+
+  So: DETACH, then free. Each node's child lists are taken off it and pushed on a worklist,
+  its fields nilled, and the containers freed with OwnsObjects off so they do not take the
+  lists with them; the node itself is then childless and its destructor frees nothing. The
+  destructors stay as they are -- they are still what frees a node the PARSER left half-built
+  when an allocation raised (a conditional with CondThen set and CondElse still nil, a
+  TPermOption whose Nodes was never created), so every field they touch must stay
+  nil-tolerant, and this walk must equally tolerate meeting one.
+
+  Single-owner and downward-only: a node is created and attached exactly once, there are no
+  parent pointers and no aliasing, so the order lists are drained in cannot matter.
+
+  A worklist has to GROW, and a free path that allocates is a free path that can raise --
+  which is the one thing the recursive version could not do. Between taking a list off its
+  owner and freeing it, nothing owns it, so a raise in the middle of a node would strand
+  whatever was already detached. Two things close that, and together they make the sentence
+  "this frees the tree exactly once, however it ends" true rather than asserted:
+
+    - the worklist is grown ONCE PER NODE, before that node is touched, so the only operation
+      here that can raise runs while the node is still whole. A node is therefore untouched or
+      fully detached, never half;
+    - the handler below frees what is left: everything still queued is detached and owned by
+      nothing else, and `cur` owns exactly the nodes this level has not reached yet.
+
+  That handler frees recursively -- the very thing this procedure exists to avoid. It is the
+  right trade only where it stands: the heap has already refused, and a deep free that may
+  overflow is better than leaking the tree. }
+procedure FreeNodeTree(list: TNodeList);
+var work: TArray<TNodeList>; top, i, k, need: Integer; cur: TNodeList; node: TNode;
+    opt: TPermOption;
+
+  { Room for `n` more. The only allocation in this procedure. }
+  procedure Reserve(n: Integer);
+  var cap: Integer;
+  begin
+    cap := Length(work);
+    if top + n <= cap then Exit;
+    while cap < top + n do cap := cap * 2;
+    SetLength(work, cap);
+  end;
+
+  procedure Push(l: TNodeList);   { Reserve has already made the room }
+  begin
+    if l = nil then Exit;
+    work[top] := l;
+    Inc(top);
+  end;
+
+begin
+  if list = nil then Exit;
+  cur := list;
+  top := 0;
+  try
+    SetLength(work, 32);
+    Push(cur);
+    cur := nil;
+    while top > 0 do
+    begin
+      Dec(top);
+      cur := work[top];
+      work[top] := nil;
+      for i := 0 to cur.Count - 1 do
+      begin
+        node := cur[i];
+        need := 2;   { CondThen, CondElse }
+        if node.EnumOptions <> nil then Inc(need, node.EnumOptions.Count);
+        if node.PermOptions <> nil then Inc(need, node.PermOptions.Count);
+        Reserve(need);
+        { Nothing from here to the end of this node allocates, so the detach runs to the end. }
+        if node.EnumOptions <> nil then
+        begin
+          for k := 0 to node.EnumOptions.Count - 1 do Push(node.EnumOptions[k]);
+          { The lists are on the worklist now, so the container must NOT take them with it. }
+          node.EnumOptions.OwnsObjects := False;
+          node.EnumOptions.Free;
+          node.EnumOptions := nil;
+        end;
+        if node.PermOptions <> nil then
+        begin
+          for k := 0 to node.PermOptions.Count - 1 do
+          begin
+            opt := node.PermOptions[k];
+            Push(opt.Nodes);
+            opt.Nodes := nil;   { so TPermOption.Destroy frees nothing }
+          end;
+          node.PermOptions.Free;
+          node.PermOptions := nil;
+        end;
+        Push(node.CondThen); node.CondThen := nil;
+        Push(node.CondElse); node.CondElse := nil;
+      end;
+      { Its nodes are childless now, so this frees exactly one level. }
+      cur.Free;
+      cur := nil;
+    end;
+  except
+    for i := 0 to top - 1 do work[i].Free;
+    cur.Free;
+    raise;
+  end;
+end;
+
 { A `%var%` reference written inside a separator string -- the reference's REFERENCE_RE,
   /%\w+%/u, whose \w is ASCII. }
 function HasReferenceText(const s: string): Boolean;
@@ -2115,8 +2227,9 @@ begin
     { Everything allocated above is reachable from Result by the time it can raise --
       nodes are attached before they are filled, AttachNode owns the failure of the
       attach itself, and the owner lists are reserved to final size. So this frees the
-      half-built tree completely. }
-    Result.Free;
+      half-built tree completely. Iteratively: the tree that raised may be as deep as the
+      one that did not, and a recursive free would overflow on the way out of a failure. }
+    FreeNodeTree(Result);
     raise;
   end;
 end;
@@ -2260,12 +2373,14 @@ begin
   if not TakeBudget(opts, Length(val)) then Exit('%' + name + '%');
   { At the depth cap, or with nothing in the value to expand, the value is finished text. }
   if (opts.Depth >= MAX_VARIABLE_DEPTH) or (not HasConstructChar(val)) then Exit(val);
+  { A value's tree gets its own walk because it needs its own Depth; that recursion is bounded
+    by MAX_VARIABLE_DEPTH above, never by how deep the value nests. }
   sub := ParseSequence(val);
   try
     subOpts := opts; subOpts.Depth := opts.Depth + 1;
     Result := RenderNodes(sub, subOpts);
   finally
-    sub.Free;
+    FreeNodeTree(sub);
   end;
 end;
 
@@ -2317,13 +2432,6 @@ begin
     end;
   end;
   if inverted then Result := not baseTruthy else Result := baseTruthy;
-end;
-
-function RenderConditional(node: TNode; const opts: TRenderOpts): string;
-begin
-  if ConditionalTakesThen(node.CondName, node.CondInverted, opts) then
-    Result := RenderNodes(node.CondThen, opts)
-  else Result := RenderNodes(node.CondElse, opts);
 end;
 
 function IsIntStr(const s: string): Boolean;
@@ -2481,11 +2589,22 @@ begin
   Result := res.Finish;
 end;
 
-function RenderPlural(node: TNode; const opts: TRenderOpts): string;
+{ Resolve a plural block as far as its picked FORM, which the render walk then renders as a
+  child list. True with `sub` (the caller's to free) and `frozen`; False when the block answers
+  without rendering anything -- an erased count, a fullwidth fallback -- and `text` holds it. }
+function PluralStep(node: TNode; const opts: TRenderOpts; out sub: TNodeList;
+  out frozen: Boolean; out text: string): Boolean;
 var countRaw, formsRaw, count, picked, cur: string; base: string;
     forms: TStringList; i, passes: Integer; hasBracket, countConverged, formsConverged: Boolean;
-    sub: TNodeList; subOpts: TRenderOpts;
+
+  function Answer(const s: string): Boolean;
+  begin
+    text := s;
+    Result := False;
+  end;
+
 begin
+  sub := nil; frozen := False; text := '';
   { Both slots get the same pass arithmetic as a re-read construct (51 hops in every shape),
     and a form list whose passes ran out renders its pick FROZEN. Until the family's 0.7.0
     the slots ran a flat 50 and the picked form re-entered the walk unfrozen, so a 51-deep
@@ -2501,10 +2620,10 @@ begin
   hasBracket := False;
   for i := 1 to Length(formsRaw) do
     if CharInSet(formsRaw[i], ['{', '}', '[', ']']) then begin hasBracket := True; Break; end;
-  if hasBracket then Exit(FullwidthVerbatim(countRaw, formsRaw));
+  if hasBracket then Exit(Answer(FullwidthVerbatim(countRaw, formsRaw)));
 
   count := PhpTrim(countRaw);
-  if not IsIntStr(count) then Exit('');
+  if not IsIntStr(count) then Exit(Answer(''));
 
   forms := TStringList.Create;
   try
@@ -2515,19 +2634,14 @@ begin
       if formsRaw[i] = '|' then begin forms.Add(PhpTrim(cur)); cur := ''; end
       else cur := cur + formsRaw[i];
     forms.Add(PhpTrim(cur));
-    if forms.Count <> PluralArity(base) then Exit(FullwidthVerbatim(countRaw, formsRaw));
+    if forms.Count <> PluralArity(base) then Exit(Answer(FullwidthVerbatim(countRaw, formsRaw)));
     picked := PluralFor(base, StrToInt(count), forms);
   finally
     forms.Free;
   end;
   sub := ParseSequence(picked);
-  try
-    subOpts := opts;
-    if not formsConverged then subOpts.Frozen := True;
-    Result := RenderNodes(sub, subOpts);
-  finally
-    sub.Free;
-  end;
+  frozen := not formsConverged;
+  Result := True;
 end;
 
 { Splice the direct `%var%` references of a construct into its body as TEXT and re-read
@@ -2555,12 +2669,29 @@ end;
   51-deep chain into `x|y` reaches the body as text and IS split -- inside a bracket exactly
   as outside one -- and nothing below earns a fresh allowance. (The reference's first cut
   rendered that subtree at the depth cap instead, which spliced a leftover once more as
-  finished text: a 52nd hop, and one that hid a structural value from the split.) }
+  finished text: a 52nd hop, and one that hid a structural value from the split.)
+
+  It PARSES and hands the tree back rather than rendering it, because the render walk is
+  iterative: a converged body becomes a child list on that walk's own stack, and the subtree
+  below it -- however deep -- costs no Pascal frames. What does NOT justify this, and was
+  claimed while the change was being written, is that spliced constructs chain: the fixpoint
+  runs over the WHOLE body, so the first re-read of `[<sep="%s1%">[<sep="%s2">...]]` resolves
+  every separator in the chain at once and no level below it is marked any more. Measured: the
+  recursive walk answered 50 000 such levels. So the reason to put it on the stack is the
+  subtree's own depth and one mechanism instead of two, not a frame chain.
+
+  `frozen` is the one thing the caller cannot put on that stack: it needs different options for
+  the subtree, so it runs its own walk. That recursion is bounded, because a frozen walk cannot
+  reach here again (the Frozen exit below, and ExpandVarsFixpoint reporting converged without
+  doing anything).
+
+  The tree it returns is the CALLER'S to free. }
 function SpliceConstruct(const raw: string; open, close: Char; const opts: TRenderOpts;
-  out rendered: string): Boolean;
-var body: string; converged: Boolean; nodes: TNodeList; subOpts: TRenderOpts;
+  out nodes: TNodeList; out frozen: Boolean): Boolean;
+var body: string; converged: Boolean;
 begin
-  rendered := '';
+  nodes := nil;
+  frozen := False;
   if opts.Frozen then Exit(False);
   body := ResolveConditionalsInText(
     ExpandVarsFixpoint(ResolveConditionalsInText(raw, opts), opts, PassesLeft(opts), converged),
@@ -2570,34 +2701,27 @@ begin
     innermost regex does: an option list closed twice is the first construct followed by
     the literal tail, in both engines. }
   nodes := ParseSequence(open + body + close);
-  try
-    subOpts := opts;
-    if not converged then subOpts.Frozen := True;
-    rendered := RenderNodes(nodes, subOpts);
-  finally
-    nodes.Free;
-  end;
+  frozen := not converged;
   Result := True;
 end;
 
-function RenderEnumeration(node: TNode; const opts: TRenderOpts): string;
-var idx: Integer; spliced: string;
+{ Which option an enumeration takes. The draw happens HERE, before anything descends into
+  the option, so an unpicked branch never spends one -- the order the corpus pins.
+
+  ONE option is not a choice, and asking the RNG for one costs a draw that shifts every
+  later choice in the document. The reference's randomInt returns min when min = max
+  WITHOUT touching the generator -- the plugin's random_int does -- and this engine already
+  short-circuits both of the permutation's draws the same way. The enumeration was the one
+  site that did not, so a one-option spin followed by a two-option one, over the sequence
+  [0,1], rendered the SECOND option of the second spin here and the first one there.
+  Ordinary content reaches this: a spin with no pipe is a one-option spin, and the GSA
+  front end's escape for a block opening with a question mark adds an empty one.
+  Found by a Codex review of the splice, which is what put an empty enumeration in front
+  of every escaped GSA block; the divergence itself is older than the splice. }
+function PickEnumOption(node: TNode; const opts: TRenderOpts): Integer;
 begin
-  if (node.Raw <> '') and SpliceConstruct(node.Raw, '{', '}', opts, spliced) then Exit(spliced);
-  if node.EnumOptions.Count = 0 then Exit('');
-  { ONE option is not a choice, and asking the RNG for one costs a draw that shifts every
-    later choice in the document. The reference's randomInt returns min when min = max
-    WITHOUT touching the generator -- the plugin's random_int does -- and this engine already
-    short-circuits both of the permutation's draws the same way. The enumeration was the one
-    site that did not, so a one-option spin followed by a two-option one, over the sequence
-    [0,1], rendered the SECOND option of the second spin here and the first one there.
-    Ordinary content reaches this: a spin with no pipe is a one-option spin, and the GSA
-    front end's escape for a block opening with a question mark adds an empty one.
-    Found by a Codex review of the splice, which is what put an empty enumeration in front
-    of every escaped GSA block; the divergence itself is older than the splice. }
-  if node.EnumOptions.Count = 1 then idx := 0
-  else idx := opts.Rng.Next(0, node.EnumOptions.Count - 1);
-  Result := RenderNodes(node.EnumOptions[idx], opts);
+  if node.EnumOptions.Count = 1 then Result := 0
+  else Result := opts.Rng.Next(0, node.EnumOptions.Count - 1);
 end;
 
 function PadSeparator(const sep: string): string;
@@ -2612,12 +2736,15 @@ begin
   if allLetters then Result := ' ' + t + ' ' else Result := sep;
 end;
 
-function RenderPermutation(node: TNode; const opts: TRenderOpts): string;
+{ Build a permutation from its elements' ALREADY-RENDERED texts -- `done[i]` is what the i-th
+  option rendered to, in source order. Everything from here on runs after the last child, which
+  is what keeps both draws where they were. }
+function AssemblePermutation(node: TNode; const done: TArray<string>;
+  const opts: TRenderOpts): string;
 type TElem = record Text: string; Sep: string; HasSep: Boolean; end;
 var elems: array of TElem; total, i, j, min, max, pick: Integer; tmp: TElem;
     globalSep, globalLast, sep, spliced: string; buf: TStrBuf;
 begin
-  if (node.Raw <> '') and SpliceConstruct(node.Raw, '[', ']', opts, spliced) then Exit(spliced);
   if node.PermOptions.Count = 0 then Exit('');
   { An element is its RENDERED text, TRIMMED, and one that renders empty is no element
     (spintax-js#80). The plugin resolves every nested enumeration and permutation before it
@@ -2634,7 +2761,7 @@ begin
   total := 0;
   for i := 0 to node.PermOptions.Count - 1 do
   begin
-    spliced := PhpTrim(RenderNodes(node.PermOptions[i].Nodes, opts));
+    spliced := PhpTrim(done[i]);
     if spliced = '' then Continue;
     elems[total].Text := spliced;
     elems[total].Sep := node.PermOptions[i].Separator;
@@ -2679,31 +2806,267 @@ begin
   Result := buf.Finish;
 end;
 
-function RenderNode(node: TNode; const opts: TRenderOpts): string;
-begin
-  case node.Kind of
-    nkLiteral:     Result := node.Text;
-    nkVariable:    Result := ResolveVariable(node.Text, opts);
-    nkEnumeration: Result := RenderEnumeration(node, opts);
-    nkPermutation: Result := RenderPermutation(node, opts);
-    nkConditional: Result := RenderConditional(node, opts);
-    nkPlural:      Result := RenderPlural(node, opts);
-  else
-    Result := '';
-  end;
-end;
+{ The render walk is ITERATIVE -- one explicit frame stack, no Pascal frame per level of
+  nesting. It was the last recursive walk over unbounded input here: `RenderNodes` ->
+  `RenderNode` -> a construct -> `RenderNodes` cost three frames per level (four through a
+  splice) and raised EStackOverflow at 60 000 levels, where the tree's destructor raised too.
+  That was unreachable while the parser failed first; making ParseSequence iterative (spec
+  sec.5.11) put it in reach, which is what the review of that work predicted.
 
+  ONE FRAME PER NODE LIST, not per node, mirroring `@spintax/core`'s render.ts (family issue
+  spintax-js#68). A frame is its list, a cursor, what it has emitted so far, and at most one
+  PENDING construct it is paused on. Visiting a node either produces finished text or leaves a
+  pending: the child lists to render and how to put the construct back together from them.
+
+  WHAT MAKES THIS SAFE IS THE DRAW ORDER, NOT THE OUTPUT. A tidier traversal renders the same
+  characters and moves seeded output, because every draw a construct makes is positional in one
+  RNG stream. Two rules carry it, and both fall out of visiting the node BEFORE pushing its
+  children:
+
+    - an enumeration PICKS first and only then descends, so an unpicked option is never walked
+      and spends nothing (PickEnumOption);
+    - a permutation renders every element, in source order, and only then draws its size and
+      shuffles -- so both of its draws live in the assemble step, which cannot run until the
+      last child has come back (AssemblePermutation).
+
+  The expansion BUDGET is ordered the same way and for the same reason: ResolveVariable charges
+  before it decides to descend. Neither is visible to a check that only compares outcome sets --
+  see spec sec.5.10, where a spent draw hid for the life of the engine.
+
+  THREE THINGS STAY RECURSIVE, all bounded by expansion rather than by nesting: ResolveVariable
+  (a value re-parsed at Depth + 1, capped at MAX_VARIABLE_DEPTH), and a plural form or a spliced
+  body whose fixpoint did NOT converge. Those three need a DIFFERENT TRenderOpts for the
+  subtree, and one walk carries one `opts` -- so they run their own walk, exactly as the
+  reference does. A frozen walk cannot start another: Frozen stops ResolveVariable and
+  SpliceConstruct outright, and ExpandVarsFixpoint reports converged without doing anything.
+
+  OWNERSHIP is the one thing with no counterpart in the reference, which is garbage-collected.
+  A converged plural form and a converged spliced body are trees this walk PARSED, and they
+  hang off the frame that is rendering them (`Owned`), freed when that frame's pending is
+  assembled. The `finally` frees every frame's tree, so an exception anywhere in the loop --
+  an allocation failure inside a deep subtree -- strands nothing. Each free takes the tree OFF
+  its frame first, so the `finally` cannot meet one the loop has already begun to free; that
+  freeing is FreeNodeTree's own invariant, stated where it is kept. }
 function RenderNodes(nodes: TNodeList; const opts: TRenderOpts): string;
-var i: Integer; buf: TStrBuf;
+type
+  TPendKind = (pkNone, pkSingle, pkPerm);
+  TRenderFrame = record
+    Nodes: TNodeList;              { borrowed }
+    I: Integer;
+    { The accumulator. One piece is the common case -- a template with no spintax is a single
+      literal -- and it is handed straight back rather than copied through a buffer, which is
+      what the recursive version's Count = 1 fast path did. }
+    One: string;
+    HasOne, Multi: Boolean;
+    Buf: TStrBuf;
+    Pend: TPendKind;
+    PendNode: TNode;               { the construct to assemble }
+    PendLists: TArray<TNodeList>;  { borrowed }
+    PendDone: TArray<string>;
+    PendCount: Integer;
+    Owned: TNodeList;              { a tree THIS frame parsed; nil otherwise }
+  end;
+var
+  frames: TArray<TRenderFrame>;
+  top, k: Integer;
+  txt: string;
+  node: TNode;
+  owned: TNodeList;
+
+  procedure PushFrame(list: TNodeList);
+  begin
+    if top = Length(frames) then SetLength(frames, Length(frames) * 2);
+    frames[top].Nodes := list;
+    frames[top].I := 0;
+    frames[top].One := ''; frames[top].HasOne := False; frames[top].Multi := False;
+    frames[top].Pend := pkNone; frames[top].PendNode := nil; frames[top].PendCount := 0;
+    frames[top].PendLists := nil; frames[top].PendDone := nil;
+    frames[top].Owned := nil;
+    Inc(top);
+  end;
+
+  procedure Emit(var f: TRenderFrame; const s: string);
+  begin
+    if not f.HasOne then begin f.One := s; f.HasOne := True; end
+    else if not f.Multi then
+    begin
+      f.Buf.Init(Length(f.One) + Length(s) + 256);
+      f.Buf.AppendStr(f.One); f.One := '';
+      f.Buf.AppendStr(s);
+      f.Multi := True;
+    end
+    else f.Buf.AppendStr(s);
+  end;
+
+  function FrameText(var f: TRenderFrame): string;
+  begin
+    if f.Multi then Result := f.Buf.Finish
+    else if f.HasOne then Result := f.One
+    else Result := '';
+  end;
+
+  { One child list, and the construct renders as whatever it comes back as. }
+  procedure PendOne(var f: TRenderFrame; pnode: TNode; list: TNodeList);
+  begin
+    SetLength(f.PendLists, 1);
+    SetLength(f.PendDone, 1);
+    f.PendLists[0] := list;
+    f.PendNode := pnode;
+    f.PendCount := 0;
+    f.Pend := pkSingle;
+  end;
+
+  { Render a subtree that needs its OWN options -- the bounded recursion described above. }
+  function FrozenWalk(sub: TNodeList): string;
+  var subOpts: TRenderOpts;
+  begin
+    subOpts := opts;
+    subOpts.Frozen := True;
+    try
+      Result := RenderNodes(sub, subOpts);
+    finally
+      FreeNodeTree(sub);
+    end;
+  end;
+
+  { True with finished `text`; False having left a pending on the frame. }
+  function StepNode(n: TNode; var f: TRenderFrame; out text: string): Boolean;
+  var sub: TNodeList; frozen: Boolean; i: Integer;
+  begin
+    text := '';
+    Result := True;
+    case n.Kind of
+      nkLiteral:  text := n.Text;
+      nkVariable: text := ResolveVariable(n.Text, opts);
+      nkConditional:
+        begin
+          if ConditionalTakesThen(n.CondName, n.CondInverted, opts) then
+            PendOne(f, n, n.CondThen)
+          else PendOne(f, n, n.CondElse);
+          Result := False;
+        end;
+      nkEnumeration:
+        begin
+          if (n.Raw <> '') and SpliceConstruct(n.Raw, '{', '}', opts, sub, frozen) then
+          begin
+            if frozen then begin text := FrozenWalk(sub); Exit(True); end;
+            f.Owned := sub;   { hung on the frame BEFORE anything else can raise }
+            PendOne(f, n, sub);
+            Exit(False);
+          end;
+          if n.EnumOptions.Count = 0 then Exit(True);
+          PendOne(f, n, n.EnumOptions[PickEnumOption(n, opts)]);
+          Result := False;
+        end;
+      nkPermutation:
+        begin
+          if (n.Raw <> '') and SpliceConstruct(n.Raw, '[', ']', opts, sub, frozen) then
+          begin
+            if frozen then begin text := FrozenWalk(sub); Exit(True); end;
+            f.Owned := sub;
+            PendOne(f, n, sub);
+            Exit(False);
+          end;
+          if n.PermOptions.Count = 0 then Exit(True);
+          SetLength(f.PendLists, n.PermOptions.Count);
+          SetLength(f.PendDone, n.PermOptions.Count);
+          for i := 0 to n.PermOptions.Count - 1 do f.PendLists[i] := n.PermOptions[i].Nodes;
+          f.PendNode := n;
+          f.PendCount := 0;
+          f.Pend := pkPerm;
+          Result := False;
+        end;
+      nkPlural:
+        begin
+          if not PluralStep(n, opts, sub, frozen, text) then Exit(True);
+          if frozen then begin text := FrozenWalk(sub); Exit(True); end;
+          f.Owned := sub;
+          PendOne(f, n, sub);
+          Result := False;
+        end;
+    end;
+  end;
+
 begin
-  { One node is the common case (a template with no spintax parses to a single literal);
-    hand its text straight back rather than copying it through a buffer. }
-  if nodes.Count = 0 then Exit('');
-  if nodes.Count = 1 then Exit(RenderNode(nodes[0], opts));
-  buf.Init(256);
-  for i := 0 to nodes.Count - 1 do
-    buf.AppendStr(RenderNode(nodes[i], opts));
-  Result := buf.Finish;
+  Result := '';
+  if nodes = nil then Exit;
+  SetLength(frames, 16);
+  top := 0;
+  try
+    PushFrame(nodes);
+    while top > 0 do
+    begin
+      if frames[top - 1].Pend <> pkNone then
+      begin
+        if frames[top - 1].PendCount < Length(frames[top - 1].PendLists) then
+        begin
+          PushFrame(frames[top - 1].PendLists[frames[top - 1].PendCount]);
+          Continue;
+        end;
+        if frames[top - 1].Pend = pkPerm then
+          txt := AssemblePermutation(frames[top - 1].PendNode, frames[top - 1].PendDone, opts)
+        else txt := frames[top - 1].PendDone[0];
+        frames[top - 1].Pend := pkNone;
+        frames[top - 1].PendNode := nil;
+        frames[top - 1].PendLists := nil;
+        frames[top - 1].PendDone := nil;
+        frames[top - 1].PendCount := 0;
+        if frames[top - 1].Owned <> nil then
+        begin
+          { Off the frame BEFORE it is freed. FreeNodeTree frees the root first and can raise
+            part-way down (it grows its worklist), and a frame still holding the pointer would
+            hand the `finally` below a tree to free a second time. }
+          owned := frames[top - 1].Owned;
+          frames[top - 1].Owned := nil;
+          FreeNodeTree(owned);
+        end;
+        Emit(frames[top - 1], txt);
+        txt := '';
+        Continue;
+      end;
+      if frames[top - 1].I >= frames[top - 1].Nodes.Count then
+      begin
+        txt := FrameText(frames[top - 1]);
+        { Let this level's strings go before the parent takes the text, so what stays live is
+          the current chain and not every level's accumulator -- the parser's own lesson. }
+        frames[top - 1].One := '';
+        frames[top - 1].Buf.Reset;
+        frames[top - 1].Nodes := nil;
+        Dec(top);
+        if top = 0 then begin Result := txt; Break; end;
+        frames[top - 1].PendDone[frames[top - 1].PendCount] := txt;
+        Inc(frames[top - 1].PendCount);
+        txt := '';
+        Continue;
+      end;
+      node := frames[top - 1].Nodes[frames[top - 1].I];
+      Inc(frames[top - 1].I);
+      if StepNode(node, frames[top - 1], txt) then
+      begin
+        Emit(frames[top - 1], txt);
+        txt := '';
+      end;
+    end;
+  finally
+    { Every tree this walk parsed, freed on the way out however the walk ended. Each is taken
+      off its frame before it is freed, for the reason the assemble path gives above.
+
+      The frames hold INDEPENDENT roots, so one that fails must not cost the others theirs:
+      FreeNodeTree has already freed the tree it raised on (its own handler does that), and
+      this loop is only ever reached while an exception is unwinding -- a normal exit leaves
+      top at 0 -- so the one worth propagating is that original exception, not a second
+      failure met while cleaning up after it. }
+    for k := 0 to top - 1 do
+      if frames[k].Owned <> nil then
+      begin
+        owned := frames[k].Owned;
+        frames[k].Owned := nil;
+        try
+          FreeNodeTree(owned);
+        except
+        end;
+      end;
+  end;
 end;
 
 { ─── #def rolling (dependency order) ─────────────────────────────────────── }
@@ -4121,8 +4484,33 @@ begin
 end;
 
 destructor TTemplateImpl.Destroy;
+var i: Integer;
 begin
-  SetDefs.Free; DefDefs.Free; Body.Free; DefIdx.Free; DefTrees.Free;
+  SetDefs.Free; DefDefs.Free; DefIdx.Free;
+  { Every tree goes through FreeNodeTree, so a compiled template holding a deeply nested body
+    does not overflow the stack when the host lets go of it. DefTrees must not take its lists
+    with it once they have been freed here -- and ownership is dropped BEFORE the loop rather
+    than after it, so a raise part-way through cannot leave the container free what this loop
+    has already freed.
+
+    The body and the definition trees are INDEPENDENT roots, and so is each definition, so a
+    failure on one must not cost the rest theirs. FreeNodeTree frees the tree it raises on
+    before it re-raises, and a destructor has nowhere to propagate to anyway. }
+  try
+    FreeNodeTree(Body);
+  except
+  end;
+  Body := nil;
+  if DefTrees <> nil then
+  begin
+    DefTrees.OwnsObjects := False;
+    for i := 0 to DefTrees.Count - 1 do
+      try
+        FreeNodeTree(DefTrees[i]);
+      except
+      end;
+    DefTrees.Free;
+  end;
   inherited Destroy;
 end;
 

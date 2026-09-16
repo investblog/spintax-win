@@ -16,9 +16,11 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
 and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
 recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
-walk reachable, which is the **render walk** item below — it was deferred once, behind the
-0.8.0 catch-up, on the owner's call. That catch-up is Done and released as `v0.10.0`
-(2026-09-16); the two sub-items that outlived it lead this list. Two things left on
+walk reachable — the **render walk and the destructor**, deferred once behind the 0.8.0
+catch-up on the owner's call and then closed on 2026-09-16, also in Done. That catch-up is Done
+and released as `v0.10.0` (2026-09-16); the two sub-items that outlived it lead this list. With
+both walks iterative, what limits a deep document is the parse's quadratic TIME, which is the
+nesting item below. Two things left on
 2026-09-12 and are in Done: the `plural.count-macro` multiplicity question, decided — and
 REVERSED four days later by the catch-up, which is why the Done entry contradicts the code —
 and the value-equality conditional proposal, struck.
@@ -51,45 +53,43 @@ and the value-equality conditional proposal, struck.
       (`internal/text-index.ts`). Performance, so §3 allows the divergence — but it is now the
       one place where this port is materially slower than the engine it mirrors, and the family
       calls the shape a live denial of service for a host that renders untrusted templates.
-      Worth doing after the render walk, and worth measuring against a template that is
-      ORDINARY as well as one that is deep: the index costs memory on every parse.
-
-- [ ] **Make the render walk and the tree destructor iterative.** (decided by the
-      owner, 2026-09-12; deferred behind the catch-up above on 2026-09-16). Where to start, so that session does not rediscover it:
-      - **The walks.** `RenderNodes` → `RenderNode` → `RenderEnumeration` /
-        `RenderPermutation` / `RenderConditional` / `RenderPlural` → `RenderNodes`, plus the
-        re-entries through `SpliceConstruct` and `ResolveVariable`; and `TNode.Destroy` /
-        `TPermOption.Destroy` freeing owned child lists recursively.
-      - **The hard constraint is RNG DRAW ORDER, not output.** An enumeration picks BEFORE it
-        descends, so an unpicked branch spends no draw; a permutation renders every element,
-        then draws its size, then shuffles. The corpus pins that order with sequence-RNG
-        fixtures, and a walk that renders in a different order changes seeded output while
-        every unseeded check stays green. `@spintax/core`'s iterative render (a step returning
-        child lists plus an assemble function, `render.ts`) is the shape to mirror.
-      - **Proof it is a refactor.** Byte-identical output against the current build over a
-        differential, as §5.11 did for the parser: corpus generated ONCE and fed to both
-        builds, first / last / seeded RNG with post-process off and on, and a control class
-        that must differ. That harness lived in the session scratchpad and is gone; rebuild
-        it. Then the depth sweep: an enumeration chain overflows at 60 000 in both walks today.
-      - **Destruction** needs the same explicit stack: detach a node's child lists before
-        freeing it, or `Free` recurses anyway.
-
-      `ParseSequence` was made
-      iterative on 2026-09-12 (spec §5.11) and is no longer the depth limit — an enumeration
-      chain 100 000 levels deep parses. What stops first now are the two walks that are still
-      recursive: `RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`, and
-      `TNode.Destroy` through its owned child lists. They raise `EStackOverflow`, not the
-      parser's old `EOutOfMemory`, which is how they are told apart. Measured: an enumeration
-      chain parses, renders and frees at 40 000 and at 50 000, and overflows at 60 000 in the
-      render walk and in the destructor alike; a conditional chain is fine at 50 000.
-      **Not a regression** — both walks recursed before this release and the parser simply
-      failed first, so every depth any earlier release handled is handled now. Raised by the
-      Codex review of §5.11, which was right that fixing one recursive walk makes the next one
-      reachable. The reference made both of its walks iterative for family issue
-      [spintax-js#68](https://github.com/investblog/spintax-js/issues/68); this port now
-      differs from it only past 50 000 levels.
+      Worth measuring against a template that is ORDINARY as well as one that is deep: the
+      index costs memory on every parse. The render walk is done (see Done), and the depth
+      sweep behind it says this is now the resource that stops a deep document: 200 000 levels
+      render and free, in 129 s.
 
 ## Done
+
+- [x] **The render walk and the tree destructor are iterative** (decided by the owner
+      2026-09-12, done 2026-09-16, spec §5.14). `RenderNodes` is one loop over an array of
+      frames, one frame per node LIST, mirroring `@spintax/core`
+      ([spintax-js#68](https://github.com/investblog/spintax-js/issues/68)); `FreeNodeTree`
+      frees a tree with a worklist and is used at all five free sites, because
+      `TObjectList<T>` with `OwnsObjects` recursed seven or eight frames per level and
+      overflowed at the same depth the render did. One commit for both, on the owner's call:
+      fixing only the render leaves a tree that renders and then kills the process on free.
+      - **Measured.** Every chain shape — enumeration, conditional, permutation, splice, and a
+        tree built and freed without ever being rendered — clears 50 000 / 60 000 / 100 000 /
+        200 000; the recursive build raised `EStackOverflow` at 60 000 and did not survive it
+        in the destructor. Peak memory FELL, which is the number that could have gone the other
+        way: 39 → 32 MB for an enumeration chain at 50 000, 47 → 37 MB for a permutation chain.
+      - **Proof it is a refactor.** 180 000 templates × 6 configurations = 1 080 000 renders,
+        byte-identical on four seeds, corpus generated once and fed to both builds. Four control
+        mutants differ of 45 000: a one-option enumeration drawing again (18 224), the
+        permutation size pick always drawing (22 241), elements right-to-left (26 798), and an
+        enumeration descending into every option and picking afterwards (11 861) — that last one
+        was added because none of the first three could see the property the section states
+        first, that a pick happens BEFORE the descent.
+      - **Two premises in the plan were refuted by measurement, and both would have cost the
+        next reader time.** A nested plural was supposed to chain frames: it cannot, because the
+        forms slot splits flat on `|`, so a nested plural breaks its parent's arity and erases.
+        A spliced construct was supposed to chain `SpliceConstruct` frames: it does not, because
+        the fixpoint runs over the WHOLE body and the outermost splice resolves every separator
+        below it at once — the RECURSIVE build answers a 50 000-level splice chain, which is how
+        the claim died. Both bodies still go on the frame stack, for the honest reason that the
+        picked subtree's own depth is unbounded.
+      - What is NOT closed: the parse's quadratic TIME over nested constructs, which is the item
+        above and is now what stops a deep document.
 
 - [x] **Caught up with `@spintax/core` 0.8.0 and the corpus on `spintax-js` main** (opened and
       closed 2026-09-16, ahead of the render walk by the owner's call; **released as

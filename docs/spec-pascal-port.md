@@ -1457,7 +1457,8 @@ attach itself goes through `AttachNode`, which frees the node if the list's own 
 and `pend` is allocated before the result list so that failing to allocate it cannot strand
 one. The plural is filled through `FillPlural` after it is attached, for the same reason — it
 was the last node kind still built complete and handed over afterwards. With all of that in
-place `Result.Free` frees a half-built tree completely.
+place freeing the result frees a half-built tree completely — through `FreeNodeTree` since
+§5.14, which is subject to the same invariant and states it there.
 
 It took two rounds to get there, and the first one is the lesson: the original code had the
 order backwards in five places — a conditional's two child lists, both owner lists, a
@@ -1475,27 +1476,25 @@ pre-splice engine, so it is not blind. The corpus, both local suites and both GS
 unchanged. What moved is only the depth table in §5.9: 20 000 levels now parse and render in
 every shape, including the two that never worked in any earlier release.
 
-**Where it stops now, and in which walk.** Parsing is no longer the limit: an enumeration chain
-100 000 levels deep parses. What fails past that is the two walks that are still recursive — the
-render walk (`RenderNodes` → `RenderConditional`/`RenderEnumeration` → `RenderNodes`) and the
-tree's own destructor, which recurses through the owned child lists. They fail with
-`EStackOverflow`, not `EOutOfMemory`, which is how they are told apart from the parser's old
-wall:
+**Where it stopped then, and in which walk.** Parsing stopped being the limit here: an
+enumeration chain 100 000 levels deep parses. What failed past that was the two walks that were
+still recursive at this commit — the render walk (`RenderNodes` →
+`RenderConditional`/`RenderEnumeration` → `RenderNodes`) and the tree's own destructor, which
+recursed through the owned child lists. They failed with `EStackOverflow`, not `EOutOfMemory`,
+which is how they are told apart from the parser's old wall:
 
-| shape, measured on the shipped build | outcome |
+| shape, measured on the build this section shipped | outcome |
 |---|---|
 | enumeration chain, **parse only**, 100 000 levels | parses |
 | enumeration chain, parse + render + free, 40 000 and 50 000 | fine |
 | enumeration chain, 60 000 | `EStackOverflow`, in the render walk and in the destructor alike |
+| enumeration chain, parse + **free only** (never rendered), 60 000 | `EStackOverflow`, and the process does not survive it |
 | conditional chain, parse + render + free, 50 000 | fine |
 
-The parser clears every row; what stops is the walk after it. None of this is new behaviour:
-both walks recursed before this release and the parser simply failed first, so the limit was
-never reachable. Every depth the previous release handled is handled now, and so are the depths
-in §5.9's table that never worked in any release. Making the render walk and the destructor
-iterative is filed in the backlog, not done here — the reference made both of its walks
-iterative for family issue #68, and this port now differs from it only past 50 000 levels, where
-the reference itself aborts on the heap.
+The parser cleared every row; what stopped was the walk after it. None of it was new behaviour:
+both walks recursed before that release and the parser simply failed first, so the limit was
+never reachable. **§5.14 closes this** — both walks are iterative now and no row in that table
+fails any more.
 
 **The deep depths are measured, not gated**, and deliberately so: a 20 000-level render costs
 7.6 s and the local suite runs twice on every push. The suite pins the ROUTE at 5 000 — a
@@ -1720,6 +1719,103 @@ the token's closing `%` could open the next reference: `%nope%b%nope%` with `b` 
 matches cannot overlap. Only the re-read path scans that text instead of parsing it, which is why
 no fixture and no tree-path check could see it. Two local checks pin it.
 
+### 5.14 The render walk and the destructor are iterative
+
+§5.11 made the parser iterative and said what would fail next; this is that. `RenderNodes` is one
+loop over an explicit array of frames, one frame per node LIST, mirroring the reference
+(`render.ts:357-408`, family issue #68). `FreeNodeTree` frees a tree with a worklist instead of
+letting `TObjectList<T>.OwnsObjects` recurse. Both were the last recursive walks over unbounded
+input, in an engine whose §7 names that as a port hazard and whose §9.2 promises never to raise on
+content.
+
+**The contract is the RNG draw ORDER, not the output.** A walk that renders in a different order
+changes seeded output while every unseeded check stays green, so the shape is copied exactly:
+
+- an enumeration **draws before it descends**, and an unpicked option is never walked and spends
+  nothing; one option draws nothing at all (§5.10);
+- a permutation renders every element first, in source order, and only then draws the size and
+  shuffles — `AssemblePermutation` is the old `RenderPermutation` from the trim onward, reading
+  the already-rendered texts, so neither draw can move above the last child;
+- the expansion budget is a second ordered resource, charged in `ResolveVariable` before it
+  decides to descend, and it moves with the frames if they move.
+
+FPC 3.2.2 has no anonymous methods, so the reference's `pending = {lists, done, assemble}` cannot
+carry a closure. It does not need one: the pending carries the node POINTER and a kind, and
+assembly is a two-case dispatch — `pkSingle` takes the one child's text, `pkPerm` assembles.
+
+**Three walks stay recursive on purpose, and each is bounded:** `ResolveVariable` re-parsing a
+value at `Depth+1` (`MAX_VARIABLE_DEPTH = 50`), a frozen plural form or a frozen spliced body, and
+`#include` (`MaxIncludeDepth`). These are the three sites that need a DIFFERENT `TRenderOpts`,
+which is why the reference keeps `opts` per walk rather than per frame. The frozen path cannot
+chain, because `ExpandVarsFixpoint` sets `converged` before it bails on `Frozen`, so a frozen walk
+always takes the converged branch and never starts another.
+
+**A claim this section made in draft, and measurement refuted.** The plan asserted that a
+converged spliced body must go on the frame stack because a chain like
+`[<sep=%s1%>[<sep=%s2%>[…]]]` would cost one `SpliceConstruct` frame per level. It does not: the
+fixpoint runs over the WHOLE body, so the outermost splice resolves every separator below it at
+once and the levels under it are ordinary nodes. The recursive build answers that chain at 50 000
+levels — which is how the claim died. The bodies still go on the frame stack, for the honest
+reason that the picked form's own tree is unbounded in depth and one mechanism for both is smaller
+than two.
+
+**Ownership is the hazard the reference cannot have**, being garbage-collected. A spliced or plural
+body is a tree THIS walk parsed, so the frame carries it in `Owned`, it is freed when its pending
+assembles, and the whole loop sits in a `try…finally` that frees every frame's `Owned` on the way
+out. Each free takes the pointer OFF the frame first: a frame still holding it would hand the
+`finally` the same tree a second time.
+
+**A worklist has to grow, and that made the FREE path able to raise** — something the recursive
+version, whatever else was wrong with it, could not do. Between taking a list off its owner and
+freeing it, nothing owns it, so a raise in the middle of a node would strand what was already
+detached. The review round found exactly that, and it is closed the way §5.11's attach-first
+invariant was: the worklist grows **once per node, before that node is touched**, so the only
+allocation in the walk runs while the node is still whole and a node is untouched or fully
+detached, never half; and a handler frees what is left — everything still queued is detached and
+owned by nothing else, and the list being drained owns exactly the nodes it has not reached. That
+handler frees recursively, which is the one thing this procedure exists to avoid, and is the right
+trade only there: the heap has already refused, and a deep free that might overflow beats leaking
+the tree. Only a failing allocation exercises any of this, so it is checked by reading — the same
+class of defect, found the same way, as the parser's.
+
+**Where it stops now.** The stack is out of the equation; what remains is the parse's own
+quadratic TIME, already a backlog item.
+
+| chain, render + free, iterative build | 50 000 | 60 000 | 100 000 | 200 000 |
+|---|---|---|---|---|
+| enumeration | ok, 7.0 s | ok, 8.9 s | ok, 26 s | ok, 129 s |
+| conditional | ok, 7.4 s | ok, 11 s | ok, 49 s | ok, 234 s |
+| permutation | ok, 8.7 s | ok, 13 s | ok, 37 s | ok, 226 s |
+| splice `[<sep=%s1%>[<sep=%s2%>…]]` | ok, 126 s | ok, 196 s | ok, 578 s | not run |
+| **free only**, never rendered | ok, 6.8 s | ok, 8.6 s | ok, 25 s | ok, 122 s |
+
+The recursive build raises `EStackOverflow` at 60 000 on the first row and on the last, and does
+not survive the last one — a stack overflow inside a destructor takes the process with it. The
+splice row at 200 000 was not run: its clock is the parse's quadratic, not the walk's depth, and
+600 s at 100 000 buys nothing the 100 000 row has not already said.
+
+**Peak memory FELL**, which is the measurement that could have gone the other way: the frame array,
+each frame's buffer and the retained `PendDone` strings are new memory held for the depth of the
+tree, so the peak was sampled rather than the clock (§5.13's lesson). At 50 000 levels an
+enumeration chain went 39 → **32 MB** and a permutation chain 47 → **37 MB**; the 200 000-level
+enumeration holds 103 MB. Seven or eight RTL frames per level cost more than one record.
+
+**Verified as a pure refactor, which is the only acceptable result for it.** 180 000 generated
+templates × 6 configurations (first / last / **sequence** RNG × post-process off and on) =
+1 080 000 renders, **byte-identical** to the previous build on all four seeds, corpus generated
+once and fed to both. Four control mutants say the zero is not vacuous, each differing of 45 000:
+a one-option enumeration that draws again (18 224), a permutation size pick that always draws
+(22 241), elements rendered right-to-left (26 798), and an enumeration that descends into EVERY
+option and picks afterwards (11 861) — the last one is the control for pick-before-descend, the
+property this section states first, and its output is identical wherever an unpicked option
+contains no construct. Gates: 614 local checks and 102 GSA checks in both builds, `PASS=329
+FAIL=0 SKIP=4`, `-Sew` clean.
+
+**The suites pin the ROUTE at 5 000 levels, not the ceiling** — a 200 000-level render costs
+minutes and the local suite runs twice on every push. Four checks cover it: an enumeration and a
+conditional chain rendered, a chain built and freed in an UNPICKED branch, and the two chains this
+change made reachable at all (a permutation chain, and a splice chain of nested separators).
+
 ## 6. Trust model
 
 `SpNeutralize` is a utility the **host** applies to data-derived (T2) input. The engine
@@ -1763,8 +1859,13 @@ reserved range; the safety restore is **mandatory** and survives `PostProcess=Fa
    single-abbreviation lookbehind still reads letters folded, because the reference still
    writes it `giu`. Check the PHP flags before porting any pattern.
 6. **Unbounded nesting must be iterative.** A recursive walk dies on deep input the
-   reference handles — the lesson the Python port already paid for. `ParseSequence` /
-   `RenderNodes` are the places to watch.
+   reference handles — the lesson the Python port already paid for. `ParseSequence` (§5.11),
+   `RenderNodes` and `FreeNodeTree` (§5.14) are all explicit walks now; the walk to watch is
+   whichever one is written next, and the three recursions left in the render (§5.14) are
+   bounded by a depth cap each. **A destructor is a walk too** — `TObjectList<T>` with
+   `OwnsObjects` recursing through owned children cost seven or eight frames per level and
+   overflowed at the same depth the render did, which is why freeing a tree goes through
+   `FreeNodeTree` at every site rather than through `Free`.
 
 ## 8. Verification method
 
