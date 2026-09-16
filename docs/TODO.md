@@ -16,9 +16,10 @@ unterminated `/#` in the morning's run, `PhpLtrim` and the extra
 `variable.self-reference` in the evening's — and the corpus session has since verified them
 and pinned the forms (see Done); the neutralize question was answered on 2026-08-07. The
 recursive PARSER was closed on 2026-09-12 and is in Done; closing it made the next recursive
-walk reachable, which is the item below. Two things left this list on 2026-09-12 and are in
-Done: the `plural.count-macro` multiplicity question, decided, and the value-equality
-conditional proposal, struck.
+walk reachable, which is the **render walk** item further down — the catch-up below was put
+ahead of it on the owner's call. Two things left this list on 2026-09-12 and are in
+Done: the `plural.count-macro` multiplicity question, decided (and REVERSED six days later,
+see the catch-up), and the value-equality conditional proposal, struck.
 
 - [ ] **Catch up with `@spintax/core` 0.8.0 and the corpus on `spintax-js` main** (opened
       2026-09-16, ahead of the render walk below by the owner's call). The unchanged tree
@@ -47,22 +48,30 @@ conditional proposal, struck.
             on PHP (spec §5.12).
       - [x] #80 (spec §5.13): a conditional marks the re-read on sight, the `<config>` header is
             read raw, and an element that renders empty is dropped with its separator. All 13
-            fixtures pass — **corpus `PASS=329 FAIL=0 SKIP=4`, the whole thing**. 80 000
-            generated templates × 3 RNG strategies show 0 differences against the reference
-            (~5 100 per 20 000 for the commit before). One local check flipped: it was the
-            control for the narrow key.
+            fixtures pass — **corpus `PASS=329 FAIL=0 SKIP=4`, the whole thing**. 140 000
+            generated templates × 3 RNG strategies (420 000 renders) show 0 differences against
+            the reference, against ~12 400 per 20 000 for the commit before, which is the
+            control. One local check flipped: it was the control for the narrow key. Review
+            found two defects in it — marking on sight retains a body per level, so a 1.6 MB
+            template aborted, and `ExpandVarsFixpoint` advanced one character past an
+            unsubstituted token, so `%nope%b%nope%` could render a name nobody wrote.
+      - [x] Retention made linear, and the 64 MB cap that was its first fix removed (`982ce78`,
+            spec §5.13). The cap was reachable at ordinary sizes — the reach is document SIZE ×
+            marked depth — and review built the 1.4 MB template on which it silently rendered a
+            raw `|` into finished text, which is #78's own defect. A descendant of a retained
+            construct now takes no body of its own; the prefilter is the authority computed
+            earlier, so `pend` and the finalize pass are gone. Peak 105 → 43 MB.
       - [ ] Probe the remaining DoS shapes the reference measured. The post-process shields
             and capitalizers are done (spec §5.12). Still open: the NUL-path restore (one
             `StringReplace` per key), and the template scans (`#set`-doubled `[<` / `{?a?` /
             `/#`, a `#set` value holding a long whitespace run). Not gated.
       - [ ] Release as a MINOR, on the owner's command.
 
-- [ ] **Parse over SPANS of one string instead of copies.** Two things wait on it. (1) A marked
-      construct retains its whole body, so a chain of them is Θ(n²) MEMORY — #80 made that easy
-      to reach, a 1.6 MB template aborted with `EOutOfMemory`, and `SP_PARSE_RAW_BUDGET` is the
-      64 MB stopgap that keeps §9.2 (spec §5.13). With spans a retained body is two integers and
-      the cap can go. (2) The nesting cost below. The reference does both with one side table
-      built per text (`internal/text-index.ts`).
+- [ ] **Parse over SPANS of one string instead of copies.** The MEMORY half is closed —
+      retention is one body per marked chain since `982ce78` (spec §5.13) — so what waits on
+      this is the nesting TIME cost below, plus the copies themselves: every retained body is
+      still a copy of a slice of the template, where the reference holds two indices. The
+      reference does it with one side table built per text (`internal/text-index.ts`).
 
 - [ ] **Deep nesting is linear in the reference now, and quadratic here.** `@spintax/core` 0.8.0
       answers a 16 000-level construct chain in 111 ms where this port takes 4.8 s (spec §5.13);

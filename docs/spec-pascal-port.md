@@ -1074,6 +1074,12 @@ Adopted 2026-09-12 from [`spintax-js#78`](https://github.com/investblog/spintax-
 `@spintax/core` 0.7.0. A **parity-REQUIRED** surface (§3), and this port had it wrong from
 its first commit — as did every other tree-walk engine of the family.
 
+> **§5.13 widened the key this section describes** (`@spintax/core` 0.8.0, adopted 2026-09-16):
+> a conditional, a size and an unquoted separator mark a construct too, and an element that
+> renders empty is dropped. The mechanism below — retain the body, re-read it in the
+> reference's order — is unchanged and still current; only the question "which constructs are
+> marked" has a newer answer. The measurements here are 0.9.0's and are kept as taken.
+
 **The report.** A brand preset `[<minsize=5;maxsize=7;sep=", ";lastsep=" and ">%List%]` over
 a 57-name runtime list rendered all 57 names joined with `|` — no size pick, no shuffle, no
 separators — into 131 published rows across 15 tenants. Both PHP engines have always split
@@ -1096,11 +1102,13 @@ renders, and a `|` it carries belongs to it. What does not split, pinned as nega
 reference at top level with no construct around it (`%L%` → `x|y`), a top-level conditional's
 branch (`{?L?%L%|none}` → `x|y`), and an undefined name (one literal element).
 
-**How this port does it.** The parser keeps the construct's inner text in `TNode.Raw` when
-`EnumHasDirectReference` / `PermHasDirectReference` finds a direct reference — an iterative
-walk over the option lists that descends into conditional branches and nothing else, plus the
-reference's `/%\w+%/` over the three separator strings. Every other construct leaves `Raw`
-empty and renders the tree it always did, with the RNG order the corpus pins. At render time
+**How this port does it** (widened by #80 a release later — §5.13 has the current key; what
+follows is the 0.9.0 shape this section documents). The parser keeps the construct's inner text
+in `TNode.Raw` when `EnumHasDirectReference` / `PermHasDirectReference` finds a direct
+reference — an iterative walk over the option lists that descends into conditional branches and
+nothing else, plus the reference's `/%\w+%/` over the three separator strings. Every other
+construct leaves `Raw` empty and renders the tree it always did, with the RNG order the corpus
+pins. At render time
 `SpliceConstruct` runs the reference's own order over that one body — conditionals
 (`ResolveConditionalsInText`, the §5.6 pass, which now has two callers), the variable fixpoint
 (`ExpandVarsFixpoint`), conditionals again — then puts the brackets back on, parses the
@@ -1301,11 +1309,12 @@ matter, because each one writes only into its own list. Each level's text is rel
 that level is scanned — the job slot first, the local right after — so what stays live is the
 current text and its siblings instead of every ancestor at once.
 
-The direct-reference marks of §5.9 cannot be decided during the scan, since a construct's
-children do not exist yet. Every candidate is recorded with `Raw` set tentatively and one flat
-pass at the end clears it on the constructs that turned out not to hold one.
-`EnumHasDirectReference` and `PermHasDirectReference` read the construct's own options only, so
-by then they have everything they need.
+The direct-reference marks of §5.9 were held not to be decidable during the scan, since a
+construct's children do not exist yet: every candidate was recorded with `Raw` set tentatively
+and one flat pass at the end cleared it on the constructs that turned out not to hold one,
+through `EnumHasDirectReference` / `PermHasDirectReference` over the parsed options. **That was
+wrong, and §5.13 removes the pass** — the prefilter below computes the same predicate over the
+same strings, so the mark is final when it is taken.
 
 **That tentative `Raw` undid the fix, and two review rounds were needed to get it out.**
 Retaining a construct's whole inner text until the finalize pass keeps one copy alive per
@@ -1331,8 +1340,16 @@ test and parses under the level-aware one.
 So the prefilter walks the body at the construct's OWN level — stepping over a nested
 enumeration, permutation or plural whole, entering a conditional's branches, and treating an
 unmatched bracket as the literal the parser treats it as. A deep chain where every level really
-does carry a direct reference stays quadratic, and there the reference engine keeps the same
-bodies for the same reason.
+does carry a direct reference stays quadratic.
+
+Two of those sentences are superseded by §5.13, and are kept here because the rounds that
+produced them are the reasoning this design rests on. **A conditional now ENDS the walk
+instead of being entered** — #80 marks on sight, so what its branches hold stopped mattering —
+which retires the span rule below along with the defect it fixed. And **a chain that retains at
+every level no longer exists**: §5.13 gives retention to the topmost marked construct of a
+chain only, so the quadratic is removed rather than tolerated. The reference engine does not
+keep these bodies at all — 0.8.0 indexes one text and makes children SPANS of it, which is why
+it is linear where this port is quadratic in TIME.
 
 **Separators are read, not guessed, and it took four review rounds to learn that.** Three
 successive cuts tried to spot a permutation's separators in the raw body text before retaining
@@ -1351,10 +1368,18 @@ under a comment claiming one linear pass (187 ms at 20 000 bare `<`, 15 578 at 1
 None of it was necessary. By the time a permutation's body is judged, `ParsePermConfig` has run
 and the per-element separators are collected, so the EXACT fields the authority reads —
 `PermSep`, `PermLastSep` and each option's separator — are already in hand. `MakePerm` reads
-those with the authority's own `HasReferenceText`. Only a leading region is config and only a
-trailing one on a non-final part is a separator; everything else between angle brackets is option
-text. The prefilter itself no longer knows what a separator is. Measured on the angle-wrapped
+those itself. Only a leading region is config and only a trailing one on a non-final part is a
+separator; everything else between angle brackets is option text. The prefilter itself no longer knows what a separator is. Measured on the angle-wrapped
 permutation chain: `EOutOfMemory` at 32 000 before, parses after.
+
+**Which fields, and with which test, is §5.13's correction and not this section's.** #80 showed
+the PARSED `sep`/`lastsep` are the wrong two: `minsize=%n%` and an unquoted `sep=%S%` leave no
+trace in them, so 0.7.0 never re-read those constructs at all. `MakePerm` judges the RAW header —
+the text `ParsePermConfig` consumed — plus each per-element separator as extracted, and the test
+is `HoldsTextForReread` (a reference OR a whole conditional), not `HasReferenceText`. The lesson
+survives the correction intact: it is still the parse's own product being read rather than a
+guess at the raw body, and the raw header qualifies because it is precisely what the parse
+consumed. What changed is WHICH product answers the question.
 
 **And "option text" has to mean the text each option KEEPS, which a ninth round caught.** The
 first cut of the exact read still ran the structural scan over the permutation's raw body — and
@@ -1415,6 +1440,14 @@ breaks it. Removing the parsed-separator read fails exactly the six separator ch
 both quote-grammar ones and the reference hidden past a quoted `>` — and nothing else; stopping
 the walk from entering conditionals fails exactly the two nested-conditional checks plus the two
 branch-trimming ones.
+
+**That second mutant describes today's engine, and the four checks pass anyway** — which is not a
+contradiction but the point of #80. Not entering a conditional was a false NEGATIVE when the key
+was "a reference somewhere inside a branch": no reference found, no mark, old output. Under #80 a
+conditional marks ON SIGHT, so refusing to enter it is a false positive at worst, and
+`splice/reference-two-conditionals-deep-still-splits`, its permutation twin,
+`splice/taken-branch-trimmed-at-the-edge` and `splice/empty-element-dropped` all still hold.
+Read the sentence above as the 0.9.0 release's evidence about the key it had.
 
 **Ownership on the exception path.** Every node is attached to its parent list BEFORE anything
 is hung on it, each owning list is reserved to its final size before it is filled, and the
@@ -1624,17 +1657,55 @@ The first version of this section measured the nesting shapes in milliseconds, f
 with the previous commit and concluded the retention did not dominate. It dominated in the other
 dimension: on `[{?f?a|b}|` × 16 000 the heap went from 26 MB to 1 381 MB, and a 1.6 MB template
 of 4 000 padded levels raised `EOutOfMemory` out of `SpRender`, which §9.2 says never happens on
-content. Found by review, which measured the peak instead of the clock.
+content. Found by review, which measured the peak instead of the clock. The same shapes peak at
+43 MB now, and the instrument is the lesson: when a change makes something be KEPT, time cannot
+see it.
 
-`SP_PARSE_RAW_BUDGET` (64 MB per parse) bounds what one parse may retain; past it a construct
-keeps no body and renders the tree it was parsed into. Every shape above now completes with a
-peak heap of about 81 MB. It is a real divergence, not a free one — an engine built with the cap
-at 1 KB differs from the reference on 110 and 120 of 20 000 generated templates — and what makes
-it acceptable is distance: no generated template comes within three orders of magnitude of 64 MB,
-and the differential at the shipped cap is zero. **The argument that the cap only ever refuses
-harmless retentions was written into this section and then refuted by that 1 KB run**: bodies are
-refused across siblings too, not only down a chain. The proper fix is to parse over spans of one
-string instead of copies, which is the backlog item; then a retained body costs two integers.
+**A 64 MB cap stood here for one commit, and it was the wrong fix.** `SP_PARSE_RAW_BUDGET`
+bounded what one parse could retain; past it a construct kept no body and rendered the tree it
+was parsed into — the PRE-#80 answer for it. Two justifications for it were written into this
+section and both were refuted. The first said the cap only ever refuses harmless retentions; a
+build with the cap at 1 KB killed that, differing from the reference on 110 and 120 of 20 000
+generated templates, because bodies are refused across SIBLINGS and not only down a chain. The
+second said distance made it safe — "no generated template comes within three orders of magnitude
+of 64 MB". Review refuted that by building the counterexample: retention sums to roughly
+`document × marked depth`, so the reach is SIZE × DEPTH, and a 1.4 MB template renders a raw `|`
+into finished text where the reference splits it. That is the production defect of #78 again, in
+the release that was supposed to complete #78's family of fixes. **A generated corpus measures
+what its generator can build; it is not a bound on what a host can send.**
+
+**What ships instead: a descendant of a RETAINED construct never takes a body of its own.** If
+the ancestor's re-read fires, its whole subtree is re-parsed out of the spliced text and these
+nodes never render. If it does not fire, no descendant's body could have changed under the same
+passes either — a descendant's body is a SUBSTRING of the ancestor's, the passes (conditionals,
+the fixpoint, conditionals) are the same text transforms wherever they run, and a subtree frozen
+for running out of hops is frozen for the descendant too. So one body is kept per marked CHAIN
+instead of one per marked LEVEL, the quadratic is gone rather than bounded, and no cap is needed:
+the cliff shapes peak at **43 MB** against 105 MB, with the 1.6 MB template that once aborted
+unchanged in time.
+
+This rests on the prefilter being not a necessary condition that an authority later refines —
+how it was introduced — but the **same predicate, computed earlier**. Each option's parse job is
+pushed with exactly the text `MayHoldDirectReference` is given; `ScanInto` and the prefilter then
+make the same three decisions at the same positions (a matched `{` is a conditional exactly when
+`RecognizeConditional` says so over the same span, otherwise an enumeration or plural, neither of
+which marks; a matched `[` is a permutation; `%` + `IsAsciiWord`+ + `%` is a reference; an
+unmatched bracket and a barren `%` advance one character). That reading is the proof, and it is
+why `pend`, the flat finalize pass and the two node-walking predicates are deleted rather than
+kept as a net — the descendant rule is only sound if a taken mark is final, so a net that could
+clear one would have made it unsound.
+
+**Verified**, all against `@spintax/core` through its own pipeline: the four starvation shapes ×
+3 RNG strategies, where the capped build diverged on 9 of 12 renders and this one on none, with
+a cap-free control document that matches on both builds; 200 288 generated templates × 3
+strategies byte-identical to both the previous build and the reference. That generator was fixed
+first — `gen4` passed no closing bracket to its top-level `construct()`, so every template built
+for the #80 review ended in an UNMATCHED one and the outermost construct, the only level with no
+ancestor above it, was never exercised. Controls: a mutant that marks descendants without the
+ancestor keeping anything fails three of the six new local checks and moves ~1 500 of 50 072
+templates; one whose re-read inherits the flag fails all six and fifteen older splice checks.
+Parsing over spans of one string is still the backlog item — it would make a retained body two
+integers and close the TIME quadratic that remains.
 
 **The reference is no longer the same shape here either:** 0.8.0 made deep nesting linear with a
 side index and answers those chains in 43 ms and 111 ms against this port's 265 ms and 4.8 s.
