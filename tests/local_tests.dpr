@@ -1061,6 +1061,29 @@ begin
   Check('plural/ru-low-integer', RenderIn('{plural -2147483648: a|b|c}', 'ru'),       'c');
   Check('plural/ar-two-forms',   RenderIn('{plural 5: a|b}', 'ar'),
         FullwidthBrace(True) + 'plural 5: a|b' + FullwidthBrace(False));
+  { #8: a count past 32 bits raised EConvertError out of SpRender. The reference reads the
+    count as a JavaScript double; every expected value here is @spintax/core's. }
+  Check('plural/ru-2^31',        RenderIn('{plural 2147483648: a|b|c}', 'ru'), 'c');
+  Check('plural/en-2^53+1',      RenderIn('{plural 9007199254740993: p|q}', 'en'), 'q');
+  Check('plural/en-20-digits',   RenderIn('{plural 99999999999999999999: p|q}', 'en'), 'q');
+  { past Int64, exact as a double, remainder 4 }
+  Check('plural/ru-past-int64',  RenderIn('{plural 9223372036854779904: a|b|c}', 'ru'), 'b');
+  { 2^62 - 2^9 - 2^8: halfway between the doubles ...6880 and ...7392, rounds to the even
+    one (...6880, many); rounding the tie up would give ...7392, few }
+  Check('plural/ru-tie-to-even', RenderIn('{plural 4611686018427387136: a|b|c}', 'ru'), 'c');
+  { (2^53 - 1) * 2^971 is the largest double; half its step above it is Infinity, whose NaN
+    remainders fail every test: many / other. One below the halfway point is still finite. }
+  Check('plural/ar-below-inf',   RenderIn('{plural 1797693134862315807937289714053034150799341327100378269361737789804449682927647509466490179775872070963302864166928879109465555478519404026306574886715058206819089020007083836762738548458177115317644757302700698555713669596228429148198608349364752927190741684443655107043427115596995080930428801779041744977' + '91: z|o|t|f|m|x}', 'ar'), 'm');
+  Check('plural/ar-inf',         RenderIn('{plural 1797693134862315807937289714053034150799341327100378269361737789804449682927647509466490179775872070963302864166928879109465555478519404026306574886715058206819089020007083836762738548458177115317644757302700698555713669596228429148198608349364752927190741684443655107043427115596995080930428801779041744977' + '92: z|o|t|f|m|x}', 'ar'), 'x');
+  Check('plural/ru-400-nines',   RenderIn('{plural ' + StringOfChar('9', 400) + ': a|b|c}', 'ru'), 'c');
+  Check('plural/en-400-nines',   RenderIn('{plural -' + StringOfChar('9', 400) + ': p|q}', 'en'), 'q');
+  Check('plural/en-leading-zeros', RenderIn('{plural 0000000000000000000001: p|q}', 'en'), 'p');
+  { The same parse in the permutation config: a size past 32 bits is clamped to the element
+    count, so it renders as that count. }
+  Check('perm/minsize-past-32-bits', RenderIn('[<minsize=99999999999>a|b|c]', 'en'),
+        RenderIn('[<minsize=3>a|b|c]', 'en'));
+  Check('perm/maxsize-past-32-bits', RenderIn('[<minsize=1;maxsize=99999999999>a|b|c]', 'en'),
+        RenderIn('[<minsize=1;maxsize=3>a|b|c]', 'en'));
 
 end;
 

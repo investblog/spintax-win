@@ -990,20 +990,117 @@ begin
     Result := 2;
 end;
 
-{ The magnitude is Int64: Abs(Low(Integer)) does not fit an Integer -- it overflows under -Co
-  and stays negative without it, which the Arabic branch would use as a list index. }
-function PluralFor(const BaseLang: string; n: Integer; forms: TStringList): string;
-var a: Int64; mod10, mod100: Integer;
+{ A plural count as the reference reads it: Number.parseInt(count, 10), a JavaScript double.
+  Below 2^53 that is the integer itself; past it, the nearest double (ties to even), whose
+  remainders are exact; past the double range, Infinity, whose remainders are NaN and fail
+  every test. This used to be StrToInt, which raised EConvertError out of SpRender on any
+  count past 32 bits (#8).
+
+  Read with integer arithmetic only. Val/StrToFloat round through Extended on i386 and
+  through Double on x86_64, so a float parse could pick a different double per target. }
+type
+  TPluralCount = record
+    Exact: Boolean;   // A is the value (|count| < 2^53)
+    Inf: Boolean;     // past the double range
+    A: Int64;
+    Mod100: Integer;  // valid unless Inf
+  end;
+
+function ReadPluralCount(const s: string): TPluralCount;
+var
+  i, k, st, n, bits, e: Integer;
+  limbs: array of LongWord;
+  carry, m, p: QWord;
+  roundBit, sticky: Boolean;
+
+  function Bit(j: Integer): Boolean;
+  begin
+    Result := (limbs[j shr 5] shr (j and 31)) and 1 = 1;
+  end;
+
 begin
-  a := Abs(Int64(n));
-  mod10 := Integer(a mod 10);
-  mod100 := Integer(a mod 100);
+  Result := Default(TPluralCount);
+  { The sign does not matter (every rule reads the magnitude), nor do leading zeros. }
+  st := 1;
+  if s[1] = '-' then st := 2;
+  while (st < Length(s)) and (s[st] = '0') do Inc(st);
+  n := Length(s) - st + 1;
+  if n <= 15 then  // below 10^15 < 2^53
+  begin
+    Result.Exact := True;
+    for i := st to Length(s) do Result.A := Result.A * 10 + (Ord(s[i]) - Ord('0'));
+    Result.Mod100 := Integer(Result.A mod 100);
+    Exit;
+  end;
+  { 310 digits with no leading zero is at least 10^309, past the largest double (~1.8e308).
+    Also what keeps the conversion below from being quadratic in a long digit run. }
+  if n >= 310 then begin Result.Inf := True; Exit; end;
+
+  { Decimal to base-2^32 limbs, least significant first. }
+  SetLength(limbs, 1);
+  limbs[0] := 0;
+  for i := st to Length(s) do
+  begin
+    carry := Ord(s[i]) - Ord('0');
+    for k := 0 to High(limbs) do
+    begin
+      carry := QWord(limbs[k]) * 10 + carry;
+      limbs[k] := LongWord(carry and $FFFFFFFF);
+      carry := carry shr 32;
+    end;
+    if carry <> 0 then
+    begin
+      SetLength(limbs, Length(limbs) + 1);
+      limbs[High(limbs)] := LongWord(carry);
+    end;
+  end;
+  bits := 32 * Length(limbs);
+  while not Bit(bits - 1) do Dec(bits);
+
+  { Round to 53 significant bits, ties to even: value = m * 2^e. 15+ digits is at least
+    10^15 > 2^49, so bits > 49; at bits <= 53 it is exact (e = 0). }
+  e := bits - 53;
+  if e < 0 then e := 0;
+  m := 0;
+  for i := bits - 1 downto e do m := (m shl 1) or QWord(Ord(Bit(i)));
+  if e > 0 then
+  begin
+    roundBit := Bit(e - 1);
+    sticky := False;
+    for i := 0 to e - 2 do if Bit(i) then begin sticky := True; Break; end;
+    if roundBit and (sticky or Odd(m)) then Inc(m);
+    if m = QWord(1) shl 53 then begin m := m shr 1; Inc(e); end;
+  end;
+  { The largest double is (2^53 - 1) * 2^971. }
+  if e > 971 then begin Result.Inf := True; Exit; end;
+  if e = 0 then
+  begin
+    Result.Exact := m < QWord(1) shl 53;
+    Result.A := Int64(m);
+  end;
+  p := 1;
+  for i := 1 to e do p := (p * 2) mod 100;
+  Result.Mod100 := Integer(((m mod 100) * p) mod 100);
+end;
+
+function PluralFor(const BaseLang: string; const c: TPluralCount; forms: TStringList): string;
+var mod10, mod100: Integer;
+begin
+  { Infinity: its NaN remainders fail every test, so each rule takes its last branch. }
+  if c.Inf then
+  begin
+    if BaseLang = 'ar' then Exit(forms[5]);
+    if PluralArity(BaseLang) = 3 then Exit(forms[2]);
+    Exit(forms[1]);
+  end;
+  mod100 := c.Mod100;
+  mod10 := mod100 mod 10;
   { Arabic, CLDR order: zero (0), one (1), two (2), few (n mod 100 in 3..10), many (11..99),
     other (the rest: 100-102, 200-202, ...). Before the arity test, which would send it down
     the English path. }
   if BaseLang = 'ar' then
   begin
-    if a <= 2 then Exit(forms[Integer(a)]);
+    if c.Exact and (c.A <= 2) then Exit(forms[Integer(c.A)]);
     if (mod100 >= 3) and (mod100 <= 10) then Exit(forms[3]);
     if mod100 >= 11 then Exit(forms[4]);
     Exit(forms[5]);
@@ -1016,7 +1113,7 @@ begin
   end
   else
   begin
-    if a = 1 then Exit(forms[0]) else Exit(forms[1]);
+    if c.Exact and (c.A = 1) then Exit(forms[0]) else Exit(forms[1]);
   end;
 end;
 
@@ -1759,7 +1856,7 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
       `[<minsize foo minsize=1>…]` matches the second one; this stopped at the first and
       reported nothing. }
   function FindInt(const key: string): Integer;
-  var k, j: Integer; num, low2: string;
+  var k, j: Integer; big: Int64; num, low2: string;
   begin
     Result := -1;
     low2 := LowerAscii(configStr);
@@ -1774,10 +1871,22 @@ var trimmed, configStr, remaining, low, sv: string; endPos, i: Integer; inQuote:
       begin
         Inc(j);
         while (j <= Length(configStr)) and IsCfgWs(configStr[j]) do Inc(j);
+        { Saturated at High(Integer): the render clamps a size to the element count anyway,
+          as the reference does with the double parseInt gives it. StrToInt raised
+          EConvertError out of SpRender past 32 bits (#8). }
         num := '';
+        big := 0;
         while (j <= Length(configStr)) and CharInSet(configStr[j], ['0'..'9']) do
-        begin num := num + configStr[j]; Inc(j); end;
-        if num <> '' then Exit(StrToInt(num));
+        begin
+          num := num + configStr[j];
+          if big <= High(Integer) then big := big * 10 + (Ord(configStr[j]) - Ord('0'));
+          Inc(j);
+        end;
+        if num <> '' then
+        begin
+          if big > High(Integer) then Exit(High(Integer));
+          Exit(Integer(big));
+        end;
       end;
       Inc(k);
     end;
@@ -2651,7 +2760,7 @@ begin
       else cur := cur + formsRaw[i];
     forms.Add(PhpTrim(cur));
     if forms.Count <> PluralArity(base) then Exit(Answer(FullwidthVerbatim(countRaw, formsRaw)));
-    picked := PluralFor(base, StrToInt(count), forms);
+    picked := PluralFor(base, ReadPluralCount(count), forms);
   finally
     forms.Free;
   end;
