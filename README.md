@@ -100,16 +100,16 @@ cross-engine gate. Measured on this port:
 
 | corpus file            | cases | passed | note                                  |
 |------------------------|-------|--------|---------------------------------------|
-| render-semantics       | 124   | 124    | plurals, conditionals, permutations, variables, set/def, the text splice of a variable, a conditional or a config into a construct |
-| validate               | 77    | 77     | bracket/directive/permutation/plural/variable diagnostics, with exact counts |
-| render-postprocess     | 67    | 67     | full 12-step pipeline, read as PCRE2 reads it |
+| render-semantics       | 150   | 150    | plurals (Arabic's six forms included), conditionals, permutations (CJK separators included), variables, set/def, the text splice of a variable, a conditional or a config into a construct |
+| validate               | 80    | 80     | bracket/directive/permutation/plural/variable diagnostics, with exact counts |
+| render-postprocess     | 86    | 86     | full 12-step pipeline, read as PCRE2 reads it; no space before a closing quote or bracket |
 | render-deterministic   | 16    | 16     | variable substitution, enumeration selection |
 | comments               | 13    | 13     | `/# … #/` stripping, including the unterminated opener |
-| extract                | 12    | 12     | ref / set / def / include enumeration |
+| extract                | 17    | 17     | ref / set / def / include enumeration |
 | neutralize             | 10    | 10     | T2 shielding round-trip               |
 | render-rng-selection   | 10    | 10     | selection semantics under injected RNG |
 
-Totals: **`PASS=329 FAIL=0 SKIP=4`** over 333 cases. Only `kind:rng` render cases
+Totals: **`PASS=382 FAIL=0 SKIP=4`** over 386 cases (spintax-js@c96b21a, `@spintax/core` 0.11.0). Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 
@@ -124,8 +124,8 @@ Implemented and fixture-verified: parse and render for enumerations,
 permutations (with `<config>` for `minsize`/`maxsize`/`sep`/`lastsep` and
 per-element separators), scoped variables with recursive value expansion,
 `#set` macros and `#def` definitions, value-driven conditionals `{?VAR?a|b}`
-and `{?!VAR?a}`, locale-aware plurals for the Slavic three-form family
-(ru/uk/be, sr/hr/bs) and the two-form default, `neutralize` / safety-restore,
+and `{?!VAR?a}`, locale-aware plurals for Arabic's six forms (ar), the Slavic
+three-form family (ru/uk/be, sr/hr/bs) and the two-form default, `neutralize` / safety-restore,
 `extract`, and the static `validate` (bracket balance, directive shape and
 duplicate names, permutation config keys, plural nesting and arity, variable
 self- and circular-reference, unknown include targets).

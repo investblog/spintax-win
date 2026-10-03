@@ -977,21 +977,37 @@ begin
   end;
 end;
 
+{ 6 for Arabic (CLDR zero/one/two/few/many/other), strict like the others (spintax-js#88):
+  a two-form ar block is plural.arity. 3 for East Slavic + BCS, else 2. }
 function PluralArity(const BaseLang: string): Integer;
 begin
-  if (BaseLang = 'ru') or (BaseLang = 'uk') or (BaseLang = 'be')
+  if BaseLang = 'ar' then
+    Result := 6
+  else if (BaseLang = 'ru') or (BaseLang = 'uk') or (BaseLang = 'be')
      or (BaseLang = 'sr') or (BaseLang = 'hr') or (BaseLang = 'bs') then
     Result := 3
   else
     Result := 2;
 end;
 
+{ The magnitude is Int64: Abs(Low(Integer)) does not fit an Integer -- it overflows under -Co
+  and stays negative without it, which the Arabic branch would use as a list index. }
 function PluralFor(const BaseLang: string; n: Integer; forms: TStringList): string;
-var a, mod10, mod100: Integer;
+var a: Int64; mod10, mod100: Integer;
 begin
-  a := Abs(n);
-  mod10 := a mod 10;
-  mod100 := a mod 100;
+  a := Abs(Int64(n));
+  mod10 := Integer(a mod 10);
+  mod100 := Integer(a mod 100);
+  { Arabic, CLDR order: zero (0), one (1), two (2), few (n mod 100 in 3..10), many (11..99),
+    other (the rest: 100-102, 200-202, ...). Before the arity test, which would send it down
+    the English path. }
+  if BaseLang = 'ar' then
+  begin
+    if a <= 2 then Exit(forms[Integer(a)]);
+    if (mod100 >= 3) and (mod100 <= 10) then Exit(forms[3]);
+    if mod100 >= 11 then Exit(forms[4]);
+    Exit(forms[5]);
+  end;
   if PluralArity(BaseLang) = 3 then
   begin
     if (mod10 = 1) and (mod100 <> 11) then Exit(forms[0]);
@@ -2724,16 +2740,28 @@ begin
   else Result := opts.Rng.Next(0, node.EnumOptions.Count - 1);
 end;
 
+{ A purely alphabetic separator (every code point a letter) is space-padded; anything else passes
+  through -- except when every letter belongs to a script written without spaces between words
+  (spintax-js#87): Han, Hiragana, Katakana and the two prolonged-sound marks join bare, so
+  [<lastsep="和">A|B] is A和B. Hangul keeps the padding, and a mixed separator such as and和
+  is padded. The letter test used to count any non-ASCII byte as a letter, so a dash or an
+  arrow was padded here and nowhere else in the family. }
 function PadSeparator(const sep: string): string;
-var t: string; i: Integer; allLetters: Boolean;
+var t: string; i, cpLen: Integer; cp: LongWord; allLetters, allUnspaced: Boolean;
 begin
   t := PhpTrim(sep);
   if t = '' then Exit(sep);
-  // \p{L}+ approximated: all bytes are ASCII letters OR any non-ASCII (UTF-8 letter bytes)
   allLetters := True;
-  for i := 1 to Length(t) do
-    if not ((CharInSet(t[i], ['A'..'Z','a'..'z'])) or (Ord(t[i]) >= $80)) then begin allLetters := False; Break; end;
-  if allLetters then Result := ' ' + t + ' ' else Result := sep;
+  allUnspaced := True;
+  i := 1;
+  while i <= Length(t) do
+  begin
+    cp := SpCodePointAt(t, i, cpLen);
+    if not SpIsUniLetter(cp) then begin allLetters := False; Break; end;
+    if not InRangeTable(cp, UNSPACED_RANGES) then allUnspaced := False;
+    Inc(i, cpLen);
+  end;
+  if allLetters and not allUnspaced then Result := ' ' + t + ' ' else Result := sep;
 end;
 
 { Build a permutation from its elements' ALREADY-RENDERED texts -- `done[i]` is what the i-th
@@ -3793,13 +3821,51 @@ begin
   text := buf.Finish;
 end;
 
+{ The quote characters a closer run is made of: " ' « » ‹ › “ ” ‘ ’ }
+function IsCloserQuoteCp(cp: LongWord): Boolean;
+begin
+  Result := (cp = $22) or (cp = $27) or (cp = $AB) or (cp = $BB) or (cp = $2039) or (cp = $203A)
+    or (cp = $201C) or (cp = $201D) or (cp = $2018) or (cp = $2019);
+end;
+
+{ Whether what starts at i closes the quotation or aside a punctuation mark ends inside
+  (spintax-js#85): `"Is it audited?", the figure`, `(see above.)`, `«Как дела?», и ушёл`. The
+  spacing passes insert no space between a mark and a closer; what follows it is left alone.
+  ) and ] never open, so they always close. A quote is not read by its shape -- “ opens English
+  and closes German, " does both -- but by what follows the WHOLE run: whitespace, the end, a
+  tag, the end of a tag (title="Really?">), . , ; : ! ? …, ) ] or a dash (— –). A LIST of
+  followers, not "anything but a word": a shape it does not name keeps the space it always got.
+  The reference's CLOSER, read as a scanner. }
+function CloserAt(const s: string; i: Integer): Boolean;
+var cp: LongWord; cpLen, j: Integer;
+begin
+  cp := SpCodePointAt(s, i, cpLen);
+  if (cp = Ord(')')) or (cp = Ord(']')) then Exit(True);
+  if not IsCloserQuoteCp(cp) then Exit(False);
+  j := i + cpLen;
+  while j <= Length(s) do
+  begin
+    cp := SpCodePointAt(s, j, cpLen);
+    if not IsCloserQuoteCp(cp) then Break;
+    Inc(j, cpLen);
+  end;
+  if j > Length(s) then Exit(True);
+  cp := SpCodePointAt(s, j, cpLen);
+  if IsUcpSpaceCp(cp) or (cp = Ord('<')) or (cp = Ord('>')) then Exit(True);
+  if (cp = Ord('/')) and (j + 1 <= Length(s)) and (s[j + 1] = '>') then Exit(True);
+  Result := (cp = Ord('.')) or (cp = Ord(',')) or (cp = Ord(';')) or (cp = Ord(':'))
+    or (cp = Ord('!')) or (cp = Ord('?')) or (cp = $2026) or (cp = Ord(')')) or (cp = Ord(']'))
+    or (cp = $2014) or (cp = $2013);
+end;
+
 { The two spacing lookaheads' refusal, at i (a position inside the text): a decimal digit of
-  any script (UCP \d), UCP whitespace, or a tag. The end of the text is the caller's test. }
+  any script (UCP \d), UCP whitespace, a tag, or a closer. The end of the text is the
+  caller's test. }
 function NoSpaceNeededAt(const s: string; i: Integer): Boolean;
 var cp: LongWord; cpLen: Integer;
 begin
   cp := SpCodePointAt(s, i, cpLen);
-  Result := InRangeTable(cp, ND_RANGES) or IsUcpSpaceCp(cp) or (cp = Ord('<'));
+  Result := InRangeTable(cp, ND_RANGES) or IsUcpSpaceCp(cp) or (cp = Ord('<')) or CloserAt(s, i);
 end;
 
 { Steps 6 and 7: collapse space runs, then punctuation spacing. }

@@ -1051,6 +1051,21 @@ const
     $1D7CA, $1D7CA, $1E900, $1E921
   );
 
+  { Script Han, Hiragana, Katakana + U+30FC, U+FF70 -- a separator that joins bare }
+  UNSPACED_RANGES_COUNT = 38;
+  UNSPACED_RANGES: array[0..UNSPACED_RANGES_COUNT * 2 - 1] of LongWord = (
+    $2E80, $2E99, $2E9B, $2EF3, $2F00, $2FD5, $3005, $3005,
+    $3007, $3007, $3021, $3029, $3038, $303B, $3041, $3096,
+    $309D, $309F, $30A1, $30FA, $30FC, $30FF, $31F0, $31FF,
+    $32D0, $32FE, $3300, $3357, $3400, $4DBF, $4E00, $9FFF,
+    $F900, $FA6D, $FA70, $FAD9, $FF66, $FF9D, $16FE2, $16FE3,
+    $16FF0, $16FF6, $1AFF0, $1AFF3, $1AFF5, $1AFFB, $1AFFD, $1AFFE,
+    $1B000, $1B122, $1B132, $1B132, $1B150, $1B152, $1B155, $1B155,
+    $1B164, $1B167, $1F200, $1F200, $20000, $2A6DF, $2A700, $2B81D,
+    $2B820, $2CEAD, $2CEB0, $2EBE0, $2EBF0, $2EE5D, $2F800, $2FA1D,
+    $30000, $3134A, $31350, $33479
+  );
+
   { uppercase mapping as (lo, hi, delta) runs; delta added to the code point.
     Built over the FOLDED Ll set, which is a superset of the strict one, so a
     single table serves both predicates. }

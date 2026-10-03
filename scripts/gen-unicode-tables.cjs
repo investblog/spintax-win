@@ -65,6 +65,11 @@ const isNd = (cp) => /\p{Nd}/u.test(String.fromCodePoint(cp));
 // Upper and titlecase letters. A TLD is a label in ONE case (#79): the lower branch is L minus
 // these, the upper branch is L minus Ll, and Lm/Lo -- letters without case -- fit either.
 const isLuLt = (cp) => /[\p{Lu}\p{Lt}]/u.test(String.fromCodePoint(cp));
+// Scripts written without spaces between words (spintax-js#87): a permutation separator made
+// only of these joins bare. The reference's UNSPACED_SCRIPT_RE (render.ts), one code point --
+// U+30FC and U+FF70 are Script=Common and listed by hand there, so they are here.
+const isUnspaced = (cp) =>
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\uFF70]/u.test(String.fromCodePoint(cp));
 
 // Uppercase, split into the two shapes Pascal needs: arithmetic runs, and the handful of
 // code points whose uppercase is more than one character (sharp s -> SS, ligatures, ...).
@@ -194,6 +199,7 @@ const lFold = ranges(isLFold);
 const ucpWord = ranges(isUcpWord);
 const nd = ranges(isNd);
 const luLt = ranges(isLuLt);
+const unspaced = ranges(isUnspaced);
 
 const out = [];
 out.push('{ GENERATED FILE -- DO NOT EDIT BY HAND.');
@@ -227,6 +233,9 @@ out.push('');
 out.push(emitRanges('ND_RANGES', nd, 'Unicode Nd: decimal digits -- UCP \\d'));
 out.push('');
 out.push(emitRanges('LU_LT_RANGES', luLt, 'Unicode Lu and Lt -- the one-case TLD rule'));
+out.push('');
+out.push(emitRanges('UNSPACED_RANGES', unspaced,
+  'Script Han, Hiragana, Katakana + U+30FC, U+FF70 -- a separator that joins bare'));
 out.push('');
 out.push(emitRuns('UPPER_RUNS', upRuns));
 out.push('');

@@ -972,12 +972,30 @@ begin
   end;
 end;
 
+{ spintax-js#85: no space between a mark and what closes the quotation or aside it ends. A
+  quote closes by what follows the WHOLE run -- a list -- not by its shape. ASCII cases only;
+  the guillemet and curly-quote cases are in the corpus. }
+procedure TestClosers;
+begin
+  Check('closer/quote-comma',    RenderPP('he asked "is it?", then left'),   'He asked "is it?", then left');
+  Check('closer/bracket',        RenderPP('(see above.) next'),              '(see above.) next');
+  Check('closer/end-of-text',    RenderPP('it is "the best."'),              'It is "the best."');
+  Check('closer/self-closing',   RenderPP('<input value="yes,"/>'),          '<input value="yes,"/>');
+  { A word after the quote: it opens the next one, and keeps its space. }
+  Check('closer/opener-spaced',  RenderPP('is it?"next" one'),               'Is it? "next" one');
+  { `(` is not on the follower list. }
+  Check('closer/paren-not-listed', RenderPP('is it?"(x)" one'),              'Is it? "(x)" one');
+  { A run is read whole: an apostrophe then a double quote, then a space -- the run closes. }
+  Check('closer/quote-run',      RenderPP('end.''" next'),                   'End.''" next');
+end;
+
 { Permutation <config> and plural fallbacks. The corpus schema has no field for either,
   so nothing else asserts them.
 
   Every expectation below was MEASURED against the reference (@spintax/core dist, node)
   on 2026-07-22, not derived from this port -- which currently agrees on all of them. The
-  point is to keep it that way.
+  point is to keep it that way. The CJK-separator and Arabic cases (and TestClosers above)
+  were measured the same way on 2026-10-03, against @spintax/core 0.11.0.
 
   Permutation results are made order-independent by using identical elements, so they do
   not depend on RNG selection, which is not comparable across engines anyway. }
@@ -996,6 +1014,16 @@ begin
   { An unrecognised key is NOT config: the whole <...> stays content and is repeated per
     element. Easy to "fix" into silently dropping it -- the reference does not. }
   Check('perm/unknown-key',      RenderIn('[<bogus=1>a|a|a]', ''),                    'abogus=1abogus=1a');
+  { spintax-js#87: a separator whose letters are all Han/kana joins bare; Hangul and a mixed
+    separator keep the padding. UTF-8 bytes, because this file stays pure ASCII:
+    U+548C, U+20000 (outside the BMP, which the corpus lacks), U+BC0F. }
+  Check('perm/sep-han-bare',     RenderIn('[<sep="'#$E5#$92#$8C'">a|a]', ''),         'a'#$E5#$92#$8C'a');
+  Check('perm/sep-astral-han',   RenderIn('[<sep="'#$F0#$A0#$80#$80'">a|a]', ''),     'a'#$F0#$A0#$80#$80'a');
+  Check('perm/sep-hangul',       RenderIn('[<sep="'#$EB#$B0#$8F'">a|a]', ''),         'a '#$EB#$B0#$8F' a');
+  Check('perm/sep-mixed',        RenderIn('[<sep="and'#$E5#$92#$8C'">a|a]', ''),      'a and'#$E5#$92#$8C' a');
+  { A non-ASCII separator that is not a letter (U+2014 EM DASH) is not padded -- the old
+    byte test counted any non-ASCII byte as a letter and padded it, unlike the reference. }
+  Check('perm/sep-em-dash',      RenderIn('[<sep="'#$E2#$80#$94'">a|a]', ''),         'a'#$E2#$80#$94'a');
 end;
 
 { Only the LENIENT paths live here. The Slavic bucket rules are already gated by 37 corpus
@@ -1019,6 +1047,20 @@ begin
         FullwidthBrace(True) + 'plural 5: item' + FullwidthBrace(False));
   Check('plural/arity-3-in-en',  RenderIn('{plural 5: a|b|c}', ''),
         FullwidthBrace(True) + 'plural 5: a|b|c' + FullwidthBrace(False));
+  { spintax-js#88: Arabic takes six forms in CLDR order -- the boundaries the corpus does not
+    reach (1000, a region subtag) next to the ones it does. }
+  Check('plural/ar-0',           RenderIn('{plural 0: z|o|t|f|m|x}', 'ar'),     'z');
+  Check('plural/ar-2',           RenderIn('{plural 2: z|o|t|f|m|x}', 'ar'),     't');
+  Check('plural/ar-10',          RenderIn('{plural 10: z|o|t|f|m|x}', 'ar'),    'f');
+  Check('plural/ar-11',          RenderIn('{plural 11: z|o|t|f|m|x}', 'ar'),    'm');
+  Check('plural/ar-102',         RenderIn('{plural 102: z|o|t|f|m|x}', 'ar'),   'x');
+  Check('plural/ar-1000',        RenderIn('{plural 1000: z|o|t|f|m|x}', 'ar'),  'x');
+  Check('plural/ar-EG-minus-2',  RenderIn('{plural -2: z|o|t|f|m|x}', 'ar-EG'), 't');
+  { Low(Integer): Abs of it does not fit an Integer. 2147483648 mod 100 = 48 -> many. }
+  Check('plural/ar-low-integer', RenderIn('{plural -2147483648: z|o|t|f|m|x}', 'ar'), 'm');
+  Check('plural/ru-low-integer', RenderIn('{plural -2147483648: a|b|c}', 'ru'),       'c');
+  Check('plural/ar-two-forms',   RenderIn('{plural 5: a|b}', 'ar'),
+        FullwidthBrace(True) + 'plural 5: a|b' + FullwidthBrace(False));
 
 end;
 
@@ -2639,6 +2681,7 @@ begin
   TestSeededRng;
   TestPermutationConfig;
   TestPluralFallbacks;
+  TestClosers;
   TestPluralLocaleMissing;
   TestPluralFormCounting;
   TestConditionalTruthiness;
