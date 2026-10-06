@@ -2852,14 +2852,40 @@ end;
 { A purely alphabetic separator (every code point a letter) is space-padded; anything else passes
   through -- except when every letter belongs to a script written without spaces between words
   (spintax-js#87): Han, Hiragana, Katakana and the two prolonged-sound marks join bare, so
-  [<lastsep="和">A|B] is A和B. Hangul keeps the padding, and a mixed separator such as and和
-  is padded. The letter test used to count any non-ASCII byte as a letter, so a dash or an
-  arrow was padded here and nowhere else in the family. }
-function PadSeparator(const sep: string): string;
-var t: string; i, cpLen: Integer; cp: LongWord; allLetters, allUnspaced: Boolean;
+  [<lastsep="和">A|B] is A和B; Thai, Lao, Khmer and Myanmar likewise (#90). Hangul keeps the
+  padding, and a mixed separator such as and和 is padded. The letter test used to count any
+  non-ASCII byte as a letter, so a dash or an arrow was padded here and nowhere else in the
+  family.
+
+  And except a proclitic conjunction in its BASE LANGUAGE (#90): under `ar` a separator that is
+  exactly U+0648 or U+0641, under `he` exactly U+05D5, keeps the space before it and none after
+  when `next` -- the element it goes in front of, already rendered and trimmed -- starts with a
+  letter of that script: Arabic writes the conjunction attached to its word. Before anything else
+  (a Latin brand, a digit, U+0640 tatweel, which is Script=Common) both spaces stay. Keyed by
+  language, not script: Persian and Urdu write the same letter as a word of its own. Compared by
+  CODE POINT, never against a string literal, whose bytes depend on the source encoding and on
+  which width `string` has in this build. }
+function PadSeparator(const sep, baseLang, next: string): string;
+var t: string; i, cpLen, nextLen: Integer; cp, nextCp: LongWord; allLetters, allUnspaced,
+    proclitic: Boolean;
 begin
   t := PhpTrim(sep);
   if t = '' then Exit(sep);
+  if (baseLang = 'ar') or (baseLang = 'he') then
+  begin
+    cp := SpCodePointAt(t, 1, cpLen);
+    if cpLen <> Length(t) then proclitic := False
+    else if baseLang = 'ar' then proclitic := (cp = $0648) or (cp = $0641)
+    else proclitic := cp = $05D5;
+    if proclitic then
+    begin
+      if next = '' then Exit(' ' + t + ' ');
+      nextCp := SpCodePointAt(next, 1, nextLen);
+      if (baseLang = 'ar') and InRangeTable(nextCp, ARABIC_LETTER_RANGES) then Exit(' ' + t);
+      if (baseLang = 'he') and InRangeTable(nextCp, HEBREW_LETTER_RANGES) then Exit(' ' + t);
+      Exit(' ' + t + ' ');
+    end;
+  end;
   allLetters := True;
   allUnspaced := True;
   i := 1;
@@ -2880,7 +2906,7 @@ function AssemblePermutation(node: TNode; const done: TArray<string>;
   const opts: TRenderOpts): string;
 type TElem = record Text: string; Sep: string; HasSep: Boolean; end;
 var elems: array of TElem; total, i, j, min, max, pick: Integer; tmp: TElem;
-    globalSep, globalLast, sep, spliced: string; buf: TStrBuf;
+    globalSep, globalLast, sep, spliced, baseLang: string; buf: TStrBuf;
 begin
   if node.PermOptions.Count = 0 then Exit('');
   { An element is its RENDERED text, TRIMMED, and one that renders empty is no element
@@ -2930,6 +2956,7 @@ begin
 
   if pick = 0 then Exit('');
   if pick = 1 then Exit(elems[0].Text);
+  baseLang := NormalizeBaseLang(opts.Locale);
   buf.Init(256);
   buf.AppendStr(elems[0].Text);
   for i := 1 to pick - 1 do
@@ -2937,7 +2964,7 @@ begin
     if elems[i].HasSep then sep := elems[i].Sep
     else if i = pick - 1 then sep := globalLast
     else sep := globalSep;
-    buf.AppendStr(PadSeparator(sep));
+    buf.AppendStr(PadSeparator(sep, baseLang, elems[i].Text));
     buf.AppendStr(elems[i].Text);
   end;
   Result := buf.Finish;

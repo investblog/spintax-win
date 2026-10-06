@@ -60,6 +60,12 @@ and the value-equality conditional proposal, struck.
 
 ## Done
 
+- [x] **Mirror `@spintax/core` 0.12.0** (issue #9, spintax-js#90, done 2026-10-06, spec §5.15).
+      Under `ar` a separator و/ف, under `he` ו, attaches to a next element that starts with a
+      letter of its script; Thai, Lao, Khmer and Myanmar separators join bare. Corpus 408:
+      `PASS=404 FAIL=0 SKIP=4` (was 393/11); 12 new local checks measured against the
+      reference, 660 in both builds. Released: not yet — MINOR, output moves.
+
 - [x] **The render walk and the tree destructor are iterative** (decided by the owner
       2026-09-12, done 2026-09-16, spec §5.14). `RenderNodes` is one loop over an array of
       frames, one frame per node LIST, mirroring `@spintax/core`

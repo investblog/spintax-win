@@ -10,7 +10,7 @@ Free Pascal 3.2.2+ in `{$mode delphi}`.
 The fourth engine in the Spintax family, and an **independent implementation** --
 not a transcription of the others. It is held to the same behaviour contract by a
 **shared golden corpus** of language-neutral fixtures, the same one that gates the
-TypeScript, PHP and Python engines: **329 of its 333 cases pass and none fail**. The
+TypeScript, PHP and Python engines: **404 of its 408 cases pass and none fail**. The
 other 4 are skipped by design -- `kind:rng`, which assert within-engine reproducibility
 rather than a cross-engine output.
 
@@ -100,7 +100,7 @@ cross-engine gate. Measured on this port:
 
 | corpus file            | cases | passed | note                                  |
 |------------------------|-------|--------|---------------------------------------|
-| render-semantics       | 150   | 150    | plurals (Arabic's six forms included), conditionals, permutations (CJK separators included), variables, set/def, the text splice of a variable, a conditional or a config into a construct |
+| render-semantics       | 172   | 172    | plurals (Arabic's six forms included), conditionals, permutations (CJK, Thai, Lao, Khmer, Myanmar separators; Arabic and Hebrew conjunctions), variables, set/def, the text splice of a variable, a conditional or a config into a construct |
 | validate               | 80    | 80     | bracket/directive/permutation/plural/variable diagnostics, with exact counts |
 | render-postprocess     | 86    | 86     | full 12-step pipeline, read as PCRE2 reads it; no space before a closing quote or bracket |
 | render-deterministic   | 16    | 16     | variable substitution, enumeration selection |
@@ -109,7 +109,7 @@ cross-engine gate. Measured on this port:
 | neutralize             | 10    | 10     | T2 shielding round-trip               |
 | render-rng-selection   | 10    | 10     | selection semantics under injected RNG |
 
-Totals: **`PASS=382 FAIL=0 SKIP=4`** over 386 cases (spintax-js@c96b21a, `@spintax/core` 0.11.0). Only `kind:rng` render cases
+Totals: **`PASS=404 FAIL=0 SKIP=4`** over 408 cases (spintax-js@65440d5, `@spintax/core` 0.12.0). Only `kind:rng` render cases
 are skipped; they assert within-engine reproducibility, not a cross-engine exact
 output, so they are engine-private by design.
 

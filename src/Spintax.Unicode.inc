@@ -1051,19 +1051,51 @@ const
     $1D7CA, $1D7CA, $1E900, $1E921
   );
 
-  { Script Han, Hiragana, Katakana + U+30FC, U+FF70 -- a separator that joins bare }
-  UNSPACED_RANGES_COUNT = 38;
+  { Script Han, Hiragana, Katakana + U+30FC, U+FF70, Thai, Lao, Khmer, Myanmar -- a separator that joins bare }
+  UNSPACED_RANGES_COUNT = 59;
   UNSPACED_RANGES: array[0..UNSPACED_RANGES_COUNT * 2 - 1] of LongWord = (
-    $2E80, $2E99, $2E9B, $2EF3, $2F00, $2FD5, $3005, $3005,
-    $3007, $3007, $3021, $3029, $3038, $303B, $3041, $3096,
-    $309D, $309F, $30A1, $30FA, $30FC, $30FF, $31F0, $31FF,
-    $32D0, $32FE, $3300, $3357, $3400, $4DBF, $4E00, $9FFF,
-    $F900, $FA6D, $FA70, $FAD9, $FF66, $FF9D, $16FE2, $16FE3,
-    $16FF0, $16FF6, $1AFF0, $1AFF3, $1AFF5, $1AFFB, $1AFFD, $1AFFE,
-    $1B000, $1B122, $1B132, $1B132, $1B150, $1B152, $1B155, $1B155,
-    $1B164, $1B167, $1F200, $1F200, $20000, $2A6DF, $2A700, $2B81D,
-    $2B820, $2CEAD, $2CEB0, $2EBE0, $2EBF0, $2EE5D, $2F800, $2FA1D,
-    $30000, $3134A, $31350, $33479
+    $0E01, $0E3A, $0E40, $0E5B, $0E81, $0E82, $0E84, $0E84,
+    $0E86, $0E8A, $0E8C, $0EA3, $0EA5, $0EA5, $0EA7, $0EBD,
+    $0EC0, $0EC4, $0EC6, $0EC6, $0EC8, $0ECE, $0ED0, $0ED9,
+    $0EDC, $0EDF, $1000, $109F, $1780, $17DD, $17E0, $17E9,
+    $17F0, $17F9, $19E0, $19FF, $2E80, $2E99, $2E9B, $2EF3,
+    $2F00, $2FD5, $3005, $3005, $3007, $3007, $3021, $3029,
+    $3038, $303B, $3041, $3096, $309D, $309F, $30A1, $30FA,
+    $30FC, $30FF, $31F0, $31FF, $32D0, $32FE, $3300, $3357,
+    $3400, $4DBF, $4E00, $9FFF, $A9E0, $A9FE, $AA60, $AA7F,
+    $F900, $FA6D, $FA70, $FAD9, $FF66, $FF9D, $116D0, $116E3,
+    $16FE2, $16FE3, $16FF0, $16FF6, $1AFF0, $1AFF3, $1AFF5, $1AFFB,
+    $1AFFD, $1AFFE, $1B000, $1B122, $1B132, $1B132, $1B150, $1B152,
+    $1B155, $1B155, $1B164, $1B167, $1F200, $1F200, $20000, $2A6DF,
+    $2A700, $2B81D, $2B820, $2CEAD, $2CEB0, $2EBE0, $2EBF0, $2EE5D,
+    $2F800, $2FA1D, $30000, $3134A, $31350, $33479
+  );
+
+  { L and Script=Arabic -- what an ar proclitic (U+0648, U+0641) attaches to }
+  ARABIC_LETTER_RANGES_COUNT = 54;
+  ARABIC_LETTER_RANGES: array[0..ARABIC_LETTER_RANGES_COUNT * 2 - 1] of LongWord = (
+    $0620, $063F, $0641, $064A, $066E, $066F, $0671, $06D3,
+    $06D5, $06D5, $06E5, $06E6, $06EE, $06EF, $06FA, $06FC,
+    $06FF, $06FF, $0750, $077F, $0870, $0887, $0889, $088F,
+    $08A0, $08C9, $FB50, $FBB1, $FBD3, $FD3D, $FD50, $FD8F,
+    $FD92, $FDC7, $FDF0, $FDFB, $FE70, $FE74, $FE76, $FEFC,
+    $10EC2, $10EC7, $1EE00, $1EE03, $1EE05, $1EE1F, $1EE21, $1EE22,
+    $1EE24, $1EE24, $1EE27, $1EE27, $1EE29, $1EE32, $1EE34, $1EE37,
+    $1EE39, $1EE39, $1EE3B, $1EE3B, $1EE42, $1EE42, $1EE47, $1EE47,
+    $1EE49, $1EE49, $1EE4B, $1EE4B, $1EE4D, $1EE4F, $1EE51, $1EE52,
+    $1EE54, $1EE54, $1EE57, $1EE57, $1EE59, $1EE59, $1EE5B, $1EE5B,
+    $1EE5D, $1EE5D, $1EE5F, $1EE5F, $1EE61, $1EE62, $1EE64, $1EE64,
+    $1EE67, $1EE6A, $1EE6C, $1EE72, $1EE74, $1EE77, $1EE79, $1EE7C,
+    $1EE7E, $1EE7E, $1EE80, $1EE89, $1EE8B, $1EE9B, $1EEA1, $1EEA3,
+    $1EEA5, $1EEA9, $1EEAB, $1EEBB
+  );
+
+  { L and Script=Hebrew -- what a he proclitic (U+05D5) attaches to }
+  HEBREW_LETTER_RANGES_COUNT = 10;
+  HEBREW_LETTER_RANGES: array[0..HEBREW_LETTER_RANGES_COUNT * 2 - 1] of LongWord = (
+    $05D0, $05EA, $05EF, $05F2, $FB1D, $FB1D, $FB1F, $FB28,
+    $FB2A, $FB36, $FB38, $FB3C, $FB3E, $FB3E, $FB40, $FB41,
+    $FB43, $FB44, $FB46, $FB4F
   );
 
   { uppercase mapping as (lo, hi, delta) runs; delta added to the code point.

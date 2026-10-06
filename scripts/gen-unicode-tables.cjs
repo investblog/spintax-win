@@ -65,11 +65,17 @@ const isNd = (cp) => /\p{Nd}/u.test(String.fromCodePoint(cp));
 // Upper and titlecase letters. A TLD is a label in ONE case (#79): the lower branch is L minus
 // these, the upper branch is L minus Ll, and Lm/Lo -- letters without case -- fit either.
 const isLuLt = (cp) => /[\p{Lu}\p{Lt}]/u.test(String.fromCodePoint(cp));
-// Scripts written without spaces between words (spintax-js#87): a permutation separator made
-// only of these joins bare. The reference's UNSPACED_SCRIPT_RE (render.ts), one code point --
-// U+30FC and U+FF70 are Script=Common and listed by hand there, so they are here.
+// Scripts written without spaces between words (spintax-js#87, #90): a permutation separator
+// made only of these joins bare. The reference's UNSPACED_SCRIPT_RE (render.ts), one code point --
+// U+30FC and U+FF70 are Script=Common and listed by hand there, so they are here. Script, not
+// Script_Extensions: U+3006, U+303C, U+3031-3035 and U+FF9E/FF9F stay out (the corpus pins U+3006).
 const isUnspaced = (cp) =>
-  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\uFF70]/u.test(String.fromCodePoint(cp));
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\uFF70\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u
+    .test(String.fromCodePoint(cp));
+// What a proclitic conjunction attaches to (spintax-js#90): the reference's PROCLITICS `letter`
+// patterns, a LETTER of the script. U+0640 tatweel is Script=Common, so it is not in the table.
+const isArabicLetter = (cp) => /^(?=\p{L})\p{Script=Arabic}$/u.test(String.fromCodePoint(cp));
+const isHebrewLetter = (cp) => /^(?=\p{L})\p{Script=Hebrew}$/u.test(String.fromCodePoint(cp));
 
 // Uppercase, split into the two shapes Pascal needs: arithmetic runs, and the handful of
 // code points whose uppercase is more than one character (sharp s -> SS, ligatures, ...).
@@ -200,6 +206,8 @@ const ucpWord = ranges(isUcpWord);
 const nd = ranges(isNd);
 const luLt = ranges(isLuLt);
 const unspaced = ranges(isUnspaced);
+const arabicLetter = ranges(isArabicLetter);
+const hebrewLetter = ranges(isHebrewLetter);
 
 const out = [];
 out.push('{ GENERATED FILE -- DO NOT EDIT BY HAND.');
@@ -235,7 +243,13 @@ out.push('');
 out.push(emitRanges('LU_LT_RANGES', luLt, 'Unicode Lu and Lt -- the one-case TLD rule'));
 out.push('');
 out.push(emitRanges('UNSPACED_RANGES', unspaced,
-  'Script Han, Hiragana, Katakana + U+30FC, U+FF70 -- a separator that joins bare'));
+  'Script Han, Hiragana, Katakana + U+30FC, U+FF70, Thai, Lao, Khmer, Myanmar -- a separator that joins bare'));
+out.push('');
+out.push(emitRanges('ARABIC_LETTER_RANGES', arabicLetter,
+  'L and Script=Arabic -- what an ar proclitic (U+0648, U+0641) attaches to'));
+out.push('');
+out.push(emitRanges('HEBREW_LETTER_RANGES', hebrewLetter,
+  'L and Script=Hebrew -- what a he proclitic (U+05D5) attaches to'));
 out.push('');
 out.push(emitRuns('UPPER_RUNS', upRuns));
 out.push('');

@@ -1024,6 +1024,37 @@ begin
   { A non-ASCII separator that is not a letter (U+2014 EM DASH) is not padded -- the old
     byte test counted any non-ASCII byte as a letter and padded it, unlike the reference. }
   Check('perm/sep-em-dash',      RenderIn('[<sep="'#$E2#$80#$94'">a|a]', ''),         'a'#$E2#$80#$94'a');
+  { spintax-js#90: a proclitic attaches by LANGUAGE and to a letter of ITS script -- the
+    crossings the corpus does not build. Measured against @spintax/core 0.12.0 on 2026-10-06.
+    U+0648 waw, U+0641 fa, U+0651 shadda, U+0628 beh, U+05D0 alef, U+05D1 bet, U+05D5 vav. }
+  Check('perm/sep-vav-under-ar',      RenderIn('[<lastsep="'#$D7#$95'">'#$D7#$90'|'#$D7#$90']', 'ar'),
+        #$D7#$90' '#$D7#$95' '#$D7#$90);
+  Check('perm/sep-waw-under-he',      RenderIn('[<lastsep="'#$D9#$88'">'#$D8#$A8'|'#$D8#$A8']', 'he'),
+        #$D8#$A8' '#$D9#$88' '#$D8#$A8);
+  Check('perm/sep-waw-before-hebrew', RenderIn('[<lastsep="'#$D9#$88'">'#$D7#$90'|'#$D7#$90']', 'ar'),
+        #$D7#$90' '#$D9#$88' '#$D7#$90);
+  Check('perm/sep-vav-before-arabic', RenderIn('[<lastsep="'#$D7#$95'">'#$D8#$A8'|'#$D8#$A8']', 'he'),
+        #$D8#$A8' '#$D7#$95' '#$D8#$A8);
+  { Two code points: not the proclitic, and not all letters either -- passes through as written. }
+  Check('perm/sep-waw-shadda',        RenderIn('[<lastsep="'#$D9#$88#$D9#$91'">'#$D8#$A8'|'#$D8#$A8']', 'ar'),
+        #$D8#$A8#$D9#$88#$D9#$91#$D8#$A8);
+  Check('perm/sep-fa-doubled',        RenderIn('[<lastsep="'#$D9#$81#$D9#$81'">'#$D8#$A8'|'#$D8#$A8']', 'ar'),
+        #$D8#$A8' '#$D9#$81#$D9#$81' '#$D8#$A8);
+  Check('perm/sep-waw-upper-locale',  RenderIn('[<lastsep="'#$D9#$88'">'#$D8#$A8'|'#$D8#$A8']', 'AR-EG'),
+        #$D8#$A8' '#$D9#$88#$D8#$A8);
+  { The next element is read TRIMMED and RENDERED. Source spaces are already gone at parse;
+    a one-space spin renders a space that only the assembly's trim removes, so that one gates
+    the trim. }
+  Check('perm/sep-waw-element-spaces', RenderIn('[<lastsep="'#$D9#$88'">  '#$D8#$A8'|  '#$D8#$A8']', 'ar'),
+        #$D8#$A8' '#$D9#$88#$D8#$A8);
+  Check('perm/sep-waw-rendered-space', RenderIn('[<lastsep="'#$D9#$88'">{ }'#$D8#$A8'|{ }'#$D8#$A8']', 'ar'),
+        #$D8#$A8' '#$D9#$88#$D8#$A8);
+  Check('perm/sep-waw-element-spin',  RenderIn('[<lastsep="'#$D9#$88'">{'#$D8#$A8'}|{'#$D8#$A8'}]', 'ar'),
+        #$D8#$A8' '#$D9#$88#$D8#$A8);
+  Check('perm/sep-waw-every-join',    RenderIn('[<sep="'#$D9#$88'">'#$D8#$A8'|'#$D8#$A8'|'#$D8#$A8']', 'ar'),
+        #$D8#$A8' '#$D9#$88#$D8#$A8' '#$D9#$88#$D8#$A8);
+  Check('perm/sep-vav-he-IL',         RenderIn('[<lastsep="'#$D7#$95'">'#$D7#$91'|'#$D7#$91']', 'he-IL'),
+        #$D7#$91' '#$D7#$95#$D7#$91);
 end;
 
 { Only the LENIENT paths live here. The Slavic bucket rules are already gated by 37 corpus
